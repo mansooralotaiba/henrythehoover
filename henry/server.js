@@ -487,10 +487,20 @@ app.get('/api/gold/candles', requireAuth, async (req, res) => {
   }
 });
 
+async function getGoldSpot() {
+  // Snapshot endpoint works for forex; /v2/last/trade is stocks-only.
+  const data = await polyFetch('/v2/snapshot/locale/global/markets/forex/tickers', { tickers: 'C:XAUUSD' });
+  const t = data.tickers && data.tickers[0];
+  if (!t) return null;
+  const ask = t.lastQuote?.a;
+  const bid = t.lastQuote?.b;
+  if (ask && bid) return (ask + bid) / 2;
+  return ask || bid || t.day?.c || t.prevDay?.c || null;
+}
+
 app.get('/api/gold/price', requireAuth, async (_req, res) => {
   try {
-    const data = await polyFetch('/v2/last/trade/C:XAUUSD');
-    const price = data.results?.p || data.last?.price || null;
+    const price = await getGoldSpot();
     res.json({ price, ts: Date.now() });
   } catch (err) {
     console.error('[gold/price]', err);
@@ -689,8 +699,7 @@ const FUTURES_SYM_SERVER = {
 async function getCurrentPriceServer(coin, broker) {
   try {
     if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
-      const d = await polyFetch('/v2/last/trade/C:XAUUSD');
-      return d.results?.p || null;
+      return await getGoldSpot();
     }
     if (broker === 'binance') {
       const r = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${coin}`);
@@ -995,8 +1004,7 @@ function subMassiveLive(_symbol) {
   exchangeStreams.set(key, stream);
   stream.interval = setInterval(async () => {
     try {
-      const d = await polyFetch('/v2/last/trade/C:XAUUSD');
-      const price = d.results?.p;
+      const price = await getGoldSpot();
       if (!price) return;
       const time = Math.floor(Date.now() / 1000);
       updateCurrentBar(stream, price, time, 0);
