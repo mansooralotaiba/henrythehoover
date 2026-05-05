@@ -1109,6 +1109,40 @@ function initTVChart(){
   return true;
 }
 
+// TradingView widget for Gold — embedded full-featured chart for OANDA:XAUUSD
+function tvIntervalOf(t){return ({'1m':'1','5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'})[t]||'15';}
+function loadGoldFromTradingView(){
+  var cd=document.getElementById('chartdiv');if(!cd)return;
+  if(tvChart){try{tvChart.remove();}catch(e){}tvChart=null;tvSeries=null;tvSignalLines=[];}
+  cd.innerHTML='<div id="tv-gold-widget" style="width:100%;height:100%"></div>';
+  function mount(){
+    try{
+      new TradingView.widget({
+        autosize:true,
+        symbol:'OANDA:XAUUSD',
+        interval:tvIntervalOf(tf),
+        timezone:'Etc/UTC',
+        theme:'dark',
+        style:'1',
+        locale:'en',
+        toolbar_bg:'#08090d',
+        enable_publishing:false,
+        hide_top_toolbar:false,
+        save_image:false,
+        container_id:'tv-gold-widget',
+      });
+    }catch(e){console.log('tv widget err',e);}
+  }
+  if(window.TradingView){mount();return;}
+  var s=document.createElement('script');
+  s.src='https://s3.tradingview.com/tv.js';
+  s.onload=mount;
+  s.onerror=function(){cd.innerHTML='<div style="padding:20px;text-align:center;font-size:11px;color:var(--re)">TradingView widget failed to load</div>';};
+  document.head.appendChild(s);
+  // Also pull spot price into the price input from /api/gold/price
+  fetchPriceMassive();
+}
+
 function loadChart(){
   try{
     if(!chartShown)return;
@@ -1127,24 +1161,9 @@ function loadChart(){
         setTimeout(loadChart,300);return;
       }
     }
-    // ── MASSIVE / GOLD: load candles from Polygon snapshot endpoint ──
+    // ── MASSIVE / GOLD: TradingView widget (Polygon intraday forex data is sparse) ──
     if(activeBroker==='massive'||coin==='GOLD'){
-      fetchCandlesMassive(tf,200).then(function(candles){
-        if(!candles||candles.length<2){console.log('No gold candles');return;}
-        var bars=candles.map(function(k){return{time:Math.floor(k.t/1000),open:k.o,high:k.h,low:k.l,close:k.c};}).sort(function(a,b){return a.time-b.time;});
-        var seen={},unique=[];
-        bars.forEach(function(b){if(!seen[b.time]){seen[b.time]=true;unique.push(b);}});
-        tvSeries.setData(unique);
-        tvChart.timeScale().fitContent();
-        var last=unique[unique.length-1];
-        if(last&&!document.getElementById('priceinput').value){
-          livePrice=last.close.toString();
-          document.getElementById('priceinput').value=last.close.toFixed(2);
-          document.getElementById('pricesrc').textContent='✓ Massive';
-          document.getElementById('pricesrc').style.color='var(--am)';
-        }
-        if(pend&&(pend.direction==='LONG'||pend.direction==='SHORT'))drawSignalOnChart(pend);
-      }).catch(function(e){console.log('gold chart err:',e.message);});
+      loadGoldFromTradingView();
       return;
     }
     var fsym=FUTURES_SYM[coin]||('cmt_'+coin.toLowerCase());
