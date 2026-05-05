@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Sign in</title>
+<style>
+  :root { --bg:#08090d; --bg2:#12141b; --fg:#e8eaf0; --mu:#9aa0a6; --br:#23262e; --cy:#00d4ff; --gr:#00e5a0; --re:#ff4466; --am:#ffb830; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  .box{background:var(--bg2);border:1px solid var(--br);padding:32px 28px;width:100%;max-width:380px;border-radius:6px}
+  h1{margin:0 0 4px;font-size:18px;letter-spacing:.12em;color:var(--cy)}
+  .sub{color:var(--mu);font-size:11px;letter-spacing:.08em;margin-bottom:24px}
+  label{display:block;font-size:10px;color:var(--mu);letter-spacing:.1em;margin-bottom:6px}
+  input{width:100%;padding:11px 12px;background:#0a0c12;border:1px solid var(--br);color:var(--fg);font-family:inherit;font-size:13px;border-radius:3px;outline:none}
+  input:focus{border-color:var(--cy)}
+  button{width:100%;margin-top:14px;padding:12px;background:var(--cy);color:#000;border:0;font-family:inherit;font-size:12px;letter-spacing:.12em;font-weight:bold;cursor:pointer;border-radius:3px}
+  button:disabled{opacity:.5;cursor:wait}
+  .msg{margin-top:18px;padding:12px;border:1px solid var(--br);border-radius:3px;font-size:11px;line-height:1.6}
+  .msg.ok{border-color:rgba(0,229,160,.4);color:var(--gr);background:rgba(0,229,160,.06)}
+  .msg.warn{border-color:rgba(255,184,48,.4);color:var(--am);background:rgba(255,184,48,.06)}
+  .msg.err{border-color:rgba(255,68,102,.4);color:var(--re);background:rgba(255,68,102,.06)}
+  .foot{margin-top:24px;text-align:center;color:var(--mu);font-size:10px;letter-spacing:.08em}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>HENRY THE HOOVER</h1>
+  <div class="sub">AI FUTURES TRADING TERMINAL</div>
+  <form id="f">
+    <label>EMAIL</label>
+    <input id="email" type="email" required autocomplete="email" placeholder="you@example.com">
+    <button id="go" type="submit">CONTINUE</button>
+  </form>
+  <div id="msg"></div>
+  <div class="foot">Sign in or request access. Approval is manual.</div>
+</div>
+<script>
+const f = document.getElementById('f');
+const msg = document.getElementById('msg');
+const btn = document.getElementById('go');
+const params = new URLSearchParams(location.search);
+if (params.get('status') === 'pending') {
+  msg.className = 'msg warn';
+  msg.textContent = 'Your access request is still pending approval. You will receive an email once approved.';
+}
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  if (!email) return;
+  btn.disabled = true; btn.textContent = '…';
+  msg.className = ''; msg.textContent = '';
+  try {
+    const r = await fetch('/auth/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      msg.className = 'msg err';
+      msg.textContent = data.error || ('Error ' + r.status);
+    } else if (data.status === 'sent') {
+      msg.className = 'msg ok';
+      msg.textContent = 'Check your inbox — a sign-in link has been sent to ' + email + '.';
+    } else if (data.status === 'pending') {
+      msg.className = 'msg warn';
+      msg.textContent = 'Your access request is pending approval.';
+    } else if (data.status === 'requested') {
+      msg.className = 'msg warn';
+      msg.textContent = 'Access requested. You will receive an email once approved.';
+    } else {
+      msg.className = 'msg ok';
+      msg.textContent = 'OK.';
+    }
+  } catch (err) {
+    msg.className = 'msg err';
+    msg.textContent = 'Network error: ' + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'CONTINUE';
+  }
+});
+</script>
+</body>
+</html>

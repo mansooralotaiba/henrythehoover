@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry — Admin</title>
+<style>
+  :root { --bg:#08090d; --bg2:#12141b; --fg:#e8eaf0; --mu:#9aa0a6; --br:#23262e; --cy:#00d4ff; --gr:#00e5a0; --re:#ff4466; --am:#ffb830; --pu:#9966ff; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;padding:32px 20px;min-height:100vh}
+  .wrap{max-width:880px;margin:0 auto}
+  header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px;border-bottom:1px solid var(--br);padding-bottom:14px}
+  h1{margin:0;font-size:18px;letter-spacing:.12em;color:var(--cy)}
+  .sub{color:var(--mu);font-size:11px;letter-spacing:.08em}
+  a{color:var(--cy);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .section{background:var(--bg2);border:1px solid var(--br);border-radius:6px;margin-bottom:18px}
+  .section h2{margin:0;padding:14px 18px;font-size:11px;letter-spacing:.12em;color:var(--mu);border-bottom:1px solid var(--br)}
+  .row{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--br);font-size:12px}
+  .row:last-child{border-bottom:0}
+  .email{font-weight:bold}
+  .badge{padding:2px 8px;border-radius:3px;font-size:9px;letter-spacing:.1em;border:1px solid currentColor}
+  .badge.pending{color:var(--am)}
+  .badge.approved{color:var(--gr)}
+  .badge.admin{color:var(--pu)}
+  .meta{color:var(--mu);font-size:10px}
+  button{font-family:inherit;font-size:10px;letter-spacing:.1em;padding:6px 12px;background:transparent;border:1px solid var(--br);color:var(--fg);cursor:pointer;border-radius:3px}
+  button.go{border-color:var(--gr);color:var(--gr)}
+  button.no{border-color:var(--re);color:var(--re)}
+  button:hover{background:rgba(255,255,255,.05)}
+  button:disabled{opacity:.4;cursor:wait}
+  .empty{padding:18px;color:var(--mu);font-size:11px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>HENRY ADMIN</h1>
+      <div class="sub">Access requests &amp; approved users</div>
+    </div>
+    <div><a href="/">← back to terminal</a></div>
+  </header>
+
+  <div class="section">
+    <h2>// PENDING</h2>
+    <div id="pending"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="section">
+    <h2>// APPROVED</h2>
+    <div id="approved"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+<script>
+async function load() {
+  const r = await fetch('/admin/pending', { credentials: 'same-origin' });
+  if (!r.ok) {
+    document.getElementById('pending').innerHTML = '<div class="empty">Error: ' + r.status + '</div>';
+    return;
+  }
+  const { profiles } = await r.json();
+  const pending = profiles.filter(p => !p.approved);
+  const approved = profiles.filter(p => p.approved);
+  render('pending', pending, true);
+  render('approved', approved, false);
+}
+function render(boxId, list, isPending) {
+  const box = document.getElementById(boxId);
+  if (!list.length) { box.innerHTML = '<div class="empty">None</div>'; return; }
+  box.innerHTML = list.map(p => {
+    const when = p.requested_at ? new Date(p.requested_at).toLocaleString() : '';
+    const badges = [];
+    if (p.is_admin) badges.push('<span class="badge admin">ADMIN</span>');
+    badges.push('<span class="badge ' + (p.approved ? 'approved' : 'pending') + '">' + (p.approved ? 'APPROVED' : 'PENDING') + '</span>');
+    const actions = isPending
+      ? '<button class="go" data-act="approve" data-email="' + escapeAttr(p.email) + '">APPROVE</button>'
+        + '<button class="no" data-act="deny" data-email="' + escapeAttr(p.email) + '">DENY</button>'
+      : (p.is_admin ? '<span class="meta">—</span>' : '<button class="no" data-act="deny" data-email="' + escapeAttr(p.email) + '">REVOKE</button>');
+    return '<div class="row">'
+      + '<div><div class="email">' + escapeText(p.email) + '</div><div class="meta">requested ' + when + '</div></div>'
+      + '<div>' + badges.join(' ') + '</div>'
+      + actions
+      + '</div>';
+  }).join('');
+  box.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', onAction));
+}
+function escapeText(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function escapeAttr(s) { return String(s).replace(/"/g, '&quot;'); }
+async function onAction(e) {
+  const btn = e.currentTarget;
+  const email = btn.dataset.email;
+  const act = btn.dataset.act;
+  if (act === 'deny' && !confirm('Remove ' + email + '?')) return;
+  btn.disabled = true;
+  const r = await fetch('/admin/' + act, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email })
+  });
+  if (!r.ok) { alert('Failed: ' + r.status); btn.disabled = false; return; }
+  load();
+}
+load();
+</script>
+</body>
+</html>

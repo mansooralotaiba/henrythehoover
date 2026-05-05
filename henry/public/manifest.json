@@ -1,0 +1,23 @@
+{
+  "name": "Henry The Hoover",
+  "short_name": "Henry",
+  "description": "AI Futures Trading Terminal",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08090d",
+  "theme_color": "#08090d",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' fill='%2308090d'/><circle cx='96' cy='96' r='80' fill='%23cc2222'/><circle cx='96' cy='86' r='44' fill='white'/><rect x='72' y='86' width='48' height='30' fill='%23cc2222'/><circle cx='85' cy='102' r='8' fill='%23111'/><circle cx='107' cy='102' r='8' fill='%23111'/><circle cx='96' cy='58' r='16' fill='%23ffb830'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' fill='%2308090d'/><circle cx='256' cy='256' r='220' fill='%23cc2222'/><circle cx='256' cy='230' r='120' fill='white'/><rect x='196' y='230' width='120' height='80' fill='%23cc2222'/><circle cx='225' cy='270' r='22' fill='%23111'/><circle cx='287' cy='270' r='22' fill='%23111'/><circle cx='256' cy='140' r='44' fill='%23ffb830'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["finance", "utilities"]
+}

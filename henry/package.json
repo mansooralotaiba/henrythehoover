@@ -1,0 +1,22 @@
+{
+  "name": "henry-the-hoover",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trading terminal — Express server, futures proxies, Claude API proxy, Supabase auth",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
