@@ -155,9 +155,40 @@ app.post('/auth/start', express.json(), async (req, res) => {
   }
 });
 
-app.get('/auth/callback', (_req, res) => {
-  // The magic link returns to this page with tokens in the URL hash.
-  // Browser extracts them and POSTs to /auth/session to set HTTPOnly cookies.
+app.get('/auth/callback', async (req, res) => {
+  // The Supabase magic-link email template points here with
+  //   ?token_hash=...&type=magiclink
+  // We exchange that for a session server-side, set HTTPOnly cookies,
+  // and redirect into the app — no client-side JS required.
+  const tokenHash = typeof req.query.token_hash === 'string' ? req.query.token_hash : '';
+  const type = typeof req.query.type === 'string' ? req.query.type : 'magiclink';
+  const errDesc = typeof req.query.error_description === 'string' ? req.query.error_description : '';
+
+  if (errDesc) return res.redirect('/login?error=' + encodeURIComponent(errDesc));
+
+  if (tokenHash) {
+    try {
+      const { data, error } = await supaAnon.auth.verifyOtp({ token_hash: tokenHash, type });
+      if (error || !data?.session?.access_token) {
+        console.error('[auth/callback verifyOtp]', error);
+        return res.redirect('/login?error=' + encodeURIComponent(error?.message || 'verify_failed'));
+      }
+      const email = data.user.email.toLowerCase();
+      const profile = await loadProfile(email);
+      if (!profile || !profile.approved) return res.redirect('/login?status=pending');
+      if (!profile.user_id) {
+        await supaAdmin.from('profiles').update({ user_id: data.user.id }).eq('email', email);
+      }
+      setAuthCookies(res, data.session.access_token, data.session.refresh_token);
+      return res.redirect('/');
+    } catch (err) {
+      console.error('[auth/callback]', err);
+      return res.redirect('/login?error=callback_error');
+    }
+  }
+
+  // Fallback for the old implicit-flow link format (#access_token=...&refresh_token=...).
+  // Still useful if someone has an unexpired email from before the template change.
   res.type('html').send(`<!doctype html>
 <meta charset="utf-8"><title>Signing in…</title>
 <body style="background:#08090d;color:#9aa0a6;font-family:Courier New,monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
