@@ -224,6 +224,10 @@ header{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid
 .ec{color:var(--tx)}.va{color:var(--cy)}.vs{color:var(--re)}.vt{color:var(--gr)}
 .ordbtn{display:flex;gap:8px;margin-top:8px}
 body.not-admin .admin-only{display:none!important}
+/* MASSIVE broker = Gold-only mode: hide every other pair, surface GOLD */
+body.massive-mode .non-massive{display:none!important}
+body.massive-mode .massive-only{display:inline-block!important}
+body.massive-mode #extrapairs{display:none!important}
 </style>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -307,7 +311,8 @@ body.not-admin .admin-only{display:none!important}
 
   <!-- Coin picker -->
   <div class="crow">
-    <button class="cb on" id="cb-BTCUSDT" onclick="pickCoin(this,'BTCUSDT')">BTC</button>
+    <button class="cb cbg massive-only" id="cb-GOLD" onclick="pickCoin(this,'GOLD')" style="display:none">GOLD</button>
+    <button class="cb on non-massive" id="cb-BTCUSDT" onclick="pickCoin(this,'BTCUSDT')">BTC</button>
     <button class="cb" id="cb-ETHUSDT" onclick="pickCoin(this,'ETHUSDT')">ETH</button>
     <button class="cb" id="cb-SOLUSDT" onclick="pickCoin(this,'SOLUSDT')">SOL</button>
     <button class="cb" id="cb-XRPUSDT" onclick="pickCoin(this,'XRPUSDT')">XRP</button>
@@ -829,8 +834,21 @@ function setBroker(b){
     if(bb){bb.style.background='transparent';bb.style.borderColor='var(--di)';bb.style.color='var(--mu)';bb.textContent='BINANCE';}
     var hb2=document.getElementById('brk-hl');if(hb2){hb2.style.background='transparent';hb2.style.borderColor='var(--di)';hb2.style.color='var(--mu)';hb2.textContent='HYPERLIQUID';}
     document.getElementById('brok-st')&&(document.getElementById('brok-st').textContent='Switched to Massive (XAU/USD spot)');
-    // Massive only serves Gold for now — point the chart/price at Polygon endpoints.
+    // Massive only serves Gold — flag every other pair as non-massive so CSS hides them.
+    document.querySelectorAll('.crow .cb').forEach(function(b){if(b.id!=='cb-GOLD'&&!b.classList.contains('non-massive'))b.classList.add('non-massive');});
+    document.body.classList.add('massive-mode');
     coin='GOLD';
+    // Activate the GOLD button visually
+    document.querySelectorAll('.crow .cb').forEach(function(b){b.classList.remove('on');});
+    var gb=document.getElementById('cb-GOLD');if(gb)gb.classList.add('on');
+  } else {
+    // Leaving massive — restore the normal coin row
+    document.body.classList.remove('massive-mode');
+    if(coin==='GOLD'){
+      coin='BTCUSDT';
+      document.querySelectorAll('.crow .cb').forEach(function(b){b.classList.remove('on');});
+      var btcb=document.getElementById('cb-BTCUSDT');if(btcb)btcb.classList.add('on');
+    }
   }
   // Save preference
   try{localStorage.setItem('activeBroker',b);}catch(e){}
@@ -1039,6 +1057,7 @@ function fetchCandles(symbol,interval,limit){
 }
 
 function fetchPrice(c){
+  if(activeBroker==='massive'||c==='GOLD'){fetchPriceMassive();return;}
   if(activeBroker==='hyperliquid'){fetchPriceHL(c);return;}
   if(activeBroker==='binance'){fetchPriceBinance(c);return;}
   var fsym=FUTURES_SYM[c]||('cmt_'+c.toLowerCase());
