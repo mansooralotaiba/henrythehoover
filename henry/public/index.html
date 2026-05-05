@@ -175,12 +175,14 @@ header{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid
   .logo{font-size:11px;gap:6px}
   .logo canvas{width:24px;height:24px}
   #clk{font-size:9px}
-  /* Hide email + "BROKER:" label on phones to keep header on one row */
+  /* Trim header on phones so ADMIN + LOGOUT stay visible.
+     Hide the email, the BROKER selector (label + pills), and shrink remaining pills. */
   #whoami{display:none}
   header span[style*="BROKER:"]{display:none}
   #brk-weex,#brk-bnb,#brk-hl{display:none}
-  header .pill{font-size:9px;padding:3px 6px}
+  header .pill{font-size:9px;padding:3px 8px}
   header .pill .dot{width:6px;height:6px}
+  #adminlink{font-weight:bold}
   #sbar{padding:4px 10px;gap:5px}
   .chip{font-size:9px;padding:2px 6px}
   #snxt{font-size:9px}
@@ -251,6 +253,10 @@ body.not-admin .admin-only{display:none!important}
     <button id="brk-hl" class="pill" onclick="setBroker('hyperliquid')"
       style="background:transparent;border-color:var(--di);color:var(--mu)">
       HYPERLIQUID
+    </button>
+    <button id="brk-mas" class="pill" onclick="setBroker('massive')"
+      style="background:transparent;border-color:var(--di);color:var(--mu)">
+      MASSIVE
     </button>
   </div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
@@ -649,7 +655,86 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){
   if(!IS_ADMIN)document.body.classList.add('not-admin');
   var w=document.getElementById('whoami');if(w)w.textContent=u.email||'';
   var al=document.getElementById('adminlink');if(al&&IS_ADMIN)al.style.display='';
+  // Web Push registration — server can wake the phone when auto-scan triggers
+  registerPushIfPossible();
 }).catch(function(){});
+
+// ── Web Push registration ─────────────────────────────────────────────
+async function registerPushIfPossible(){
+  try{
+    if(!('serviceWorker' in navigator)||!('PushManager' in window))return;
+    var reg=await navigator.serviceWorker.register('/sw.js');
+    if(Notification.permission==='denied')return;
+    if(Notification.permission!=='granted'){
+      var perm=await Notification.requestPermission();
+      if(perm!=='granted')return;
+    }
+    var existing=await reg.pushManager.getSubscription();
+    if(existing){
+      // Already subscribed — just tell the server in case it doesn't have us
+      await fetch('/api/push/subscribe',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:existing})}).catch(function(){});
+      return;
+    }
+    var keyResp=await fetch('/api/push/vapid-key',{credentials:'same-origin'});
+    if(!keyResp.ok)return;
+    var keyData=await keyResp.json();
+    if(!keyData.publicKey)return;
+    var sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(keyData.publicKey)});
+    await fetch('/api/push/subscribe',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub})});
+  }catch(e){console.log('[push register]',e.message);}
+}
+function urlBase64ToUint8Array(s){
+  var pad='='.repeat((4-s.length%4)%4);
+  var b64=(s+pad).replace(/-/g,'+').replace(/_/g,'/');
+  var raw=atob(b64);var arr=new Uint8Array(raw.length);
+  for(var i=0;i<raw.length;i++)arr[i]=raw.charCodeAt(i);
+  return arr;
+}
+
+// ── Signal history (Supabase via /api/signals) ────────────────────────
+function saveSignalToHistory(sig,trig){
+  if(!sig||!sig.pair||!sig.direction)return;
+  fetch('/api/signals',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({signal:sig,trigger:trig||null,broker:activeBroker,tf:liqTF})
+  }).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if(d&&d.id){window._lastSignalId=d.id;}
+  }).catch(function(){});
+}
+function logSignalOutcome(outcome,outcomeRr){
+  var id=window._lastSignalId;if(!id)return;
+  fetch('/api/signals/'+id+'/outcome',{
+    method:'PATCH',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({outcome:outcome,outcomeRr:outcomeRr||null})
+  }).catch(function(){});
+}
+
+// ── Server-side scan control ──────────────────────────────────────────
+function serverScanStart(){
+  if(!IS_ADMIN)return; // server-side scan + push notifications are admin-only
+  fetch('/api/scan/start',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({coin:coin,tf:liqTF,broker:activeBroker,cooldownMs:autoCooldownMs})
+  }).catch(function(){});
+}
+function serverScanStop(){
+  fetch('/api/scan/stop',{method:'POST',credentials:'same-origin'}).catch(function(){});
+}
+function serverScanSyncSignal(sig){
+  if(!IS_ADMIN||!sig)return;
+  fetch('/api/scan/signal',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({signal:sig})
+  }).catch(function(){});
+}
+function serverScanClearSignal(){
+  if(!IS_ADMIN)return;
+  fetch('/api/scan/clear',{method:'POST',credentials:'same-origin'}).catch(function(){});
+}
 
 // ═══════════════════════════════════════════
 // HENRY LOGO
@@ -735,7 +820,17 @@ function setBroker(b){
     if(hb){hb.style.background='rgba(153,102,255,.15)';hb.style.borderColor='rgba(153,102,255,.4)';hb.style.color='var(--pu)';hb.innerHTML='<span style="width:5px;height:5px;border-radius:50%;background:var(--pu);display:inline-block;margin-right:4px;vertical-align:middle"></span>HYPERLIQUID';}
     if(wb){wb.style.background='transparent';wb.style.borderColor='var(--di)';wb.style.color='var(--mu)';wb.textContent='WEEX';}
     if(bb){bb.style.background='transparent';bb.style.borderColor='var(--di)';bb.style.color='var(--mu)';bb.textContent='BINANCE';}
+    var mb0=document.getElementById('brk-mas');if(mb0){mb0.style.background='transparent';mb0.style.borderColor='var(--di)';mb0.style.color='var(--mu)';mb0.textContent='MASSIVE';}
     document.getElementById('brok-st')&&(document.getElementById('brok-st').textContent='Switched to Hyperliquid');
+  } else if(b==='massive'){
+    var mb=document.getElementById('brk-mas');
+    if(mb){mb.style.background='rgba(255,184,48,.15)';mb.style.borderColor='rgba(255,184,48,.4)';mb.style.color='var(--am)';mb.innerHTML='<span style="width:5px;height:5px;border-radius:50%;background:var(--am);display:inline-block;margin-right:4px;vertical-align:middle"></span>MASSIVE';}
+    if(wb){wb.style.background='transparent';wb.style.borderColor='var(--di)';wb.style.color='var(--mu)';wb.textContent='WEEX';}
+    if(bb){bb.style.background='transparent';bb.style.borderColor='var(--di)';bb.style.color='var(--mu)';bb.textContent='BINANCE';}
+    var hb2=document.getElementById('brk-hl');if(hb2){hb2.style.background='transparent';hb2.style.borderColor='var(--di)';hb2.style.color='var(--mu)';hb2.textContent='HYPERLIQUID';}
+    document.getElementById('brok-st')&&(document.getElementById('brok-st').textContent='Switched to Massive (XAU/USD spot)');
+    // Massive only serves Gold for now — point the chart/price at Polygon endpoints.
+    coin='GOLD';
   }
   // Save preference
   try{localStorage.setItem('activeBroker',b);}catch(e){}
@@ -757,10 +852,35 @@ function getSymbol(coinPair){
   return FUTURES_SYM[coinPair]||('cmt_'+coinPair.toLowerCase());
 }
 
-// ── Unified candle fetcher (Weex or Binance) ──
+// ── Unified candle fetcher (Weex / Binance / Massive Gold) ──
 function fetchCandlesUnified(symbol,interval,limit){
+  if(activeBroker==='massive') return fetchCandlesMassive(interval,limit);
   if(activeBroker==='binance') return fetchCandlesBinance(symbol,interval,limit);
   return fetchCandles(symbol,interval,limit);
+}
+
+// ── Massive (Polygon XAU/USD) candle fetcher ──
+function fetchCandlesMassive(interval,limit){
+  return fetch('/api/gold/candles?interval='+encodeURIComponent(interval||'15m')+'&limit='+(limit||200),{credentials:'same-origin'})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(d){
+      if(!d||!Array.isArray(d.candles))return[];
+      return d.candles.map(function(k){return{t:k.time*1000,o:k.o,h:k.h,l:k.l,c:k.c,v:k.v||0};});
+    }).catch(function(e){console.log('Gold candles err:',e.message);return[];});
+}
+
+// ── Massive live price ──
+function fetchPriceMassive(){
+  return fetch('/api/gold/price',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d&&d.price){
+        livePrice=d.price.toString();
+        var disp=d.price.toFixed(2);
+        var pi=document.getElementById('priceinput');if(pi)pi.value=disp;
+        var ps=document.getElementById('pricesrc');if(ps){ps.textContent='✓ Massive';ps.style.color='var(--am)';}
+      }
+    }).catch(function(){});
 }
 
 // ── Binance candle fetcher ──
@@ -2400,12 +2520,15 @@ function startAutoScan(){
   if(autoInterval)clearInterval(autoInterval);
   autoInterval=setInterval(runAutoScan,30000); // check every 30s
   runAutoScan(); // immediate first check
-  setAutoStatus('Active — scanning every 30s');
+  // Mirror to server-side scan loop so the phone gets push alerts even with the tab closed.
+  try{serverScanStart();}catch(e){}
+  setAutoStatus('Active — scanning every 30s (server + browser)');
 }
 
 function stopAutoScan(){
   if(autoInterval){clearInterval(autoInterval);autoInterval=null;}
   autoScanning=false;
+  try{serverScanStop();}catch(e){}
   setAutoStatus('Off');
 }
 
@@ -2909,6 +3032,12 @@ function drawSig(sig){
     }
   }
   pend=sig;
+  // Persist to Supabase + sync with server-side trade monitor (admins only).
+  // Only persist real signals — skip the "NO TRADE" responses.
+  if(sig.direction==='LONG'||sig.direction==='SHORT'){
+    try{saveSignalToHistory(sig,window._autoTrigger&&window._autoTrigger.trigger);}catch(e){}
+    try{serverScanSyncSignal(sig);}catch(e){}
+  }
   var area=document.getElementById('sigarea');
   var L=sig.direction==='LONG',S=sig.direction==='SHORT';
   var dc=L?'dlong':S?'dshort':'dnone';
@@ -3309,7 +3438,18 @@ function logTrade(oc){
   st.rr=+((parseFloat(st.rr)||0)+rrG).toFixed(2);
   save();drawJ();drawSt();clrPend();
 }
-function clrPend(){pend=null;window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;document.getElementById('plbl').textContent='No active signal';document.getElementById('ocrow').style.display='none';}
+function clrPend(outcome){
+  // Optional outcome string: 'TP','SL','BE','DISCARD' — first three log to history.
+  if(outcome&&outcome!=='DISCARD'){
+    try{logSignalOutcome(outcome,outcome==='TP'&&pend&&pend.rr?parseFloat(pend.rr):outcome==='SL'?-1:0);}catch(e){}
+  }
+  pend=null;
+  window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;
+  window._lastSignalId=null;
+  try{serverScanClearSignal();}catch(e){}
+  document.getElementById('plbl').textContent='No active signal';
+  document.getElementById('ocrow').style.display='none';
+}
 function applyOutcome(id,next){
   var idx=jrn.findIndex(function(t){return t.id===id;});if(idx===-1)return;
   var t=jrn[idx],cur=t.outcome;if(next===cur){expandId=null;drawJ();return;}
@@ -3417,8 +3557,36 @@ function togDXY(){var p=document.getElementById('dxypanel'),t=document.getElemen
 function togCal(){var p=document.getElementById('calpanel'),t=document.getElementById('caltog');var open=p.style.display!=='none';p.style.display=open?'none':'block';t.textContent=open?'▼':'▲';}
 
 function fetchDXY(){
-  // DXY via Frankfurter API — weighted currency basket
-  // EUR(57.6%) JPY(13.6%) GBP(11.9%) CAD(9.1%) SEK(4.2%) CHF(3.6%)
+  // Server-side DXY + XAU via Polygon snapshot (Massive.com).
+  // Single round trip for both metrics, with real prevDay-based % change.
+  fetch('/api/dxy',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d&&d.dxy){
+        dxyData.dxy=parseFloat(d.dxy.toFixed(3));
+        dxyData.dxyChg=parseFloat((d.dxyChange||0).toFixed(2));
+        var el=document.getElementById('dxy-val');
+        var cel=document.getElementById('dxy-chg');
+        if(el)el.textContent=dxyData.dxy.toFixed(3);
+        if(cel){var chg=dxyData.dxyChg;cel.textContent=(chg>=0?'+':'')+chg+'% today';cel.style.color=chg>0?'var(--re)':chg<0?'var(--gr)':'var(--mu)';}
+      }
+      if(d&&d.xau){
+        dxyData.xau=d.xau;
+        dxyData.xauChg=parseFloat((d.xauChange||0).toFixed(2));
+        var xel=document.getElementById('xau-val');
+        var xcel=document.getElementById('xau-chg');
+        if(xel)xel.textContent='$'+d.xau.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        if(xcel){var xchg=dxyData.xauChg;xcel.textContent=(xchg>=0?'+':'')+xchg+'% today';xcel.style.color=xchg>0?'var(--gr)':xchg<0?'var(--re)':'var(--mu)';}
+      }
+      updateDXYBias();
+    })
+    .catch(function(){
+      var cel=document.getElementById('dxy-chg');if(cel){cel.textContent='unavailable';cel.style.color='var(--mu)';}
+      var xcel=document.getElementById('xau-chg');if(xcel){xcel.textContent='unavailable';xcel.style.color='var(--mu)';}
+    });
+  return; // Skip the legacy Frankfurter + Weex XAU fallback below
+
+  // ── Legacy code path (kept for reference, never executed) ──
   var base='USD';
   var symbols='EUR,JPY,GBP,CAD,SEK,CHF';
   fetch('https://api.frankfurter.dev/v1/latest?base='+base+'&symbols='+symbols)

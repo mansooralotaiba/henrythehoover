@@ -2,6 +2,8 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { createClient } from '@supabase/supabase-js';
+import webpush from 'web-push';
+import WebSocket from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
@@ -397,9 +399,658 @@ async function notifyAdminOfRequest(email) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// PART 1 — POLYGON / MASSIVE MARKET DATA (DXY, Gold)
+// ════════════════════════════════════════════════════════════════════════════
+
+const POLYGON_API_KEY = process.env.POLYGON_API_KEY || '';
+const POLYGON_BASE = 'https://api.polygon.io';
+
+async function polyFetch(pathPart, params = {}) {
+  if (!POLYGON_API_KEY) throw new Error('POLYGON_API_KEY not configured');
+  const url = new URL(POLYGON_BASE + pathPart);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  url.searchParams.set('apiKey', POLYGON_API_KEY);
+  const r = await fetch(url.toString());
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`polygon ${r.status}: ${text.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
+function calcDxy(c) {
+  // c is { EUR, JPY, GBP, CAD, SEK, CHF } where each value is USD/<currency> close
+  if (!c.EUR || !c.JPY || !c.GBP || !c.CAD || !c.SEK || !c.CHF) return null;
+  return 50.14348112
+    * Math.pow(c.EUR, 0.576)
+    * Math.pow(c.JPY, 0.136)
+    * Math.pow(c.GBP, 0.119)
+    * Math.pow(c.CAD, 0.091)
+    * Math.pow(c.SEK, 0.042)
+    * Math.pow(c.CHF, 0.036);
+}
+
+app.get('/api/dxy', requireAuth, async (_req, res) => {
+  try {
+    const tickers = ['C:USDEUR', 'C:USDJPY', 'C:USDGBP', 'C:USDCAD', 'C:USDSEK', 'C:USDCHF', 'C:XAUUSD'].join(',');
+    const data = await polyFetch('/v2/snapshot/locale/global/markets/forex/tickers', { tickers });
+    const today = {}, prev = {};
+    for (const t of (data.tickers || [])) {
+      const code = (t.ticker || '').replace('C:USD', '').replace('C:', '');
+      const cur = t.lastQuote?.a || t.day?.c || t.prevDay?.c;
+      const pre = t.prevDay?.c;
+      if (cur) today[code] = cur;
+      if (pre) prev[code] = pre;
+    }
+    const dxy = calcDxy(today);
+    const dxyPrev = calcDxy(prev);
+    const dxyChange = dxy && dxyPrev ? ((dxy - dxyPrev) / dxyPrev) * 100 : 0;
+    const xau = today['XAUUSD'] || null;
+    const xauPrev = prev['XAUUSD'] || null;
+    const xauChange = xau && xauPrev ? ((xau - xauPrev) / xauPrev) * 100 : 0;
+    res.json({ dxy, dxyChange, xau, xauChange, ts: Date.now() });
+  } catch (err) {
+    console.error('[dxy]', err);
+    res.status(502).json({ error: 'dxy_failed', detail: String(err.message || err) });
+  }
+});
+
+const POLY_TF = {
+  '1m':  { multiplier: 1,  timespan: 'minute', ms: 60000 },
+  '5m':  { multiplier: 5,  timespan: 'minute', ms: 300000 },
+  '15m': { multiplier: 15, timespan: 'minute', ms: 900000 },
+  '1h':  { multiplier: 1,  timespan: 'hour',   ms: 3600000 },
+  '4h':  { multiplier: 4,  timespan: 'hour',   ms: 14400000 },
+  '1d':  { multiplier: 1,  timespan: 'day',    ms: 86400000 },
+};
+
+app.get('/api/gold/candles', requireAuth, async (req, res) => {
+  try {
+    const interval = String(req.query.interval || '15m');
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    const tf = POLY_TF[interval] || POLY_TF['15m'];
+    const start = Date.now() - tf.ms * limit * 2;
+    const from = new Date(start).toISOString().split('T')[0];
+    const to = new Date().toISOString().split('T')[0];
+    const data = await polyFetch(
+      `/v2/aggs/ticker/C:XAUUSD/range/${tf.multiplier}/${tf.timespan}/${from}/${to}`,
+      { adjusted: 'true', sort: 'asc', limit }
+    );
+    const candles = (data.results || []).slice(-limit).map(r => ({
+      time: Math.floor(r.t / 1000), o: r.o, h: r.h, l: r.l, c: r.c, v: r.v || 0,
+    }));
+    res.json({ candles });
+  } catch (err) {
+    console.error('[gold/candles]', err);
+    res.status(502).json({ error: 'gold_candles_failed', detail: String(err.message || err) });
+  }
+});
+
+app.get('/api/gold/price', requireAuth, async (_req, res) => {
+  try {
+    const data = await polyFetch('/v2/last/trade/C:XAUUSD');
+    const price = data.results?.p || data.last?.price || null;
+    res.json({ price, ts: Date.now() });
+  } catch (err) {
+    console.error('[gold/price]', err);
+    res.status(502).json({ error: 'gold_price_failed', detail: String(err.message || err) });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PART 4C — WEB PUSH SETUP
+// ════════════════════════════════════════════════════════════════════════════
+
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+const VAPID_EMAIL = process.env.VAPID_EMAIL || 'mailto:noreply@henrythehoover.com';
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
+
+async function sendPushTo(userId, payload) {
+  const { data } = await supaAdmin
+    .from('push_subscriptions')
+    .select('endpoint, p256dh, auth_key, id')
+    .eq('user_id', userId);
+  if (!data || !data.length) return;
+  for (const sub of data) {
+    const subscription = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth_key } };
+    try {
+      await webpush.sendNotification(subscription, JSON.stringify(payload));
+    } catch (e) {
+      if (e.statusCode === 410 || e.statusCode === 404) {
+        // Subscription gone — clean up
+        await supaAdmin.from('push_subscriptions').delete().eq('id', sub.id);
+      } else {
+        console.error('[push]', e.message);
+      }
+    }
+  }
+}
+
+app.get('/api/push/vapid-key', requireAuth, (_req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/api/push/subscribe', requireAuth, express.json(), async (req, res) => {
+  const sub = req.body?.subscription;
+  if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+    return res.status(400).json({ error: 'invalid_subscription' });
+  }
+  // Upsert (one row per endpoint)
+  const { error } = await supaAdmin
+    .from('push_subscriptions')
+    .upsert({
+      user_id: req.user.id,
+      endpoint: sub.endpoint,
+      p256dh: sub.keys.p256dh,
+      auth_key: sub.keys.auth,
+    }, { onConflict: 'endpoint' });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', requireAuth, express.json(), async (req, res) => {
+  const endpoint = req.body?.endpoint;
+  if (!endpoint) return res.status(400).json({ error: 'missing_endpoint' });
+  await supaAdmin.from('push_subscriptions').delete().eq('endpoint', endpoint);
+  res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PART 5 — SIGNAL HISTORY (Supabase)
+// ════════════════════════════════════════════════════════════════════════════
+
+app.post('/api/signals', requireAuth, express.json({ limit: '512kb' }), async (req, res) => {
+  const { signal, trigger, broker, tf } = req.body || {};
+  if (!signal?.pair || !signal?.direction) return res.status(400).json({ error: 'invalid_signal' });
+  const row = {
+    user_id: req.user.id,
+    pair: signal.pair,
+    direction: signal.direction,
+    entry: signal.entry || null,
+    sl: signal.sl || null,
+    tp: signal.tp || null,
+    rr: signal.rr || null,
+    confidence: signal.confidence || null,
+    session_name: signal.session || null,
+    broker: broker || null,
+    timeframe: tf || null,
+    trigger_type: trigger?.type || null,
+    trigger_desc: trigger?.desc || null,
+    entry_reason: signal.entry_reason || null,
+    reasoning: signal.reasoning || null,
+    be_note: signal.be_note || null,
+    key_risk: signal.key_risk || null,
+    invalidation: signal.invalidation || null,
+    expiry_candles: signal.expiry_candles || null,
+  };
+  const { data, error } = await supaAdmin.from('signals').insert(row).select('id').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, id: data.id });
+});
+
+app.patch('/api/signals/:id/outcome', requireAuth, express.json(), async (req, res) => {
+  const { outcome, outcomeRr } = req.body || {};
+  const { error } = await supaAdmin
+    .from('signals')
+    .update({ outcome, outcome_rr: outcomeRr ?? null, outcome_at: new Date().toISOString() })
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.get('/api/signals/history', requireAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const { data, error } = await supaAdmin
+    .from('signals')
+    .select('*')
+    .eq('user_id', req.user.id)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ signals: data || [] });
+});
+
+app.get('/api/signals/stats', requireAuth, async (req, res) => {
+  const { data, error } = await supaAdmin
+    .from('signals')
+    .select('outcome, outcome_rr')
+    .eq('user_id', req.user.id)
+    .not('outcome', 'is', null);
+  if (error) return res.status(500).json({ error: error.message });
+  const tp = data.filter(s => s.outcome === 'TP').length;
+  const sl = data.filter(s => s.outcome === 'SL').length;
+  const be = data.filter(s => s.outcome === 'BE').length;
+  const totalRr = data.reduce((s, x) => s + (parseFloat(x.outcome_rr) || 0), 0);
+  const closed = tp + sl + be;
+  const winRate = closed ? +(((tp + be * 0.5) / closed) * 100).toFixed(1) : 0;
+  res.json({ tp, sl, be, totalRr: +totalRr.toFixed(2), winRate, total: data.length });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PART 4A/B/F — SERVER-SIDE SCAN LOOP + TRADE MONITOR
+// ════════════════════════════════════════════════════════════════════════════
+
+const scanSubscriptions = new Map(); // userId → { active, coin, tf, broker, isAdmin, ... }
+const SCAN_INTERVAL_MS = 30000;
+
+app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
+  const { coin, tf, broker, cooldownMs } = req.body || {};
+  if (!coin || !tf) return res.status(400).json({ error: 'missing_coin_or_tf' });
+  scanSubscriptions.set(req.user.id, {
+    active: true, coin, tf, broker: broker || 'weex',
+    cooldownMs: cooldownMs || 180000, cooldownUntil: 0,
+    pendSignal: null, signalTimestamp: null,
+    isAdmin: !!req.profile.is_admin,
+    _entryAlerted: false, _beAlerted: false, _tpAlerted: false, _expiryAlerted: false,
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/scan/stop', requireAuth, (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (sub) sub.active = false;
+  res.json({ ok: true });
+});
+
+app.post('/api/scan/signal', requireAuth, express.json({ limit: '512kb' }), (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (!sub) return res.status(404).json({ error: 'no_scan_session' });
+  sub.pendSignal = req.body?.signal || null;
+  sub.signalTimestamp = Date.now();
+  sub._entryAlerted = false;
+  sub._beAlerted = false;
+  sub._tpAlerted = false;
+  sub._expiryAlerted = false;
+  res.json({ ok: true });
+});
+
+app.post('/api/scan/clear', requireAuth, (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (sub) {
+    sub.pendSignal = null;
+    sub._entryAlerted = false;
+    sub._beAlerted = false;
+    sub._tpAlerted = false;
+    sub._expiryAlerted = false;
+  }
+  res.json({ ok: true });
+});
+
+// ── helpers used by the scan loop ──
+const FUTURES_SYM_SERVER = {
+  BTCUSDT: 'cmt_btcusdt', ETHUSDT: 'cmt_ethusdt', SOLUSDT: 'cmt_solusdt',
+};
+async function getCurrentPriceServer(coin, broker) {
+  try {
+    if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
+      const d = await polyFetch('/v2/last/trade/C:XAUUSD');
+      return d.results?.p || null;
+    }
+    if (broker === 'binance') {
+      const r = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${coin}`);
+      const d = await r.json();
+      return parseFloat(d.price) || null;
+    }
+    if (broker === 'hyperliquid') {
+      const sym = coin.replace('USDT', '');
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'allMids' }),
+      });
+      const d = await r.json();
+      return parseFloat(d[sym]) || null;
+    }
+    // weex (default)
+    const fsym = FUTURES_SYM_SERVER[coin] || ('cmt_' + coin.toLowerCase());
+    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/ticker?symbol=${fsym}`);
+    const d = await r.json();
+    return parseFloat(d.last) || null;
+  } catch (e) {
+    console.error('[getCurrentPrice]', e.message);
+    return null;
+  }
+}
+
+async function postAlertToDiscord(title, msg, color, isAdmin) {
+  if (!isAdmin) return; // user requirement: only admin sessions post to Discord
+  const url = process.env.DISCORD_AUTO_WEBHOOK;
+  if (!url) return;
+  const colorMap = { gr: 3066993, re: 15548997, am: 16750848, cy: 6535167, pu: 9699539 };
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: 'Henry Auto Monitor',
+        embeds: [{
+          title, description: msg, color: colorMap[color] || colorMap.cy,
+          footer: { text: 'Henry server-side monitor' },
+          timestamp: new Date().toISOString(),
+        }],
+      }),
+    });
+  } catch (e) { console.error('[discord auto]', e.message); }
+}
+
+async function notifyUser(userId, isAdmin, { title, body, color, data }) {
+  await sendPushTo(userId, { title, body, icon: '/manifest.json', data: data || {} });
+  await postAlertToDiscord(title, body, color || 'cy', isAdmin);
+}
+
+async function runServerTradeMonitor(userId, sub) {
+  const { pendSignal, coin, tf, broker, isAdmin } = sub;
+  const price = await getCurrentPriceServer(coin, broker);
+  if (!price) return;
+  const e = parseFloat(pendSignal.entry), slP = parseFloat(pendSignal.sl), tpP = parseFloat(pendSignal.tp);
+  const isLong = pendSignal.direction === 'LONG';
+
+  // Entry hit
+  const entryHit = isLong ? price <= e : price >= e;
+  if (entryHit && !sub._entryAlerted) {
+    sub._entryAlerted = true;
+    sub._expiryAlerted = true;
+    await notifyUser(userId, isAdmin, {
+      title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+      body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
+      color: 'cy',
+    });
+  }
+
+  // BE
+  if (sub._entryAlerted && !sub._beAlerted) {
+    const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
+    const beReached = isLong ? price >= bePrice : price <= bePrice;
+    if (beReached) {
+      sub._beAlerted = true;
+      await notifyUser(userId, isAdmin, {
+        title: '⚑ MOVE SL TO BREAKEVEN',
+        body: `${coin.replace('USDT', '')} reached BE @ ${price.toFixed(2)}. Move SL to ${e}.`,
+        color: 'am',
+      });
+    }
+  }
+
+  // TP
+  if (sub._entryAlerted && !sub._tpAlerted) {
+    const tpHit = isLong ? price >= tpP : price <= tpP;
+    if (tpHit) {
+      sub._tpAlerted = true;
+      await notifyUser(userId, isAdmin, {
+        title: `🎯 TP REACHED: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+        body: `Take profit hit @ ${price.toFixed(2)}. Log your outcome.`,
+        color: 'gr',
+      });
+    }
+  }
+
+  // SL — resets all flags
+  const slHit = isLong ? price <= slP : price >= slP;
+  if (slHit) {
+    sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false;
+    await notifyUser(userId, isAdmin, {
+      title: `🛑 SL HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+      body: `Stop loss breached @ ${price.toFixed(2)}. Log your outcome.`,
+      color: 're',
+    });
+  }
+
+  // Expiry — only if entry never hit, fires once
+  if (!sub._entryAlerted && !sub._expiryAlerted && pendSignal.expiry_candles) {
+    const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
+    const maxMs = pendSignal.expiry_candles * (tfMs[tf] || 900000);
+    if (Date.now() - sub.signalTimestamp > maxMs) {
+      sub._expiryAlerted = true;
+      await notifyUser(userId, isAdmin, {
+        title: '⏱ SIGNAL EXPIRED',
+        body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles.`,
+        color: 'am',
+      });
+    }
+  }
+}
+
+// Lightweight server-side trigger detection — close-vs-prev-high/low scan.
+// Browser does the heavy multi-source analysis; server only flags candidates worth investigating.
+async function fetchCandlesServer(coin, tf, limit, broker) {
+  try {
+    if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
+      const tfDef = POLY_TF[tf] || POLY_TF['15m'];
+      const start = Date.now() - tfDef.ms * limit * 2;
+      const from = new Date(start).toISOString().split('T')[0];
+      const to = new Date().toISOString().split('T')[0];
+      const data = await polyFetch(
+        `/v2/aggs/ticker/C:XAUUSD/range/${tfDef.multiplier}/${tfDef.timespan}/${from}/${to}`,
+        { adjusted: 'true', sort: 'asc', limit }
+      );
+      return (data.results || []).slice(-limit).map(r => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v || 0 }));
+    }
+    if (broker === 'binance') {
+      const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${limit}`);
+      const arr = await r.json();
+      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+    }
+    // weex (default)
+    const fsym = FUTURES_SYM_SERVER[coin] || ('cmt_' + coin.toLowerCase());
+    const tfMap = { '1m': '60', '5m': '300', '15m': '900', '1h': '3600', '4h': '14400', '1d': '86400' };
+    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${tfMap[tf] || '900'}&limit=${limit}`);
+    const arr = await r.json();
+    return (Array.isArray(arr) ? arr : []).map(c => ({ t: +c[0] * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+  } catch (e) {
+    console.error('[fetchCandlesServer]', e.message);
+    return [];
+  }
+}
+
+function detectTrigger(candles) {
+  if (!candles || candles.length < 10) return null;
+  const last = candles[candles.length - 1];
+  const recent = candles.slice(-11, -1);
+  const highs = recent.map(c => c.h), lows = recent.map(c => c.l);
+  const maxH = Math.max(...highs), minL = Math.min(...lows);
+  // Break of structure: close exceeds recent range
+  if (last.c > maxH) return { type: 'bos', desc: `BOS up — close ${last.c} > prev high ${maxH.toFixed(2)}` };
+  if (last.c < minL) return { type: 'bos', desc: `BOS down — close ${last.c} < prev low ${minL.toFixed(2)}` };
+  // Sweep: wick beyond range but close back inside
+  if (last.h > maxH && last.c < maxH) return { type: 'sweep', desc: `Sweep high — wick ${last.h.toFixed(2)} swept ${maxH.toFixed(2)}, closed back inside` };
+  if (last.l < minL && last.c > minL) return { type: 'sweep', desc: `Sweep low — wick ${last.l.toFixed(2)} swept ${minL.toFixed(2)}, closed back inside` };
+  return null;
+}
+
+async function runServerScan(userId, sub) {
+  if (Date.now() < sub.cooldownUntil) return;
+  if (sub.pendSignal) return runServerTradeMonitor(userId, sub);
+  const candles = await fetchCandlesServer(sub.coin, sub.tf, 30, sub.broker);
+  const trigger = detectTrigger(candles);
+  if (!trigger) return;
+  sub.cooldownUntil = Date.now() + sub.cooldownMs;
+  // Server-side trigger: push notification only (no Discord — that posts when AI signal lands)
+  await sendPushTo(userId, {
+    title: `⚡ ${trigger.type.toUpperCase()}: ${sub.coin.replace('USDT', '')}`,
+    body: `${trigger.desc}. Open Henry to run AI analysis.`,
+    icon: '/manifest.json',
+    data: { coin: sub.coin, tf: sub.tf, broker: sub.broker, trigger },
+  });
+}
+
+setInterval(() => {
+  for (const [userId, sub] of scanSubscriptions.entries()) {
+    if (!sub.active) continue;
+    runServerScan(userId, sub).catch(e => console.error('[scan loop]', userId, e.message));
+  }
+}, SCAN_INTERVAL_MS);
+
+// ════════════════════════════════════════════════════════════════════════════
+// PART 6 — SSE LIVE PRICES (server multiplexes one exchange WS per symbol)
+// ════════════════════════════════════════════════════════════════════════════
+
+const exchangeStreams = new Map(); // `${broker}:${symbol}` → { ws|interval, clients:Set, currentBar, tfSeconds }
+
+function tfSecondsOf(tf) {
+  return ({ '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }[tf]) || 900;
+}
+
+function updateCurrentBar(stream, price, time, volume) {
+  const bs = stream.tfSeconds || 900;
+  const barTime = Math.floor(time / bs) * bs;
+  if (!stream.currentBar || stream.currentBar.time !== barTime) {
+    stream.currentBar = { time: barTime, open: price, high: price, low: price, close: price, volume: volume || 0 };
+  } else {
+    stream.currentBar.high = Math.max(stream.currentBar.high, price);
+    stream.currentBar.low = Math.min(stream.currentBar.low, price);
+    stream.currentBar.close = price;
+    stream.currentBar.volume += volume || 0;
+  }
+}
+
+function broadcast(stream, payload) {
+  const line = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const c of stream.clients) {
+    try { c.write(line); } catch (e) { /* dead client */ }
+  }
+}
+
+function subBinanceLive(symbol) {
+  const key = `binance:${symbol}`;
+  if (exchangeStreams.has(key)) return exchangeStreams.get(key);
+  const stream = { clients: new Set(), currentBar: null, tfSeconds: 900 };
+  exchangeStreams.set(key, stream);
+  const open = () => {
+    const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@aggTrade`);
+    stream.ws = ws;
+    ws.on('message', (data) => {
+      try {
+        const tick = JSON.parse(data);
+        const price = parseFloat(tick.p), time = Math.floor(tick.T / 1000);
+        updateCurrentBar(stream, price, time, parseFloat(tick.q));
+        broadcast(stream, { price, time, bar: stream.currentBar });
+      } catch (e) {}
+    });
+    ws.on('close', () => { if (stream.clients.size > 0) setTimeout(open, 3000); });
+    ws.on('error', () => {});
+  };
+  open();
+  return stream;
+}
+
+function subWeexLive(symbol) {
+  const key = `weex:${symbol}`;
+  if (exchangeStreams.has(key)) return exchangeStreams.get(key);
+  const stream = { clients: new Set(), currentBar: null, tfSeconds: 900 };
+  exchangeStreams.set(key, stream);
+  const fsym = FUTURES_SYM_SERVER[symbol] || ('cmt_' + symbol.toLowerCase());
+  stream.interval = setInterval(async () => {
+    try {
+      const r = await fetch(`https://api-contract.weex.com/capi/v2/market/ticker?symbol=${fsym}`);
+      const d = await r.json();
+      const price = parseFloat(d.last);
+      if (!price) return;
+      const time = Math.floor(Date.now() / 1000);
+      updateCurrentBar(stream, price, time, 0);
+      broadcast(stream, { price, time, bar: stream.currentBar });
+    } catch (e) {}
+  }, 3000);
+  return stream;
+}
+
+function subHLLive(symbol) {
+  const key = `hyperliquid:${symbol}`;
+  if (exchangeStreams.has(key)) return exchangeStreams.get(key);
+  const stream = { clients: new Set(), currentBar: null, tfSeconds: 900 };
+  exchangeStreams.set(key, stream);
+  const sym = symbol.replace('USDT', '');
+  const open = () => {
+    const ws = new WebSocket('wss://api.hyperliquid.xyz/ws');
+    stream.ws = ws;
+    ws.on('open', () => ws.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'trades', coin: sym } })));
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data);
+        if (!Array.isArray(msg.data)) return;
+        for (const t of msg.data) {
+          const price = parseFloat(t.px), time = Math.floor(t.time / 1000);
+          updateCurrentBar(stream, price, time, parseFloat(t.sz));
+          broadcast(stream, { price, time, bar: stream.currentBar });
+        }
+      } catch (e) {}
+    });
+    ws.on('close', () => { if (stream.clients.size > 0) setTimeout(open, 3000); });
+    ws.on('error', () => {});
+  };
+  open();
+  return stream;
+}
+
+function subMassiveLive(_symbol) {
+  // No realtime trades on the polygon REST tier we use — fall back to /api/gold/price polling on the client.
+  // Still create a stream so the SSE endpoint behaves consistently; just don't push updates.
+  const key = 'massive:GOLD';
+  if (exchangeStreams.has(key)) return exchangeStreams.get(key);
+  const stream = { clients: new Set(), currentBar: null, tfSeconds: 900, interval: null };
+  exchangeStreams.set(key, stream);
+  stream.interval = setInterval(async () => {
+    try {
+      const d = await polyFetch('/v2/last/trade/C:XAUUSD');
+      const price = d.results?.p;
+      if (!price) return;
+      const time = Math.floor(Date.now() / 1000);
+      updateCurrentBar(stream, price, time, 0);
+      broadcast(stream, { price, time, bar: stream.currentBar });
+    } catch (e) {}
+  }, 5000);
+  return stream;
+}
+
+app.get('/api/live/:broker/:symbol', requireAuth, (req, res) => {
+  const { broker, symbol } = req.params;
+  const tf = String(req.query.tf || '15m');
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.write('data: {"connected":true}\n\n');
+
+  let stream;
+  if (broker === 'binance') stream = subBinanceLive(symbol);
+  else if (broker === 'weex') stream = subWeexLive(symbol);
+  else if (broker === 'hyperliquid') stream = subHLLive(symbol);
+  else if (broker === 'massive') stream = subMassiveLive(symbol);
+  else { res.end(); return; }
+
+  stream.tfSeconds = tfSecondsOf(tf);
+  stream.clients.add(res);
+
+  // keepalive ping every 25s so proxies don't kill the connection
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (e) {} }, 25000);
+
+  req.on('close', () => {
+    clearInterval(ping);
+    stream.clients.delete(res);
+    if (stream.clients.size === 0) {
+      // Tear down after 60s of no clients to avoid leaking exchange connections
+      setTimeout(() => {
+        if (stream.clients.size === 0) {
+          if (stream.ws) try { stream.ws.close(); } catch (e) {}
+          if (stream.interval) clearInterval(stream.interval);
+          for (const [k, v] of exchangeStreams.entries()) if (v === stream) exchangeStreams.delete(k);
+        }
+      }, 60000);
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+
 app.listen(PORT, () => {
   console.log(`Henry The Hoover listening on :${PORT}`);
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY not set');
   if (!process.env.DISCORD_WEBHOOK) console.warn('[warn] DISCORD_WEBHOOK not set');
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');
+  if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
 });

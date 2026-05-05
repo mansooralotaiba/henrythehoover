@@ -28,3 +28,55 @@ alter table public.profiles enable row level security;
 insert into public.profiles (email, approved, is_admin, approved_at)
 values ('you@example.com', true, true, now())
 on conflict (email) do update set approved = true, is_admin = true;
+
+-- ─────────────────────────────────────────────────────────────────────
+-- SIGNAL HISTORY — every signal generated, with optional outcome
+-- ─────────────────────────────────────────────────────────────────────
+create table if not exists public.signals (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid references auth.users(id) on delete cascade,
+  pair            text not null,
+  direction       text not null,
+  entry           numeric,
+  sl              numeric,
+  tp              numeric,
+  rr              numeric,
+  confidence      integer,
+  session_name    text,
+  broker          text,
+  timeframe       text,
+  trigger_type    text,
+  trigger_desc    text,
+  entry_reason    text,
+  reasoning       text,
+  be_note         text,
+  key_risk        text,
+  invalidation    text,
+  expiry_candles  integer,
+  outcome         text,         -- 'TP' | 'SL' | 'BE' | null (still open)
+  outcome_rr      numeric,
+  created_at      timestamptz not null default now(),
+  outcome_at      timestamptz
+);
+
+create index if not exists signals_user_id_idx     on public.signals(user_id);
+create index if not exists signals_pair_idx        on public.signals(pair);
+create index if not exists signals_created_at_idx  on public.signals(created_at desc);
+
+alter table public.signals enable row level security;
+
+-- ─────────────────────────────────────────────────────────────────────
+-- PUSH SUBSCRIPTIONS — one row per browser/device that opted in to push
+-- ─────────────────────────────────────────────────────────────────────
+create table if not exists public.push_subscriptions (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid references auth.users(id) on delete cascade,
+  endpoint    text unique not null,
+  p256dh      text not null,
+  auth_key    text not null,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists push_subs_user_id_idx on public.push_subscriptions(user_id);
+
+alter table public.push_subscriptions enable row level security;
