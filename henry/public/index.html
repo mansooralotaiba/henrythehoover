@@ -170,9 +170,16 @@ header{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid
 .imp-h{color:var(--re)}.imp-m{color:var(--am)}.imp-l{color:var(--mu)}
 /* ── MOBILE ── */
 @media(max-width:768px){
-  header{padding:8px 12px}
-  .logo{font-size:12px}
+  header{padding:8px 10px;flex-wrap:wrap;gap:6px}
+  header > div{min-width:0}
+  .logo{font-size:11px;gap:6px}
+  .logo canvas{width:24px;height:24px}
   #clk{font-size:9px}
+  /* Hide email + "BROKER:" label on phones to keep header on one row */
+  #whoami{display:none}
+  header span[style*="BROKER:"]{display:none}
+  header .pill{font-size:9px;padding:3px 6px}
+  header .pill .dot{width:6px;height:6px}
   #sbar{padding:4px 10px;gap:5px}
   .chip{font-size:9px;padding:2px 6px}
   #snxt{font-size:9px}
