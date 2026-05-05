@@ -807,6 +807,16 @@ function fp(n){
 // BROKER SWITCHER
 // ═══════════════════════════════════════════
 function setBroker(b){
+  // Clean up massive mode whenever leaving it (before activeBroker is updated)
+  if(activeBroker==='massive' && b!=='massive'){
+    document.body.classList.remove('massive-mode');
+    document.querySelectorAll('.crow .cb').forEach(function(x){x.classList.remove('non-massive');});
+    if(coin==='GOLD'){
+      coin='BTCUSDT';
+      document.querySelectorAll('.crow .cb').forEach(function(x){x.classList.remove('on');});
+      var btcb=document.getElementById('cb-BTCUSDT');if(btcb)btcb.classList.add('on');
+    }
+  }
   activeBroker=b;
   // Update UI
   var wb=document.getElementById('brk-weex');
