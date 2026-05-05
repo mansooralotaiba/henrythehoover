@@ -2534,14 +2534,26 @@ function runTradeMonitor(){
     var cp=last.c;
     var e=parseFloat(pend.entry),sl=parseFloat(pend.sl),tp=parseFloat(pend.tp);
     var isLong=pend.direction==='LONG';
-    // ── BE (Break-Even) alert ──
-    // BE should be moved when price reaches halfway between entry and TP
-    if(pend.be_note&&e&&tp){
-      // Extract BE price from be_note if it contains a number
+
+    // ── ENTRY HIT alert ──
+    // Limit-order fill: LONG fills when price drops to entry, SHORT when price rises to entry.
+    // Once entry is hit, expiry alert is no longer relevant (the order filled).
+    var entryHit=isLong?cp<=e:cp>=e;
+    if(entryHit&&!window._entryAlerted){
+      window._entryAlerted=true;
+      window._expiryAlerted=true;
+      triggerAlert(
+        '🎯 ENTRY HIT',
+        coin+' '+(isLong?'LONG':'SHORT')+' entry reached @ '+fp(e)+'. Limit order should be filled. Trade is now ACTIVE.',
+        'var(--cy)'
+      );
+    }
+
+    // ── BE alert — only after entry was hit ──
+    if(window._entryAlerted&&pend.be_note&&e&&tp){
       var beMatch=pend.be_note.match(/[\d,]+\.?\d*/);
       var bePrice=beMatch?parseFloat(beMatch[0].replace(',','')):null;
       if(!bePrice){
-        // Default: BE at 50% of way to TP
         bePrice=isLong?e+(tp-e)*0.5:e-(e-tp)*0.5;
       }
       var beReached=isLong?cp>=bePrice:cp<=bePrice;
@@ -2552,32 +2564,39 @@ function runTradeMonitor(){
           coin+' reached BE level at '+fp(bePrice)+'. Move SL to entry ('+fp(e)+') now to protect position.',
           'var(--am)'
         );
-// BE Discord handled by triggerAlert
       }
     }
-    // Check TP reached
-    var tpReached=isLong?(cp>=tp):(cp<=tp);
-    if(tpReached&&!window._tpAlerted){
-      window._tpAlerted=true;
-      triggerAlert('🎯 TP REACHED','Take profit hit on '+coin+' '+(isLong?'LONG':'SHORT')+' @ '+fp(tp),'var(--gr)');
+
+    // ── TP alert — only after entry was hit ──
+    if(window._entryAlerted){
+      var tpReached=isLong?(cp>=tp):(cp<=tp);
+      if(tpReached&&!window._tpAlerted){
+        window._tpAlerted=true;
+        triggerAlert('🎯 TP REACHED','Take profit hit on '+coin+' '+(isLong?'LONG':'SHORT')+' @ '+fp(tp),'var(--gr)');
+      }
     }
-    // Check SL distance for status display only (no alert)
+
     var slDist=Math.abs(cp-sl)/sl*100;
-    // Check invalidation condition
+
+    // ── SL hit — resets every flag so a new signal starts clean ──
     if(isLong&&cp<sl){
       triggerAlert('🛑 SL HIT','Stop loss breached on '+coin+' LONG — consider logging outcome','var(--re)');
-      window._beAlerted=false;return;
+      window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;
+      return;
     }
     if(!isLong&&cp>sl){
       triggerAlert('🛑 SL HIT','Stop loss breached on '+coin+' SHORT — consider logging outcome','var(--re)');
-      window._beAlerted=false;return;
+      window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;
+      return;
     }
-    // Check expiry
-    if(pend.expiry_candles){
+
+    // ── Expiry alert — only if entry was never hit, fires once only ──
+    if(pend.expiry_candles&&!window._entryAlerted&&!window._expiryAlerted){
       var tfMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
       var elapsed=Date.now()-autoLastFire;
       var maxMs=pend.expiry_candles*(tfMs[liqTF]||900000);
       if(elapsed>maxMs){
+        window._expiryAlerted=true;
         triggerAlert('⏱ SIGNAL EXPIRED','Cancel limit order — '+coin+' signal expired after '+pend.expiry_candles+' candles','var(--am)');
         return;
       }
@@ -2589,7 +2608,7 @@ function runTradeMonitor(){
   }).catch(function(){});
 }
 
-function triggerAlert(title,msg,color){
+function triggerAlert(title,msg,color,noDiscord){
   // Visual toast
   var toast=document.createElement('div');
   toast.style.cssText='position:fixed;top:60px;right:16px;background:var(--bg2);border:1px solid '+color+';color:'+color+';padding:12px 18px;font-family:var(--mn);font-size:11px;border-radius:4px;z-index:9999;animation:fu .3s ease;max-width:300px;line-height:1.6';
@@ -2609,8 +2628,8 @@ function triggerAlert(title,msg,color){
     osc.start();osc.stop(ac.currentTime+0.15);
     setTimeout(function(){osc.frequency.value=1100;osc.start();osc.stop(ac.currentTime+0.15);},200);
   }catch(e){}
-  // Post ALL alerts to auto Discord webhook (admin only)
-  if(IS_ADMIN){
+  // Post to auto Discord webhook (admin only, skipped when caller passes noDiscord)
+  if(IS_ADMIN && !noDiscord){
     var discordColor=color==='var(--gr)'?3066993:color==='var(--re)'?15548997:color==='var(--am)'?16750848:9699539;
     var embed={
       title:title,
@@ -2635,10 +2654,12 @@ function fireAutoSignal(sym,trigger){
     if(btn){pickCoin(btn,sym);}
     else{switchToCoin(sym);}
   }
+  // Trigger detection is screen-only — Discord posting happens later from the AI signal card.
   triggerAlert(
     '⚡ AUTO: '+trigger.type.toUpperCase()+' DETECTED',
     sym.replace('USDT','')+' — '+trigger.desc+(trigger.valid===false?' (low volume — wait for retest)':''),
-    trigger.type==='bos'?'var(--cy)':trigger.type==='sweep'?'var(--pu)':trigger.type==='rejection'?'var(--am)':'var(--gr)'
+    trigger.type==='bos'?'var(--cy)':trigger.type==='sweep'?'var(--pu)':trigger.type==='rejection'?'var(--am)':'var(--gr)',
+    true
   );
   setAutoStatus('Triggered: '+trigger.type+' on '+sym.replace('USDT','')+' — running AI...');
   var qi=document.getElementById('qi');
@@ -3288,7 +3309,7 @@ function logTrade(oc){
   st.rr=+((parseFloat(st.rr)||0)+rrG).toFixed(2);
   save();drawJ();drawSt();clrPend();
 }
-function clrPend(){pend=null;window._beAlerted=false;window._tpAlerted=false;document.getElementById('plbl').textContent='No active signal';document.getElementById('ocrow').style.display='none';}
+function clrPend(){pend=null;window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;document.getElementById('plbl').textContent='No active signal';document.getElementById('ocrow').style.display='none';}
 function applyOutcome(id,next){
   var idx=jrn.findIndex(function(t){return t.id===id;});if(idx===-1)return;
   var t=jrn[idx],cur=t.outcome;if(next===cur){expandId=null;drawJ();return;}
