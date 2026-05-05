@@ -1127,6 +1127,26 @@ function loadChart(){
         setTimeout(loadChart,300);return;
       }
     }
+    // ── MASSIVE / GOLD: load candles from Polygon snapshot endpoint ──
+    if(activeBroker==='massive'||coin==='GOLD'){
+      fetchCandlesMassive(tf,200).then(function(candles){
+        if(!candles||candles.length<2){console.log('No gold candles');return;}
+        var bars=candles.map(function(k){return{time:Math.floor(k.t/1000),open:k.o,high:k.h,low:k.l,close:k.c};}).sort(function(a,b){return a.time-b.time;});
+        var seen={},unique=[];
+        bars.forEach(function(b){if(!seen[b.time]){seen[b.time]=true;unique.push(b);}});
+        tvSeries.setData(unique);
+        tvChart.timeScale().fitContent();
+        var last=unique[unique.length-1];
+        if(last&&!document.getElementById('priceinput').value){
+          livePrice=last.close.toString();
+          document.getElementById('priceinput').value=last.close.toFixed(2);
+          document.getElementById('pricesrc').textContent='✓ Massive';
+          document.getElementById('pricesrc').style.color='var(--am)';
+        }
+        if(pend&&(pend.direction==='LONG'||pend.direction==='SHORT'))drawSignalOnChart(pend);
+      }).catch(function(e){console.log('gold chart err:',e.message);});
+      return;
+    }
     var fsym=FUTURES_SYM[coin]||('cmt_'+coin.toLowerCase());
     var urlH=FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity='+tf+'&limit=200';
     var urlC=FUTURES_BASE+'/capi/v2/market/candles?symbol='+fsym+'&granularity='+tf+'&limit=200';
