@@ -12,7 +12,8 @@
   h1{margin:0 0 4px;font-size:18px;letter-spacing:.12em;color:var(--cy)}
   .sub{color:var(--mu);font-size:11px;letter-spacing:.08em;margin-bottom:24px}
   label{display:block;font-size:10px;color:var(--mu);letter-spacing:.1em;margin-bottom:6px}
-  input{width:100%;padding:11px 12px;background:#0a0c12;border:1px solid var(--br);color:var(--fg);font-family:inherit;font-size:13px;border-radius:3px;outline:none}
+  /* font-size:16px on inputs prevents iOS Safari from auto-zooming when focused */
+  input{width:100%;padding:12px;background:#0a0c12;border:1px solid var(--br);color:var(--fg);font-family:inherit;font-size:16px;border-radius:3px;outline:none}
   input:focus{border-color:var(--cy)}
   button{width:100%;margin-top:14px;padding:12px;background:var(--cy);color:#000;border:0;font-family:inherit;font-size:12px;letter-spacing:.12em;font-weight:bold;cursor:pointer;border-radius:3px}
   button:disabled{opacity:.5;cursor:wait}
