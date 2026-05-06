@@ -4,6 +4,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 import WebSocket from 'ws';
+import Stripe from 'stripe';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
@@ -16,6 +17,10 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const SITE_URL = process.env.SITE_URL || `http://localhost:${PORT}`;
 const PROD = process.env.NODE_ENV === 'production';
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').toLowerCase();
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
+  : null;
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -102,10 +107,18 @@ async function requireAuth(req, res, next) {
       if (req.method === 'GET' && req.accepts('html')) return res.redirect('/login');
       return res.status(401).json({ error: 'unauthenticated' });
     }
-    const profile = await loadProfile(session.user.email);
-    if (!profile || !profile.approved) {
-      if (req.method === 'GET' && req.accepts('html')) return res.redirect('/login?status=pending');
-      return res.status(403).json({ error: 'not_approved' });
+    const email = session.user.email.toLowerCase();
+    // Admin always has full access regardless of subscription
+    if (email === ADMIN_EMAIL) {
+      const profile = await loadProfile(email).catch(() => null);
+      req.user = session.user;
+      req.profile = profile || { email, is_admin: true, subscription_status: 'active', plan: 'admin' };
+      return next();
+    }
+    const profile = await loadProfile(email);
+    if (!profile || profile.subscription_status !== 'active') {
+      if (req.method === 'GET' && req.accepts('html')) return res.redirect('/subscribe');
+      return res.status(403).json({ error: 'subscription_required' });
     }
     req.user = session.user;
     req.profile = profile;
@@ -116,9 +129,28 @@ async function requireAuth(req, res, next) {
   }
 }
 
+// Requires only a valid session (no subscription check) — used for Stripe + account endpoints.
+async function requireSession(req, res, next) {
+  try {
+    const session = await resolveSession(req, res);
+    if (!session) {
+      if (req.method === 'GET' && req.accepts('html')) return res.redirect('/login');
+      return res.status(401).json({ error: 'unauthenticated' });
+    }
+    const profile = await loadProfile(session.user.email.toLowerCase()).catch(() => null);
+    req.user = session.user;
+    req.profile = profile;
+    next();
+  } catch (err) {
+    console.error('[session]', err);
+    res.status(500).json({ error: 'auth_error' });
+  }
+}
+
 async function requireAdmin(req, res, next) {
   await requireAuth(req, res, async () => {
-    if (!req.profile?.is_admin) {
+    const isAdmin = !!req.profile?.is_admin || req.user.email.toLowerCase() === ADMIN_EMAIL;
+    if (!isAdmin) {
       if (req.method === 'GET' && req.accepts('html')) return res.status(403).send('Forbidden');
       return res.status(403).json({ error: 'admin_only' });
     }
@@ -177,12 +209,13 @@ app.get('/auth/callback', async (req, res) => {
       }
       const email = data.user.email.toLowerCase();
       const profile = await loadProfile(email);
-      if (!profile || !profile.approved) return res.redirect('/login?status=pending');
       if (!profile.user_id) {
         await supaAdmin.from('profiles').update({ user_id: data.user.id }).eq('email', email);
       }
       setAuthCookies(res, data.session.access_token, data.session.refresh_token);
-      return res.redirect('/');
+      const isAdmin = email === ADMIN_EMAIL;
+      const subscribed = isAdmin || profile?.subscription_status === 'active';
+      return res.redirect(subscribed ? '/' : '/subscribe');
     } catch (err) {
       console.error('[auth/callback]', err);
       return res.redirect('/login?error=callback_error');
@@ -225,7 +258,7 @@ app.post('/auth/session', express.json(), async (req, res) => {
     if (error || !data?.user?.email) return res.status(401).json({ error: 'invalid_token' });
     const email = data.user.email.toLowerCase();
     const profile = await loadProfile(email);
-    if (!profile || !profile.approved) return res.status(403).json({ error: 'not_approved' });
+    if (!profile) return res.status(403).json({ error: 'no_profile' });
     if (!profile.user_id) {
       await supaAdmin
         .from('profiles')
@@ -245,13 +278,74 @@ app.post('/auth/logout', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.get('/login',    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.get('/register', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
+app.get('/subscribe',(_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'subscribe.html')));
+app.get('/subscribe/success', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'subscribe-success.html')));
+app.get('/account',  requireSession, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
+
+// ── Email + password auth ────────────────────────────────────────────────────
+app.post('/api/auth/register', express.json(), async (req, res) => {
+  const { email, password } = req.body || {};
+  const addr = String(email || '').trim().toLowerCase();
+  if (!addr || !password || password.length < 8) {
+    return res.status(400).json({ error: 'Email and password (min 8 chars) required.' });
+  }
+  try {
+    const { data, error } = await supaAdmin.auth.admin.createUser({
+      email: addr, password, email_confirm: true,
+    });
+    if (error) return res.status(400).json({ error: error.message });
+    const existing = await loadProfile(addr).catch(() => null);
+    if (!existing) {
+      await supaAdmin.from('profiles').insert({
+        email: addr, user_id: data.user.id,
+        subscription_status: 'inactive', plan: 'none',
+      });
+    }
+    // Auto sign-in so browser can hit /api/stripe/create-checkout straight away
+    const { data: si, error: sie } = await supaAnon.auth.signInWithPassword({ email: addr, password });
+    if (!sie && si?.session) setAuthCookies(res, si.session.access_token, si.session.refresh_token);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth/register]', err);
+    res.status(500).json({ error: 'Registration failed.' });
+  }
+});
+
+app.post('/api/auth/login', express.json(), async (req, res) => {
+  const { email, password } = req.body || {};
+  const addr = String(email || '').trim().toLowerCase();
+  if (!addr || !password) return res.status(400).json({ error: 'missing_credentials' });
+  try {
+    const { data, error } = await supaAnon.auth.signInWithPassword({ email: addr, password });
+    if (error || !data?.session) return res.status(401).json({ error: 'Invalid email or password.' });
+    setAuthCookies(res, data.session.access_token, data.session.refresh_token);
+    const profile = await loadProfile(addr).catch(() => null);
+    const subscribed = addr === ADMIN_EMAIL || profile?.subscription_status === 'active';
+    res.json({ ok: true, subscribed });
+  } catch (err) {
+    console.error('[auth/login]', err);
+    res.status(500).json({ error: 'Login failed.' });
+  }
+});
+
+// Forgot password — sends Supabase reset email
+app.post('/api/auth/forgot-password', express.json(), async (req, res) => {
+  const addr = String(req.body?.email || '').trim().toLowerCase();
+  if (!addr) return res.status(400).json({ error: 'missing_email' });
+  await supaAnon.auth.resetPasswordForEmail(addr, { redirectTo: `${SITE_URL}/login?reset=1` });
+  res.json({ ok: true }); // always OK — don't expose whether email exists
+});
 
 // Identity for the frontend — used to gate admin-only UI (share signal, auto-scan).
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({
     email: req.user.email,
-    is_admin: !!req.profile.is_admin,
+    is_admin: !!req.profile?.is_admin || req.user.email.toLowerCase() === ADMIN_EMAIL,
+    plan: req.profile?.plan || 'none',
+    subscription_status: req.profile?.subscription_status || 'inactive',
+    current_period_end: req.profile?.current_period_end || null,
   });
 });
 
@@ -291,6 +385,114 @@ app.post('/admin/deny', requireAdmin, express.json(), async (req, res) => {
   const { error } = await supaAdmin.from('profiles').delete().eq('email', email);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
+});
+
+// ── Stripe ──────────────────────────────────────────────────────────────────
+
+// Webhook MUST use raw body — register before any json middleware touches this path.
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe) return res.status(500).send('Stripe not configured');
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+  const obj = event.data.object;
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const uid = obj.metadata?.supabase_uid;
+        if (uid) {
+          await supaAdmin.from('profiles').update({
+            subscription_status: 'active',
+            subscription_id: obj.subscription,
+            plan: 'monthly',
+            updated_at: new Date().toISOString(),
+          }).eq('user_id', uid);
+        }
+        break;
+      }
+      case 'invoice.paid': {
+        const sub = await stripe.subscriptions.retrieve(obj.subscription);
+        await supaAdmin.from('profiles').update({
+          subscription_status: 'active',
+          current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('stripe_customer_id', obj.customer);
+        break;
+      }
+      case 'invoice.payment_failed':
+        await supaAdmin.from('profiles').update({
+          subscription_status: 'past_due', updated_at: new Date().toISOString(),
+        }).eq('stripe_customer_id', obj.customer);
+        break;
+      case 'customer.subscription.deleted':
+        await supaAdmin.from('profiles').update({
+          subscription_status: 'inactive', plan: 'none', updated_at: new Date().toISOString(),
+        }).eq('stripe_customer_id', obj.customer);
+        break;
+      case 'customer.subscription.updated':
+        await supaAdmin.from('profiles').update({
+          subscription_status: obj.status,
+          current_period_end: new Date(obj.current_period_end * 1000).toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('stripe_customer_id', obj.customer);
+        break;
+    }
+  } catch (err) {
+    console.error('[stripe webhook]', event.type, err.message);
+  }
+  res.json({ received: true });
+});
+
+app.post('/api/stripe/create-checkout', requireSession, async (req, res) => {
+  if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
+  if (!process.env.STRIPE_PRICE_ID) return res.status(500).json({ error: 'STRIPE_PRICE_ID not set' });
+  try {
+    let customerId = req.profile?.stripe_customer_id;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: req.user.email,
+        metadata: { supabase_uid: req.user.id },
+      });
+      customerId = customer.id;
+      await supaAdmin.from('profiles')
+        .update({ stripe_customer_id: customerId })
+        .eq('email', req.user.email.toLowerCase());
+    }
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+      success_url: `${SITE_URL}/subscribe/success`,
+      cancel_url: `${SITE_URL}/subscribe`,
+      metadata: { supabase_uid: req.user.id },
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('[stripe/checkout]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/stripe/cancel', requireSession, async (req, res) => {
+  if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
+  try {
+    const subId = req.profile?.subscription_id;
+    if (!subId) return res.status(400).json({ error: 'No active subscription found.' });
+    await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+    await supaAdmin.from('profiles').update({
+      subscription_status: 'cancelled', updated_at: new Date().toISOString(),
+    }).eq('email', req.user.email.toLowerCase());
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[stripe/cancel]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Discord proxies (server holds the webhook URLs) ────────────────────────
@@ -1061,4 +1263,6 @@ app.listen(PORT, () => {
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');
   if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
+  if (!stripe) console.warn('[warn] STRIPE_SECRET_KEY not set — payments disabled');
+  if (!process.env.STRIPE_PRICE_ID) console.warn('[warn] STRIPE_PRICE_ID not set');
 });

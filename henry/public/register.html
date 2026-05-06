@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Henry The Hoover — Sign in</title>
+<title>Henry The Hoover — Create account</title>
 <style>
   :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:#23262e;--cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830}
   *{box-sizing:border-box}
@@ -19,48 +19,47 @@
   .msg{margin-top:16px;padding:12px;border:1px solid var(--br);border-radius:3px;font-size:11px;line-height:1.6}
   .msg.ok{border-color:rgba(0,229,160,.4);color:var(--gr);background:rgba(0,229,160,.06)}
   .msg.err{border-color:rgba(255,68,102,.4);color:var(--re);background:rgba(255,68,102,.06)}
-  .links{margin-top:20px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:.08em;color:var(--mu)}
+  .links{margin-top:20px;text-align:center;font-size:10px;letter-spacing:.08em;color:var(--mu)}
   .links a{color:var(--cy);text-decoration:none}
   .links a:hover{text-decoration:underline}
-  .forgot{margin-top:10px;text-align:center;font-size:10px}
-  .forgot a{color:var(--mu);text-decoration:none}
-  .forgot a:hover{color:var(--cy)}
 </style>
 </head>
 <body>
 <div class="box">
   <h1>HENRY THE HOOVER</h1>
-  <div class="sub">AI FUTURES TRADING TERMINAL</div>
+  <div class="sub">CREATE ACCOUNT</div>
   <form id="f">
     <label>EMAIL</label>
     <input id="email" type="email" required autocomplete="email" placeholder="you@example.com">
     <label>PASSWORD</label>
-    <input id="password" type="password" required autocomplete="current-password" placeholder="••••••••">
-    <button id="go" type="submit">SIGN IN</button>
+    <input id="password" type="password" required autocomplete="new-password" placeholder="Min 8 characters">
+    <label>CONFIRM PASSWORD</label>
+    <input id="confirm" type="password" required autocomplete="new-password" placeholder="Repeat password">
+    <button id="go" type="submit">CREATE ACCOUNT</button>
   </form>
   <div id="msg"></div>
-  <div class="links">
-    <span>No account? <a href="/register">Create one</a></span>
-    <a href="#" id="forgot-link">Forgot password</a>
-  </div>
+  <div class="links">Already have an account? <a href="/login">Sign in</a></div>
 </div>
 <script>
-const params = new URLSearchParams(location.search);
-const msg = document.getElementById('msg');
-if (params.get('reset') === '1') {
-  msg.className = 'msg ok';
-  msg.textContent = 'Password updated. Sign in below.';
-}
-
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const email = document.getElementById('email').value.trim();
+  const email    = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
+  const confirm  = document.getElementById('confirm').value;
   const btn = document.getElementById('go');
-  btn.disabled = true; btn.textContent = '...';
+  const msg = document.getElementById('msg');
   msg.className = ''; msg.textContent = '';
+
+  if (password.length < 8) {
+    msg.className = 'msg err'; msg.textContent = 'Password must be at least 8 characters.'; return;
+  }
+  if (password !== confirm) {
+    msg.className = 'msg err'; msg.textContent = 'Passwords do not match.'; return;
+  }
+
+  btn.disabled = true; btn.textContent = '...';
   try {
-    const r = await fetch('/api/auth/login', {
+    const r = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -68,28 +67,18 @@ document.getElementById('f').addEventListener('submit', async (e) => {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       msg.className = 'msg err';
-      msg.textContent = data.error || 'Sign in failed.';
+      msg.textContent = data.error || 'Registration failed.';
     } else {
-      window.location.href = data.subscribed ? '/' : '/subscribe';
+      msg.className = 'msg ok';
+      msg.textContent = 'Account created. Redirecting to choose your plan...';
+      setTimeout(() => { window.location.href = '/subscribe'; }, 1200);
     }
   } catch (err) {
     msg.className = 'msg err';
     msg.textContent = 'Network error: ' + err.message;
   } finally {
-    btn.disabled = false; btn.textContent = 'SIGN IN';
+    btn.disabled = false; btn.textContent = 'CREATE ACCOUNT';
   }
-});
-
-document.getElementById('forgot-link').addEventListener('click', async (e) => {
-  e.preventDefault();
-  const email = document.getElementById('email').value.trim();
-  if (!email) { alert('Enter your email first.'); return; }
-  await fetch('/api/auth/forgot-password', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email }),
-  });
-  msg.className = 'msg ok';
-  msg.textContent = 'Password reset email sent (if that address has an account).';
 });
 </script>
 </body>

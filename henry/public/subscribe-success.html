@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Subscribed</title>
+<style>
+  :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:#23262e;--cy:#00d4ff;--gr:#00e5a0}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  .box{background:var(--bg2);border:1px solid rgba(0,229,160,.3);padding:40px 32px;width:100%;max-width:400px;border-radius:6px;text-align:center}
+  .icon{font-size:40px;margin-bottom:16px}
+  h1{margin:0 0 8px;font-size:16px;letter-spacing:.15em;color:var(--gr)}
+  p{color:var(--mu);font-size:11px;letter-spacing:.06em;line-height:1.7;margin:0 0 24px}
+  .bar{height:3px;background:rgba(0,229,160,.15);border-radius:2px;overflow:hidden;margin-bottom:20px}
+  .fill{height:100%;background:var(--gr);border-radius:2px;animation:prog 3s linear forwards}
+  @keyframes prog{from{width:0}to{width:100%}}
+  a{color:var(--cy);text-decoration:none;font-size:11px;letter-spacing:.1em}
+  a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="icon">✓</div>
+  <h1>SUBSCRIPTION ACTIVE</h1>
+  <p>Payment confirmed. Welcome to Henry The Hoover Pro.<br>Redirecting to the terminal in 3 seconds…</p>
+  <div class="bar"><div class="fill"></div></div>
+  <a href="/">ENTER TERMINAL →</a>
+</div>
+<script>setTimeout(() => { window.location.href = '/'; }, 3000);</script>
+</body>
+</html>

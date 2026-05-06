@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Account</title>
+<style>
+  :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:#23262e;--cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  .box{background:var(--bg2);border:1px solid var(--br);padding:32px 28px;width:100%;max-width:400px;border-radius:6px}
+  h1{margin:0 0 4px;font-size:18px;letter-spacing:.12em;color:var(--cy)}
+  .sub{color:var(--mu);font-size:11px;letter-spacing:.08em;margin-bottom:28px}
+  .row{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px}
+  .row:last-of-type{border-bottom:0}
+  .lbl{color:var(--mu);letter-spacing:.08em}
+  .val{color:var(--fg);font-weight:bold;letter-spacing:.05em}
+  .val.active{color:var(--gr)}
+  .val.inactive,.val.cancelled,.val.past_due{color:var(--re)}
+  .val.admin{color:var(--cy)}
+  .section{margin-top:24px}
+  .section-title{font-size:9px;letter-spacing:.15em;color:rgba(255,255,255,.25);margin-bottom:10px}
+  button{width:100%;margin-top:10px;padding:11px;border:1px solid var(--br);background:transparent;color:var(--fg);font-family:inherit;font-size:11px;letter-spacing:.1em;cursor:pointer;border-radius:3px;transition:border-color .15s}
+  button:hover{border-color:var(--cy);color:var(--cy)}
+  button.danger{border-color:rgba(255,68,102,.3);color:var(--re)}
+  button.danger:hover{border-color:var(--re);background:rgba(255,68,102,.06)}
+  button.primary{background:var(--cy);color:#000;border-color:var(--cy);font-weight:bold}
+  button.primary:hover{background:#00bce0}
+  .msg{margin-top:14px;padding:11px;border:1px solid var(--br);border-radius:3px;font-size:11px;line-height:1.6}
+  .msg.ok{border-color:rgba(0,229,160,.4);color:var(--gr);background:rgba(0,229,160,.06)}
+  .msg.err{border-color:rgba(255,68,102,.4);color:var(--re);background:rgba(255,68,102,.06)}
+  .back{margin-top:20px;text-align:center;font-size:10px}
+  .back a{color:var(--mu);text-decoration:none}
+  .back a:hover{color:var(--cy)}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>HENRY THE HOOVER</h1>
+  <div class="sub">ACCOUNT</div>
+
+  <div class="row"><span class="lbl">EMAIL</span><span class="val" id="a-email">—</span></div>
+  <div class="row"><span class="lbl">PLAN</span><span class="val" id="a-plan">—</span></div>
+  <div class="row"><span class="lbl">STATUS</span><span class="val" id="a-status">—</span></div>
+  <div class="row"><span class="lbl">RENEWS</span><span class="val" id="a-renews">—</span></div>
+
+  <div id="msg"></div>
+
+  <div class="section">
+    <div class="section-title">ACTIONS</div>
+    <button class="primary" onclick="goTerminal()">← BACK TO TERMINAL</button>
+    <button id="cancel-btn" class="danger" onclick="cancelSub()" style="display:none">CANCEL SUBSCRIPTION</button>
+    <button onclick="doLogout()">LOG OUT</button>
+  </div>
+
+  <div class="back"><a href="/">← Terminal</a></div>
+</div>
+<script>
+const msg = document.getElementById('msg');
+
+async function load() {
+  try {
+    const r = await fetch('/api/me', { credentials: 'same-origin' });
+    if (!r.ok) { window.location.href = '/login'; return; }
+    const d = await r.json();
+    document.getElementById('a-email').textContent  = d.email || '—';
+    const planEl   = document.getElementById('a-plan');
+    const statusEl = document.getElementById('a-status');
+    const renewsEl = document.getElementById('a-renews');
+    if (d.is_admin && d.plan === 'admin') {
+      planEl.textContent   = 'ADMIN';
+      planEl.className     = 'val admin';
+      statusEl.textContent = 'FULL ACCESS';
+      statusEl.className   = 'val admin';
+      renewsEl.textContent = '—';
+    } else {
+      planEl.textContent   = d.plan === 'monthly' ? 'PRO MONTHLY' : (d.plan || 'NONE').toUpperCase();
+      const st = (d.subscription_status || 'inactive').toLowerCase();
+      statusEl.textContent = st.toUpperCase();
+      statusEl.className   = 'val ' + st;
+      renewsEl.textContent = d.current_period_end
+        ? new Date(d.current_period_end).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })
+        : '—';
+      if (st === 'active' || st === 'cancelled') {
+        document.getElementById('cancel-btn').style.display = st === 'active' ? '' : 'none';
+      }
+    }
+  } catch (e) {
+    window.location.href = '/login';
+  }
+}
+
+function goTerminal() { window.location.href = '/'; }
+
+async function cancelSub() {
+  if (!confirm('Cancel subscription? You keep access until the end of the billing period.')) return;
+  const btn = document.getElementById('cancel-btn');
+  btn.disabled = true; btn.textContent = '...';
+  msg.className = ''; msg.textContent = '';
+  try {
+    const r = await fetch('/api/stripe/cancel', { method: 'POST', credentials: 'same-origin' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      msg.className = 'msg err';
+      msg.textContent = d.error || 'Cancel failed.';
+      btn.disabled = false; btn.textContent = 'CANCEL SUBSCRIPTION';
+    } else {
+      msg.className = 'msg ok';
+      msg.textContent = 'Subscription cancelled. Access continues until billing period ends.';
+      btn.style.display = 'none';
+      document.getElementById('a-status').textContent = 'CANCELLED';
+      document.getElementById('a-status').className = 'val cancelled';
+    }
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Network error: ' + e.message;
+    btn.disabled = false; btn.textContent = 'CANCEL SUBSCRIPTION';
+  }
+}
+
+async function doLogout() {
+  await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+  window.location.href = '/login';
+}
+
+load();
+</script>
+</body>
+</html>

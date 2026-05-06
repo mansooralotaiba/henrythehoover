@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Subscribe</title>
+<style>
+  :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:#23262e;--cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830;--pu:#9966ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  .box{background:var(--bg2);border:1px solid var(--br);padding:36px 32px;width:100%;max-width:440px;border-radius:6px}
+  h1{margin:0 0 4px;font-size:18px;letter-spacing:.12em;color:var(--cy)}
+  .sub{color:var(--mu);font-size:11px;letter-spacing:.08em;margin-bottom:28px}
+  .plan{border:1px solid rgba(0,212,255,.25);border-radius:5px;padding:20px 22px;background:rgba(0,212,255,.04);margin-bottom:24px}
+  .plan-name{font-size:14px;letter-spacing:.1em;color:var(--cy);font-weight:bold;margin-bottom:4px}
+  .plan-price{font-size:28px;font-weight:bold;color:var(--fg);margin-bottom:16px;letter-spacing:.04em}
+  .plan-price span{font-size:12px;color:var(--mu);font-weight:normal}
+  .features{list-style:none;margin:0;padding:0}
+  .features li{font-size:11px;color:var(--mu);padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);letter-spacing:.05em}
+  .features li:last-child{border-bottom:0}
+  .features li::before{content:'✓ ';color:var(--gr)}
+  button{width:100%;padding:14px;background:var(--cy);color:#000;border:0;font-family:inherit;font-size:13px;letter-spacing:.12em;font-weight:bold;cursor:pointer;border-radius:3px;margin-top:4px}
+  button:disabled{opacity:.5;cursor:wait}
+  .msg{margin-top:16px;padding:12px;border:1px solid var(--br);border-radius:3px;font-size:11px;line-height:1.6}
+  .msg.err{border-color:rgba(255,68,102,.4);color:var(--re);background:rgba(255,68,102,.06)}
+  .msg.ok{border-color:rgba(0,229,160,.4);color:var(--gr);background:rgba(0,229,160,.06)}
+  .links{margin-top:20px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:.07em;color:var(--mu)}
+  .links a{color:var(--cy);text-decoration:none}
+  .links a:hover{text-decoration:underline}
+  .secure{margin-top:14px;text-align:center;font-size:9px;color:rgba(255,255,255,.2);letter-spacing:.08em}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>HENRY THE HOOVER</h1>
+  <div class="sub">CHOOSE YOUR PLAN</div>
+
+  <div class="plan">
+    <div class="plan-name">HENRY THE HOOVER PRO</div>
+    <div class="plan-price">$500 <span>/ month</span></div>
+    <ul class="features">
+      <li>AI signal generation (Claude Opus)</li>
+      <li>Auto-scan 24/7 with push alerts</li>
+      <li>Discord webhook integration</li>
+      <li>Trade journal with stats</li>
+      <li>3 exchanges — Weex, Binance, Hyperliquid</li>
+      <li>Gold spot via Polygon (XAU/USD)</li>
+      <li>DXY live feed</li>
+      <li>Server-side trade monitor</li>
+    </ul>
+  </div>
+
+  <button id="sub-btn">SUBSCRIBE NOW →</button>
+  <div id="msg"></div>
+  <div class="links">
+    <a href="/login">Already subscribed? Sign in</a>
+    <a href="/register">No account? Register</a>
+  </div>
+  <div class="secure">🔒 PAYMENTS SECURED BY STRIPE</div>
+</div>
+<script>
+document.getElementById('sub-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('sub-btn');
+  const msg = document.getElementById('msg');
+  btn.disabled = true; btn.textContent = 'REDIRECTING...';
+  msg.className = ''; msg.textContent = '';
+  try {
+    const r = await fetch('/api/stripe/create-checkout', {
+      method: 'POST', credentials: 'same-origin',
+    });
+    if (r.status === 401) {
+      window.location.href = '/login?next=subscribe'; return;
+    }
+    const data = await r.json();
+    if (!r.ok) {
+      msg.className = 'msg err';
+      msg.textContent = data.error || 'Could not start checkout.';
+      btn.disabled = false; btn.textContent = 'SUBSCRIBE NOW →';
+      return;
+    }
+    window.location.href = data.url;
+  } catch (err) {
+    msg.className = 'msg err';
+    msg.textContent = 'Network error: ' + err.message;
+    btn.disabled = false; btn.textContent = 'SUBSCRIBE NOW →';
+  }
+});
+</script>
+</body>
+</html>
