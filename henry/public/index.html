@@ -1949,14 +1949,12 @@ function buildSignalCanvas(sig){
 function shareSignal(sig){
   if(!IS_ADMIN){alert('Sharing is admin only');return;}
   if(!sig){alert('No signal to share');return;}
-  captureChartCanvas().then(function(chartCanvas){
-    var canvas=buildCompositeCanvas(sig,chartCanvas);
-    var link=document.createElement('a');
-    link.download='henry_signal_'+(sig.pair||coin)+'_'+Date.now()+'.png';
-    link.href=canvas.toDataURL('image/png');
-    link.click();
-    postToDiscord(sig,canvas);
-  });
+  var canvas=buildSignalCanvas(sig);
+  var link=document.createElement('a');
+  link.download='henry_signal_'+(sig.pair||coin)+'_'+Date.now()+'.png';
+  link.href=canvas.toDataURL('image/png');
+  link.click();
+  postToDiscord(sig,canvas);
 }
 
 function postToDiscord(sig,canvas){
@@ -3308,14 +3306,9 @@ function drawSig(sig){
     setTimeout(function(){drawSignalOnChart(sig);},200);
     // Auto-post to separate Discord webhook if signal was auto-triggered
     if(window._autoTrigger&&autoMode){
-      var _savedTrigger=window._autoTrigger;
+      var canvas=buildSignalCanvas(sig);
+      postAutoToDiscord(sig,canvas,window._autoTrigger.trigger);
       window._autoTrigger=null;
-      setTimeout(function(){
-        captureChartCanvas().then(function(chartCanvas){
-          var canvas=buildCompositeCanvas(sig,chartCanvas);
-          postAutoToDiscord(sig,canvas,_savedTrigger.trigger);
-        });
-      },400);
     }
   } else {
     clearSignalLines();
