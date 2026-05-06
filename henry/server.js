@@ -572,6 +572,12 @@ app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req
 
 // ── Health & public assets ──────────────────────────────────────────────────
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
+
+// ── Public legal & pricing pages (no auth — Paddle/Stripe must crawl these) ──
+app.get('/pricing', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pricing.html')));
+app.get('/terms',   (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'terms.html')));
+app.get('/privacy', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'privacy.html')));
+app.get('/refund',  (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'refund.html')));
 app.get('/manifest.json', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'manifest.json')));
 app.get('/login.html', (_req, res) => res.redirect('/login'));
 

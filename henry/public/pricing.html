@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pricing — Henry The Hoover</title>
+<style>
+  :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:rgba(255,255,255,0.07);--cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;font-size:14px;line-height:1.7;min-height:100vh;display:flex;flex-direction:column}
+  nav{border-bottom:1px solid var(--br);padding:14px 24px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+  .nav-brand{color:var(--cy);font-size:12px;letter-spacing:.12em;font-weight:bold;text-decoration:none;margin-right:10px}
+  nav a{color:var(--mu);font-size:11px;letter-spacing:.08em;text-decoration:none}
+  nav a:hover{color:var(--cy)}
+  nav a.active{color:var(--fg)}
+  main{max-width:740px;margin:0 auto;padding:48px 24px;flex:1}
+  h1{font-size:22px;letter-spacing:.1em;color:var(--cy);margin-bottom:6px}
+  .tagline{color:var(--mu);font-size:12px;letter-spacing:.07em;margin-bottom:40px}
+  .plan{border:1px solid rgba(0,212,255,.2);border-radius:6px;padding:28px 28px 24px;background:rgba(0,212,255,.03)}
+  .plan-name{font-size:12px;letter-spacing:.15em;color:var(--cy);margin-bottom:8px}
+  .plan-price{font-size:36px;font-weight:bold;color:var(--fg);margin-bottom:4px}
+  .plan-price span{font-size:13px;color:var(--mu);font-weight:normal}
+  .plan-note{font-size:11px;color:var(--mu);margin-bottom:24px;letter-spacing:.05em}
+  h2{font-size:13px;letter-spacing:.12em;color:var(--cy);margin:32px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--br)}
+  ul{list-style:none;padding:0}
+  ul li{padding:6px 0;font-size:13px;color:var(--mu);border-bottom:1px solid var(--br)}
+  ul li:last-child{border-bottom:0}
+  ul li::before{content:'— ';color:var(--gr)}
+  .cta{display:inline-block;margin-top:28px;padding:13px 28px;background:var(--cy);color:#000;font-family:inherit;font-size:12px;letter-spacing:.12em;font-weight:bold;text-decoration:none;border-radius:3px}
+  .cta:hover{background:#00bce0}
+  footer{border-top:1px solid var(--br);padding:16px 24px;text-align:center;font-size:10px;color:var(--mu);letter-spacing:.07em}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/" class="nav-brand">HENRY THE HOOVER</a>
+  <a href="/pricing" class="active">Pricing</a>
+  <a href="/terms">Terms</a>
+  <a href="/privacy">Privacy</a>
+  <a href="/refund">Refund</a>
+</nav>
+<main>
+  <h1>PRICING</h1>
+  <div class="tagline">Henry The Hoover — AI Futures Trading Terminal</div>
+
+  <div class="plan">
+    <div class="plan-name">HENRY PRO</div>
+    <div class="plan-price">$500 <span>/ month</span></div>
+    <div class="plan-note">Billed monthly. Cancel anytime.</div>
+
+    <h2>WHAT'S INCLUDED</h2>
+    <ul>
+      <li>AI-powered trade signal generation using Claude Sonnet</li>
+      <li>Auto-scan across pairs with configurable triggers</li>
+      <li>Push notifications to your phone 24/7</li>
+      <li>Discord webhook alerts (separate channels for auto and manual)</li>
+      <li>Live charts via TradingView Lightweight Charts</li>
+      <li>3 exchanges — Weex, Binance, Hyperliquid</li>
+      <li>Gold spot data via Polygon.io (XAU/USD)</li>
+      <li>Multi-timeframe analysis (15m, 1H, 4H)</li>
+      <li>Order flow and footprint analysis</li>
+      <li>Funding rate, open interest, CVD trend</li>
+      <li>BTC correlation for altcoin trades</li>
+      <li>Kill zone and session detection</li>
+      <li>Trade journal with signal history</li>
+      <li>Signal expiry and invalidation alerts</li>
+    </ul>
+
+    <a href="/subscribe" class="cta">SUBSCRIBE NOW →</a>
+  </div>
+</main>
+<footer>© 2026 Henry The Hoover. Not financial advice.</footer>
+</body>
+</html>
