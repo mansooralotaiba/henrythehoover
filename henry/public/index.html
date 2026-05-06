@@ -2764,24 +2764,29 @@ function runTradeMonitor(){
       if(tpReached&&!window._tpAlerted){
         window._tpAlerted=true;
         triggerAlert('🎯 TP REACHED','Take profit hit on '+coin+' '+(isLong?'LONG':'SHORT')+' @ '+fp(tp),'var(--gr)');
+        logTrade('TP');
+        return;
       }
     }
 
     var slDist=Math.abs(cp-sl)/sl*100;
 
-    // ── SL hit — resets every flag so a new signal starts clean ──
-    if(isLong&&cp<sl){
-      triggerAlert('🛑 SL HIT','Stop loss breached on '+coin+' LONG — consider logging outcome','var(--re)');
-      window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;
+    // ── SL hit — fires once; journals as BE if breakeven alert already fired ──
+    var slHit=isLong?cp<=sl:cp>=sl;
+    if(slHit&&!window._slAlerted){
+      window._slAlerted=true;
+      if(window._beAlerted){
+        triggerAlert('⚑ STOPPED AT BREAKEVEN',coin+' '+(isLong?'LONG':'SHORT')+' closed at entry. Auto-logged as BE.','var(--am)');
+        logTrade('BE');
+      } else {
+        triggerAlert('🛑 SL HIT',coin+' '+(isLong?'LONG':'SHORT')+' stopped out. Auto-logged as SL.','var(--re)');
+        logTrade('SL');
+      }
       return;
     }
-    if(!isLong&&cp>sl){
-      triggerAlert('🛑 SL HIT','Stop loss breached on '+coin+' SHORT — consider logging outcome','var(--re)');
-      window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;
-      return;
-    }
+    if(window._slAlerted) return;
 
-    // ── Expiry alert — only if entry was never hit, fires once only ──
+    // ── Expiry alert — only if entry was never hit, fires once; auto-discards ──
     if(pend.expiry_candles&&!window._entryAlerted&&!window._expiryAlerted){
       var tfMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
       var elapsed=Date.now()-autoLastFire;
@@ -2789,6 +2794,7 @@ function runTradeMonitor(){
       if(elapsed>maxMs){
         window._expiryAlerted=true;
         triggerAlert('⏱ SIGNAL EXPIRED','Cancel limit order — '+coin+' signal expired after '+pend.expiry_candles+' candles','var(--am)');
+        clrPend();
         return;
       }
     }
@@ -3505,6 +3511,11 @@ function logTrade(oc){
   st[oc.toLowerCase()]=(st[oc.toLowerCase()]||0)+1;
   st.rr=+((parseFloat(st.rr)||0)+rrG).toFixed(2);
   save();drawJ();drawSt();clrPend();
+  if(autoMode){
+    autoLastFire=0;
+    setAutoStatus('✓ '+oc+' logged — resuming scan');
+    setTimeout(runAutoScan,2000);
+  }
 }
 function clrPend(outcome){
   // Optional outcome string: 'TP','SL','BE','DISCARD' — first three log to history.
@@ -3512,7 +3523,7 @@ function clrPend(outcome){
     try{logSignalOutcome(outcome,outcome==='TP'&&pend&&pend.rr?parseFloat(pend.rr):outcome==='SL'?-1:0);}catch(e){}
   }
   pend=null;
-  window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;
+  window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;window._slAlerted=false;
   window._lastSignalId=null;
   try{serverScanClearSignal();}catch(e){}
   document.getElementById('plbl').textContent='No active signal';
