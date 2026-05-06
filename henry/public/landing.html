@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — AI Futures Trading Terminal</title>
+<style>
+  :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:rgba(255,255,255,0.07);--cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;line-height:1.7;min-height:100vh;display:flex;flex-direction:column}
+
+  /* NAV */
+  nav{border-bottom:1px solid var(--br);padding:14px 24px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+  .nav-brand{color:var(--cy);font-size:13px;letter-spacing:.14em;font-weight:bold;text-decoration:none;flex:1}
+  nav a.nav-link{color:var(--mu);font-size:11px;letter-spacing:.08em;text-decoration:none}
+  nav a.nav-link:hover{color:var(--cy)}
+  .nav-cta{padding:7px 16px;background:var(--cy);color:#000;font-family:inherit;font-size:11px;letter-spacing:.1em;font-weight:bold;text-decoration:none;border-radius:3px}
+  .nav-cta:hover{background:#00bce0}
+
+  /* HERO */
+  .hero{max-width:860px;margin:0 auto;padding:72px 24px 56px;text-align:center}
+  .hero-label{font-size:10px;letter-spacing:.2em;color:var(--cy);margin-bottom:16px;opacity:.7}
+  h1{font-size:clamp(26px,5vw,44px);letter-spacing:.06em;color:var(--fg);margin-bottom:16px;line-height:1.2}
+  h1 span{color:var(--cy)}
+  .hero-sub{font-size:14px;color:var(--mu);max-width:540px;margin:0 auto 36px;line-height:1.8}
+  .hero-btns{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+  .btn-primary{padding:13px 28px;background:var(--cy);color:#000;font-family:inherit;font-size:12px;letter-spacing:.12em;font-weight:bold;text-decoration:none;border-radius:3px}
+  .btn-primary:hover{background:#00bce0}
+  .btn-secondary{padding:12px 24px;border:1px solid rgba(255,255,255,.15);color:var(--mu);font-family:inherit;font-size:12px;letter-spacing:.1em;text-decoration:none;border-radius:3px}
+  .btn-secondary:hover{border-color:var(--cy);color:var(--cy)}
+
+  /* DIVIDER */
+  hr{border:0;border-top:1px solid var(--br);margin:0}
+
+  /* FEATURES */
+  .features{max-width:860px;margin:0 auto;padding:56px 24px}
+  .features h2{font-size:12px;letter-spacing:.18em;color:var(--cy);margin-bottom:32px;text-align:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;background:var(--br);border:1px solid var(--br);border-radius:5px;overflow:hidden}
+  .cell{background:var(--bg);padding:20px 18px}
+  .cell-icon{font-size:18px;margin-bottom:8px}
+  .cell-title{font-size:11px;letter-spacing:.1em;color:var(--fg);margin-bottom:6px;font-weight:bold}
+  .cell-desc{font-size:11px;color:var(--mu);line-height:1.6}
+
+  /* PRICING */
+  .pricing{max-width:500px;margin:0 auto;padding:0 24px 64px}
+  .pricing h2{font-size:12px;letter-spacing:.18em;color:var(--cy);margin-bottom:24px;text-align:center}
+  .plan{border:1px solid rgba(0,212,255,.2);border-radius:6px;padding:28px;background:rgba(0,212,255,.03)}
+  .plan-name{font-size:11px;letter-spacing:.15em;color:var(--cy);margin-bottom:8px}
+  .plan-price{font-size:38px;font-weight:bold;color:var(--fg);margin-bottom:4px}
+  .plan-price span{font-size:13px;color:var(--mu);font-weight:normal}
+  .plan-note{font-size:11px;color:var(--mu);margin-bottom:20px;letter-spacing:.05em}
+  ul.checklist{list-style:none;padding:0;margin-bottom:24px}
+  ul.checklist li{font-size:12px;color:var(--mu);padding:5px 0;border-bottom:1px solid var(--br)}
+  ul.checklist li:last-child{border-bottom:0}
+  ul.checklist li::before{content:'✓ ';color:var(--gr)}
+  .plan-btn{display:block;width:100%;padding:13px;background:var(--cy);color:#000;font-family:inherit;font-size:12px;letter-spacing:.12em;font-weight:bold;text-decoration:none;border-radius:3px;text-align:center}
+  .plan-btn:hover{background:#00bce0}
+
+  /* FOOTER */
+  footer{border-top:1px solid var(--br);padding:20px 24px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;justify-content:space-between;font-size:10px;color:var(--mu);letter-spacing:.07em;margin-top:auto}
+  .footer-links{display:flex;flex-wrap:wrap;gap:6px 16px}
+  .footer-links a{color:var(--mu);text-decoration:none}
+  .footer-links a:hover{color:var(--cy)}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-brand">HENRY THE HOOVER</a>
+  <a href="/pricing" class="nav-link">Pricing</a>
+  <a href="/terms" class="nav-link">Terms</a>
+  <a href="/privacy" class="nav-link">Privacy</a>
+  <a href="/login" class="nav-link">Sign in</a>
+  <a href="/subscribe" class="nav-cta">Subscribe</a>
+</nav>
+
+<section class="hero">
+  <div class="hero-label">AI TRADING TERMINAL</div>
+  <h1>Professional signals.<br><span>Automated.</span> Precise.</h1>
+  <p class="hero-sub">AI-powered futures trading signals across Weex, Binance, and Hyperliquid. Auto-scan, push notifications, multi-timeframe analysis, order flow, and more.</p>
+  <div class="hero-btns">
+    <a href="/subscribe" class="btn-primary">SUBSCRIBE — $500/mo</a>
+    <a href="/login" class="btn-secondary">SIGN IN</a>
+    <a href="/pricing" class="btn-secondary">VIEW PRICING</a>
+  </div>
+</section>
+
+<hr>
+
+<section class="features">
+  <h2>WHAT'S INSIDE</h2>
+  <div class="grid">
+    <div class="cell">
+      <div class="cell-icon">⚡</div>
+      <div class="cell-title">AI SIGNAL GENERATION</div>
+      <div class="cell-desc">Claude Sonnet analyses live market data and generates structured trade setups with entry, SL, TP and reasoning.</div>
+    </div>
+    <div class="cell">
+      <div class="cell-icon">🔄</div>
+      <div class="cell-title">AUTO-SCAN 24/7</div>
+      <div class="cell-desc">Server-side scanner watches for BOS, sweeps, and rejection patterns across your watchlist while you sleep.</div>
+    </div>
+    <div class="cell">
+      <div class="cell-icon">📲</div>
+      <div class="cell-title">PUSH NOTIFICATIONS</div>
+      <div class="cell-desc">Entry hit, TP reached, SL hit and BE alerts pushed directly to your phone — no app required.</div>
+    </div>
+    <div class="cell">
+      <div class="cell-icon">📊</div>
+      <div class="cell-title">LIVE CHARTS</div>
+      <div class="cell-desc">LightweightCharts with signal overlays, multi-timeframe views, and live price streaming via WebSocket.</div>
+    </div>
+    <div class="cell">
+      <div class="cell-icon">🏦</div>
+      <div class="cell-title">3 EXCHANGES</div>
+      <div class="cell-desc">Weex, Binance Futures, and Hyperliquid — switch brokers instantly. Gold spot via Polygon.io.</div>
+    </div>
+    <div class="cell">
+      <div class="cell-icon">📓</div>
+      <div class="cell-title">TRADE JOURNAL</div>
+      <div class="cell-desc">Auto-logs TP, SL and BE outcomes. Stats dashboard shows win rate, R:R and total performance.</div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section class="pricing">
+  <h2>PRICING</h2>
+  <div class="plan">
+    <div class="plan-name">HENRY PRO</div>
+    <div class="plan-price">$500 <span>/ month</span></div>
+    <div class="plan-note">Billed monthly. Cancel anytime.</div>
+    <ul class="checklist">
+      <li>AI signal generation (Claude Sonnet)</li>
+      <li>Auto-scan with server-side monitoring</li>
+      <li>Push notifications to phone</li>
+      <li>Discord webhook alerts</li>
+      <li>Weex, Binance, Hyperliquid + Gold</li>
+      <li>Multi-timeframe analysis</li>
+      <li>Order flow, funding rate, CVD</li>
+      <li>Trade journal with performance stats</li>
+    </ul>
+    <a href="/subscribe" class="plan-btn">SUBSCRIBE NOW →</a>
+  </div>
+</section>
+
+<footer>
+  <span>© 2026 Henry The Hoover. Not financial advice.</span>
+  <div class="footer-links">
+    <a href="/pricing">Pricing</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/refund">Refund</a>
+  </div>
+</footer>
+
+</body>
+</html>

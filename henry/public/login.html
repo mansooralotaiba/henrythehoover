@@ -70,7 +70,7 @@ document.getElementById('f').addEventListener('submit', async (e) => {
       msg.className = 'msg err';
       msg.textContent = data.error || 'Sign in failed.';
     } else {
-      window.location.href = data.subscribed ? '/' : '/subscribe';
+      window.location.href = data.subscribed ? '/terminal' : '/subscribe';
     }
   } catch (err) {
     msg.className = 'msg err';

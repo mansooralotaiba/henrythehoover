@@ -215,7 +215,7 @@ app.get('/auth/callback', async (req, res) => {
       setAuthCookies(res, data.session.access_token, data.session.refresh_token);
       const isAdmin = email === ADMIN_EMAIL;
       const subscribed = isAdmin || profile?.subscription_status === 'active';
-      return res.redirect(subscribed ? '/' : '/subscribe');
+      return res.redirect(subscribed ? '/terminal' : '/subscribe');
     } catch (err) {
       console.error('[auth/callback]', err);
       return res.redirect('/login?error=callback_error');
@@ -581,11 +581,11 @@ app.get('/refund',  (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'refund.ht
 app.get('/manifest.json', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'manifest.json')));
 app.get('/login.html', (_req, res) => res.redirect('/login'));
 
-// ── App (auth-gated) ────────────────────────────────────────────────────────
-app.get('/', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+// ── Landing (public) + Terminal (auth-gated) ────────────────────────────────
+app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'landing.html')));
+app.get('/terminal', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
-// Catch-all static for any other public asset that might be added later.
-// Anything that isn't in the explicit allowlist above will 404 here unless authenticated.
+// Catch-all static — serves terminal assets (js, css, sw.js, etc.) to authenticated users only.
 app.use(requireAuth, express.static(PUBLIC_DIR, { index: false, extensions: ['html'] }));
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
