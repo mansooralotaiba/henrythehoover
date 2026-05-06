@@ -1125,6 +1125,7 @@ function loadGoldFromTradingView(){
   var cd=document.getElementById('chartdiv');if(!cd)return;
   if(tvChart){try{tvChart.remove();}catch(e){}tvChart=null;tvSeries=null;tvSignalLines=[];}
   cd.innerHTML='<div id="tv-gold-widget" style="width:100%;height:100%"></div>';
+  if(pend)setTimeout(function(){drawGoldSignalOverlay(pend);},1500);
   function mount(){
     try{
       new TradingView.widget({
@@ -1209,7 +1210,9 @@ function loadChart(){
 }
 
 function drawSignalOnChart(sig){
-  if(!tvChart||!tvSeries||!sig)return;
+  if(!sig)return;
+  if(activeBroker==='massive'){drawGoldSignalOverlay(sig);return;}
+  if(!tvChart||!tvSeries)return;
   tvSignalLines.forEach(function(l){try{tvSeries.removePriceLine(l);}catch(e){}});
   tvSignalLines=[];
   var isLong=sig.direction==='LONG';
@@ -1232,6 +1235,134 @@ function drawSignalOnChart(sig){
 function clearSignalLines(){
   tvSignalLines.forEach(function(l){try{if(tvSeries)tvSeries.removePriceLine(l);}catch(e){}});
   tvSignalLines=[];
+  clearGoldSignalOverlay();
+}
+
+// ── GOLD/MASSIVE signal overlay on TradingView chart ──
+function drawGoldSignalOverlay(sig){
+  var cd=document.getElementById('chartdiv');if(!cd||!sig)return;
+  clearGoldSignalOverlay();
+  var e=parseFloat(sig.entry),sl=parseFloat(sig.sl),tp=parseFloat(sig.tp);
+  if(isNaN(e)||isNaN(sl)||isNaN(tp))return;
+  var mn=Math.min(e,sl,tp),mx=Math.max(e,sl,tp);
+  var pad=(mx-mn)*0.3;
+  var visHigh=mx+pad,visLow=mn-pad,range=visHigh-visLow;
+  function pct(p){return((visHigh-p)/range*100).toFixed(2)+'%';}
+  cd.style.position='relative';
+  var ov=document.createElement('div');
+  ov.id='gold-sig-overlay';
+  ov.style.cssText='position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:10;overflow:hidden';
+  var lvls=[
+    {price:tp,color:'#00e5a0',label:'TP '+fp(tp),dashed:false},
+    {price:e,color:'#d0d0d0',label:'ENTRY '+fp(e),dashed:true},
+    {price:sl,color:'#ff4466',label:'SL '+fp(sl),dashed:false}
+  ];
+  lvls.forEach(function(lv){
+    var row=document.createElement('div');
+    row.style.cssText='position:absolute;left:0;right:0;top:'+pct(lv.price);
+    var line=document.createElement('div');
+    var bg=lv.dashed
+      ?'repeating-linear-gradient(90deg,'+lv.color+' 0,'+lv.color+' 6px,transparent 6px,transparent 12px)'
+      :lv.color;
+    line.style.cssText='position:absolute;left:0;right:0;height:1px;opacity:0.8;background:'+bg;
+    row.appendChild(line);
+    var tag=document.createElement('div');
+    tag.style.cssText='position:absolute;right:6px;top:-11px;font-family:Courier New;font-size:9px;color:'+lv.color+';background:rgba(8,9,13,0.88);padding:2px 5px;border-radius:2px;white-space:nowrap;border:1px solid '+lv.color+'55';
+    tag.textContent=lv.label;
+    row.appendChild(tag);
+    ov.appendChild(row);
+  });
+  cd.appendChild(ov);
+}
+
+function clearGoldSignalOverlay(){
+  var el=document.getElementById('gold-sig-overlay');if(el)el.remove();
+}
+
+// ── Chart canvas capture for Discord (returns Promise<canvas|null>) ──
+function captureChartCanvas(){
+  if(activeBroker==='massive') return buildGoldMiniChartCanvas();
+  var canvases=document.querySelectorAll('#chartdiv canvas');
+  var best=null,bestA=0;
+  canvases.forEach(function(c){var a=c.width*c.height;if(a>bestA){bestA=a;best=c;}});
+  return Promise.resolve(best||null);
+}
+
+function buildGoldMiniChartCanvas(){
+  return fetch('/api/gold/candles?interval=15m&limit=80',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var klines=(d&&Array.isArray(d.candles))?d.candles:[];
+      if(!klines.length)return null;
+      var W=520,H=340,pL=4,pR=64,pT=16,pB=22;
+      var W2=W-pL-pR,H2=H-pT-pB;
+      var canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;
+      var ctx=canvas.getContext('2d');
+      ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,H);
+      var mn=Infinity,mx=-Infinity;
+      klines.forEach(function(k){mn=Math.min(mn,k.l);mx=Math.max(mx,k.h);});
+      if(pend){mn=Math.min(mn,parseFloat(pend.sl),parseFloat(pend.entry),parseFloat(pend.tp));mx=Math.max(mx,parseFloat(pend.sl),parseFloat(pend.entry),parseFloat(pend.tp));}
+      var pad=(mx-mn)*0.07;mn-=pad;mx+=pad;var range=mx-mn;
+      function py(price){return pT+(mx-price)/range*H2;}
+      // Grid
+      for(var gi=0;gi<=5;gi++){
+        var gy=pT+gi*H2/5;
+        ctx.strokeStyle='rgba(255,255,255,0.05)';ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(pL,gy);ctx.lineTo(W-pR,gy);ctx.stroke();
+        ctx.fillStyle='rgba(255,255,255,0.22)';ctx.font='8px Courier New';ctx.textAlign='left';
+        ctx.fillText(fp(mx-gi*range/5),W-pR+3,gy+3);
+      }
+      // Candles
+      var cw=W2/klines.length;
+      klines.forEach(function(k,i){
+        var x=pL+i*cw,bw=Math.max(1,cw*0.7);
+        var up=k.c>=k.o,col=up?'#00e5a0':'#ff4466';
+        ctx.strokeStyle=col;ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(x+cw/2,py(k.h));ctx.lineTo(x+cw/2,py(k.l));ctx.stroke();
+        ctx.fillStyle=col;
+        var y1=Math.min(py(k.o),py(k.c)),bh=Math.max(1,Math.abs(py(k.c)-py(k.o)));
+        ctx.fillRect(x+(cw-bw)/2,y1,bw,bh);
+      });
+      // Signal lines
+      if(pend){
+        [{price:parseFloat(pend.tp),color:'#00e5a0',label:'TP',dash:false},
+         {price:parseFloat(pend.entry),color:'#d0d0d0',label:'ENTRY',dash:true},
+         {price:parseFloat(pend.sl),color:'#ff4466',label:'SL',dash:false}
+        ].forEach(function(lv){
+          if(isNaN(lv.price))return;
+          var y=py(lv.price);
+          ctx.strokeStyle=lv.color;ctx.lineWidth=1;
+          ctx.setLineDash(lv.dash?[5,4]:[]);
+          ctx.beginPath();ctx.moveTo(pL,y);ctx.lineTo(W-pR,y);ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle=lv.color;ctx.font='bold 9px Courier New';ctx.textAlign='left';
+          ctx.fillText(lv.label+' '+fp(lv.price),W-pR+3,y+3);
+        });
+      }
+      ctx.fillStyle='rgba(255,255,255,0.3)';ctx.font='bold 9px Courier New';ctx.textAlign='left';
+      ctx.fillText('XAU/USD \xb7 15m \xb7 POLYGON',pL+6,pT+11);
+      return canvas;
+    })
+    .catch(function(){return null;});
+}
+
+// ── Composite canvas: chart left + signal card right ──
+function buildCompositeCanvas(sig,chartCanvas){
+  var sigC=buildSignalCanvas(sig);
+  if(!chartCanvas) return sigC;
+  var cW=chartCanvas.width,cH=chartCanvas.height,sH=sigC.height;
+  var H=Math.max(cH,sH);
+  var scale=H/cH;
+  var scaledCW=Math.round(cW*scale);
+  var W=scaledCW+sigC.width;
+  var comp=document.createElement('canvas');comp.width=W;comp.height=H;
+  var ctx=comp.getContext('2d');
+  ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,H);
+  ctx.drawImage(chartCanvas,0,0,scaledCW,H);
+  ctx.strokeStyle='rgba(255,255,255,0.08)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(scaledCW,0);ctx.lineTo(scaledCW,H);ctx.stroke();
+  ctx.drawImage(sigC,scaledCW,0);
+  return comp;
 }
 
 function setTF(btn,t){
@@ -1818,14 +1949,14 @@ function buildSignalCanvas(sig){
 function shareSignal(sig){
   if(!IS_ADMIN){alert('Sharing is admin only');return;}
   if(!sig){alert('No signal to share');return;}
-  var canvas=buildSignalCanvas(sig);
-  // Always download
-  var link=document.createElement('a');
-  link.download='henry_signal_'+(sig.pair||coin)+'_'+Date.now()+'.png';
-  link.href=canvas.toDataURL('image/png');
-  link.click();
-  // Also post to Discord
-  postToDiscord(sig,canvas);
+  captureChartCanvas().then(function(chartCanvas){
+    var canvas=buildCompositeCanvas(sig,chartCanvas);
+    var link=document.createElement('a');
+    link.download='henry_signal_'+(sig.pair||coin)+'_'+Date.now()+'.png';
+    link.href=canvas.toDataURL('image/png');
+    link.click();
+    postToDiscord(sig,canvas);
+  });
 }
 
 function postToDiscord(sig,canvas){
@@ -3177,9 +3308,14 @@ function drawSig(sig){
     setTimeout(function(){drawSignalOnChart(sig);},200);
     // Auto-post to separate Discord webhook if signal was auto-triggered
     if(window._autoTrigger&&autoMode){
-      var canvas=buildSignalCanvas(sig);
-      postAutoToDiscord(sig,canvas,window._autoTrigger.trigger);
+      var _savedTrigger=window._autoTrigger;
       window._autoTrigger=null;
+      setTimeout(function(){
+        captureChartCanvas().then(function(chartCanvas){
+          var canvas=buildCompositeCanvas(sig,chartCanvas);
+          postAutoToDiscord(sig,canvas,_savedTrigger.trigger);
+        });
+      },400);
     }
   } else {
     clearSignalLines();
@@ -3523,6 +3659,7 @@ function clrPend(outcome){
     try{logSignalOutcome(outcome,outcome==='TP'&&pend&&pend.rr?parseFloat(pend.rr):outcome==='SL'?-1:0);}catch(e){}
   }
   pend=null;
+  clearGoldSignalOverlay();
   window._beAlerted=false;window._tpAlerted=false;window._entryAlerted=false;window._expiryAlerted=false;window._slAlerted=false;
   window._lastSignalId=null;
   try{serverScanClearSignal();}catch(e){}
