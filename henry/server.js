@@ -4,7 +4,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 import WebSocket from 'ws';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
@@ -129,7 +129,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// Requires only a valid session (no subscription check) — used for Stripe + account endpoints.
+// Requires only a valid session (no subscription check) — used for Paddle, account, and password-reset endpoints.
 async function requireSession(req, res, next) {
   try {
     const session = await resolveSession(req, res);
@@ -331,7 +331,11 @@ app.post('/api/auth/register', express.json(), async (req, res) => {
     }
     // Auto sign-in so browser can proceed to subscribe page straight away
     const { data: si, error: sie } = await supaAnon.auth.signInWithPassword({ email: addr, password });
-    if (!sie && si?.session) setAuthCookies(res, si.session.access_token, si.session.refresh_token);
+    if (sie || !si?.session) {
+      console.error('[auth/register auto-signin]', sie);
+      return res.status(500).json({ error: 'Account created but auto sign-in failed. Please log in manually.' });
+    }
+    setAuthCookies(res, si.session.access_token, si.session.refresh_token);
     res.json({ ok: true });
   } catch (err) {
     console.error('[auth/register]', err);
@@ -444,7 +448,14 @@ function verifyPaddleSignature(rawBody, signatureHeader, secret) {
   const expected = createHmac('sha256', secret)
     .update(`${ts}:${rawBody}`)
     .digest('hex');
-  return expected === h1;
+  // Constant-time comparison — prevent timing attacks
+  try {
+    const a = Buffer.from(expected, 'hex');
+    const b = Buffer.from(h1, 'hex');
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }
 
 // Public — returns the client-side token (safe to expose) and price ID.
@@ -480,7 +491,7 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
         const updates = {
           subscription_status: 'active',
           subscription_id:     data.id,
-          stripe_customer_id:  data.customer_id, // reuse column — stores Paddle customer ID
+          paddle_customer_id:  data.customer_id,
           plan:                'monthly',
           current_period_end:  data.current_billing_period?.ends_at || null,
           updated_at:          new Date().toISOString(),
@@ -488,7 +499,7 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
         if (uid) {
           await supaAdmin.from('profiles').update(updates).eq('user_id', uid);
         } else if (data.customer_id) {
-          await supaAdmin.from('profiles').update(updates).eq('stripe_customer_id', data.customer_id);
+          await supaAdmin.from('profiles').update(updates).eq('paddle_customer_id', data.customer_id);
         }
         break;
       }
@@ -502,7 +513,7 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
           subscription_status: status,
           current_period_end:  data.current_billing_period?.ends_at || null,
           updated_at:          new Date().toISOString(),
-        }).eq('stripe_customer_id', data.customer_id);
+        }).eq('paddle_customer_id', data.customer_id);
         break;
       }
       // ── Subscription fully cancelled ───────────────────────────────────────
@@ -511,7 +522,7 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
           subscription_status: 'inactive',
           plan:                'none',
           updated_at:          new Date().toISOString(),
-        }).eq('stripe_customer_id', data.customer_id);
+        }).eq('paddle_customer_id', data.customer_id);
         break;
       }
       // ── Payment received (backup activation for renewals) ──────────────────
@@ -520,7 +531,7 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
           await supaAdmin.from('profiles').update({
             subscription_status: 'active',
             updated_at:          new Date().toISOString(),
-          }).eq('stripe_customer_id', data.customer_id);
+          }).eq('paddle_customer_id', data.customer_id);
         }
         break;
       }
@@ -798,8 +809,12 @@ async function sendPushTo(userId, payload) {
       await webpush.sendNotification(subscription, JSON.stringify(payload));
     } catch (e) {
       if (e.statusCode === 410 || e.statusCode === 404) {
-        // Subscription gone — clean up
-        await supaAdmin.from('push_subscriptions').delete().eq('id', sub.id);
+        // Subscription gone — clean up dead endpoint
+        try {
+          await supaAdmin.from('push_subscriptions').delete().eq('id', sub.id);
+        } catch (delErr) {
+          console.warn('[push cleanup]', delErr.message);
+        }
       } else {
         console.error('[push]', e.message);
       }
@@ -1153,12 +1168,25 @@ async function runServerScan(userId, sub) {
   });
 }
 
-setInterval(() => {
+const _scanLoopHandle = setInterval(() => {
   for (const [userId, sub] of scanSubscriptions.entries()) {
     if (!sub.active) continue;
     runServerScan(userId, sub).catch(e => console.error('[scan loop]', userId, e.message));
   }
 }, SCAN_INTERVAL_MS);
+
+// Clean shutdown — release scan loop and exchange WS connections
+function _gracefulShutdown(signal) {
+  console.log(`[shutdown] ${signal} received — cleaning up`);
+  clearInterval(_scanLoopHandle);
+  for (const [, stream] of exchangeStreams.entries()) {
+    if (stream.ws) try { stream.ws.close(); } catch {}
+    if (stream.interval) clearInterval(stream.interval);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => _gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => _gracefulShutdown('SIGINT'));
 
 // ════════════════════════════════════════════════════════════════════════════
 // PART 6 — SSE LIVE PRICES (server multiplexes one exchange WS per symbol)

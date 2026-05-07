@@ -5,15 +5,46 @@
 -- ─────────────────────────────────────────────────────────────────────
 
 create table if not exists public.profiles (
-  email         text primary key,
-  user_id       uuid references auth.users(id) on delete set null,
-  approved      boolean not null default false,
-  is_admin      boolean not null default false,
-  requested_at  timestamptz not null default now(),
-  approved_at   timestamptz
+  email                 text primary key,
+  user_id               uuid references auth.users(id) on delete set null,
+  approved              boolean not null default false,
+  is_admin              boolean not null default false,
+  requested_at          timestamptz not null default now(),
+  approved_at           timestamptz,
+  -- ── Paddle billing ──────────────────────────────────────────────
+  subscription_status   text not null default 'inactive',  -- 'active' | 'inactive' | 'cancelled' | 'past_due'
+  subscription_id       text,                              -- Paddle subscription ID
+  paddle_customer_id    text,                              -- Paddle customer ID
+  plan                  text not null default 'none',      -- 'monthly' | 'none'
+  current_period_end    timestamptz,
+  updated_at            timestamptz not null default now()
 );
 
-create index if not exists profiles_user_id_idx on public.profiles(user_id);
+create index if not exists profiles_user_id_idx            on public.profiles(user_id);
+create index if not exists profiles_paddle_customer_id_idx on public.profiles(paddle_customer_id);
+create index if not exists profiles_subscription_id_idx    on public.profiles(subscription_id);
+
+-- ─────────────────────────────────────────────────────────────────────
+-- MIGRATION: if you previously ran an older version of this schema, run
+-- these to bring it up to date. Safe to run multiple times.
+-- ─────────────────────────────────────────────────────────────────────
+alter table public.profiles add column if not exists subscription_status text not null default 'inactive';
+alter table public.profiles add column if not exists subscription_id     text;
+alter table public.profiles add column if not exists paddle_customer_id  text;
+alter table public.profiles add column if not exists plan                text not null default 'none';
+alter table public.profiles add column if not exists current_period_end  timestamptz;
+alter table public.profiles add column if not exists updated_at          timestamptz not null default now();
+-- If the legacy `stripe_customer_id` column still exists, copy it into paddle_customer_id and drop it:
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema='public' and table_name='profiles' and column_name='stripe_customer_id') then
+    update public.profiles set paddle_customer_id = stripe_customer_id where paddle_customer_id is null and stripe_customer_id is not null;
+    alter table public.profiles drop column stripe_customer_id;
+  end if;
+end$$;
+
+create index if not exists profiles_paddle_customer_id_idx on public.profiles(paddle_customer_id);
+create index if not exists profiles_subscription_id_idx    on public.profiles(subscription_id);
 
 -- The server uses the service_role key for all reads/writes on profiles,
 -- so RLS doesn't have to allow anything for end users. We enable RLS with

@@ -627,8 +627,8 @@ var autoMode     = false;       // auto-scan on/off
 var autoScanMode = 'focused';   // 'focused' or 'custom'
 var autoWatchlist= [];          // custom watchlist pairs
 var autoInterval = null;        // setInterval handle
-var autoLastFire = 0;           // timestamp of last AI trigger
 var autoCooldownMs = 180000;    // 3 min default cooldown
+var autoLastFire = Date.now()-autoCooldownMs;  // timestamp of last AI trigger (init "ready to fire")
 var autoScanning = false;       // prevent concurrent scans
 var crossCtx     = ''; // cross-broker comparison context
 var cvdCtx      = ''; // cumulative volume delta trend // calculated confluence score
@@ -808,6 +808,8 @@ function fp(n){
 // BROKER SWITCHER
 // ═══════════════════════════════════════════
 function setBroker(b){
+  // Stop any pending entry watcher — it's bound to the old broker's API endpoints
+  try{stopEntryWatch();var _ew=document.getElementById('entry-watch-status');if(_ew)_ew.remove();}catch(e){}
   // Clean up massive mode whenever leaving it (before activeBroker is updated)
   if(activeBroker==='massive' && b!=='massive'){
     document.body.classList.remove('massive-mode');
@@ -1368,6 +1370,8 @@ function buildCompositeCanvas(sig,chartCanvas){
 }
 
 function setTF(btn,t){
+  // Stop any pending entry watcher — it would be polling stale candles after the TF switch
+  try{stopEntryWatch();var _ew=document.getElementById('entry-watch-status');if(_ew)_ew.remove();}catch(e){}
   tf=t;
   document.querySelectorAll('.tft').forEach(function(b){b.classList.remove('on');});
   btn.classList.add('on');
@@ -1403,6 +1407,8 @@ function pickCoin(btn,c){
 }
 
 function switchToCoin(c){
+  // Stop any pending entry watcher for the previous coin — its 1m fetch would be for the old symbol
+  try{stopEntryWatch();var _ew=document.getElementById('entry-watch-status');if(_ew)_ew.remove();}catch(e){}
   coin=c;
   document.getElementById('priceinput').value='';
   document.getElementById('pricesrc').textContent='';
@@ -1775,20 +1781,35 @@ function loadNews(){
   });
 }
 
+// HTML-escape any string we render into innerHTML — protects against XSS via news feeds, AI output, etc.
+function escHtml(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
 function renderNews(){
   var bm=new Date().getUTCHours()*60+new Date().getUTCMinutes();
-  document.getElementById('nfeed').innerHTML=newsData.map(function(n,i){
+  // Build news rows with DOM API instead of HTML strings — avoids any XSS via feed titles.
+  var feed=document.getElementById('nfeed');
+  feed.innerHTML='';
+  newsData.forEach(function(n,i){
     var ic=n.i==='high'?'ih':n.i==='med'?'im':'il';
     var sc=n.s==='bull'?{c:'tbull',l:'▲ BULL'}:n.s==='bear'?{c:'tbear',l:'▼ BEAR'}:{c:'tneut',l:'◆ NEUT'};
     var ts='';
     if(n.time instanceof Date&&!isNaN(n.time.getTime())){ts=p2(n.time.getUTCHours())+':'+p2(n.time.getUTCMinutes());}
     else{var off=(i*17+7)%80,m=((bm-off)%1440+1440)%1440;ts=p2(Math.floor(m/60))+':'+p2(m%60);}
-    return '<div class="ni" onclick="newsPrompt('+JSON.stringify(n.t||'')+')">'
-      +'<div class="ni-h"><span class="ni-src">'+(n.c||'')+'</span><span class="ni-t">'+(n.src||'')+' '+ts+'</span></div>'
-      +'<div class="ni-title">'+(n.t||'')+'</div>'
-      +'<div class="ni-tags"><span class="'+ic+'">'+(n.i||'').toUpperCase()+'</span><span class="'+sc.c+'">'+sc.l+'</span></div>'
-      +'</div>';
-  }).join('');
+    var row=document.createElement('div');
+    row.className='ni';
+    row.addEventListener('click',function(){newsPrompt(n.t||'');});
+    var hd=document.createElement('div');hd.className='ni-h';
+    var src=document.createElement('span');src.className='ni-src';src.textContent=n.c||'';
+    var tm=document.createElement('span');tm.className='ni-t';tm.textContent=(n.src||'')+' '+ts;
+    hd.appendChild(src);hd.appendChild(tm);
+    var ttl=document.createElement('div');ttl.className='ni-title';ttl.textContent=n.t||'';
+    var tags=document.createElement('div');tags.className='ni-tags';
+    var imp=document.createElement('span');imp.className=ic;imp.textContent=(n.i||'').toUpperCase();
+    var sen=document.createElement('span');sen.className=sc.c;sen.textContent=sc.l;
+    tags.appendChild(imp);tags.appendChild(sen);
+    row.appendChild(hd);row.appendChild(ttl);row.appendChild(tags);
+    feed.appendChild(row);
+  });
 }
 function newsPrompt(t){document.getElementById('qi').value='News: "'+t+'". How does this affect '+coin+'?';}
 function aiScan(){
@@ -3265,6 +3286,8 @@ function checkTriggers(candles,symbol){
 function runTradeMonitor(){
   // Lightweight monitor when a trade is already active
   if(!pend)return;
+  if(autoScanning)return; // already monitoring/scanning — don't overlap
+  autoScanning=true;
   fetchCandles(coin,liqTF,5).then(function(candles){
     if(!candles||!candles.length)return;
     var last=candles[candles.length-1];
@@ -3288,8 +3311,15 @@ function runTradeMonitor(){
 
     // ── BE alert — only after entry was hit ──
     if(window._entryAlerted&&pend.be_note&&e&&tp){
-      var beMatch=pend.be_note.match(/[\d,]+\.?\d*/);
-      var bePrice=beMatch?parseFloat(beMatch[0].replace(',','')):null;
+      // Anchor regex on "at" or "@" so a note like "Move SL to BE at 79,800 (50% to TP at 79,367)"
+      // extracts 79,800 instead of grabbing the first stray number.
+      var beMatch=pend.be_note.match(/(?:at|@)\s*\$?([\d,]+(?:\.\d+)?)/i);
+      var bePrice=beMatch?parseFloat(beMatch[1].replace(/,/g,'')):null;
+      // Sanity check: BE price must be on the correct side of entry (toward TP), otherwise fall back.
+      if(bePrice){
+        var validSide=isLong?(bePrice>e&&bePrice<tp):(bePrice<e&&bePrice>tp);
+        if(!validSide)bePrice=null;
+      }
       if(!bePrice){
         bePrice=isLong?e+(tp-e)*0.5:e-(e-tp)*0.5;
       }
@@ -3353,7 +3383,7 @@ function runTradeMonitor(){
     var toSl=Math.abs(cp-sl),toTp=Math.abs(tp-cp);
     var pctToTp=tp&&e?Math.round(Math.abs(cp-e)/Math.abs(tp-e)*100):0;
     setAutoStatus('Monitoring '+coin+' — '+pctToTp+'% to TP | '+slDist.toFixed(2)+'% from SL');
-  }).catch(function(){});
+  }).catch(function(){}).finally(function(){autoScanning=false;});
 }
 
 function triggerAlert(title,msg,color,noDiscord){
@@ -3612,6 +3642,16 @@ function callAI(msg){
           return;
         }
       }
+      // Cap AI confidence by the pre-calculated confluence score (+10 grace).
+      // System prompt asks for this; this enforces it client-side as a safety net.
+      try{
+        if(sig.confidence&&confluence&&sig.direction!=='NO TRADE'){
+          var ccap=(sig.direction==='LONG'?(confluence.long&&confluence.long.score):(confluence.short&&confluence.short.score));
+          if(typeof ccap==='number'&&isFinite(ccap)){
+            sig.confidence=Math.min(parseFloat(sig.confidence)||0, ccap+10);
+          }
+        }
+      }catch(_){}
       drawSig(sig);
     });
   })
@@ -4230,9 +4270,9 @@ function logTrade(oc){
   st.rr=+((parseFloat(st.rr)||0)+rrG).toFixed(2);
   save();drawJ();drawSt();clrPend();
   if(autoMode){
-    autoLastFire=0;
-    setAutoStatus('✓ '+oc+' logged — resuming scan');
-    setTimeout(runAutoScan,2000);
+    // Enforce the full cooldown after a trade closes — prevents instant re-scan loops.
+    autoLastFire=Date.now();
+    setAutoStatus('✓ '+oc+' logged — '+Math.round(autoCooldownMs/1000)+'s cooldown before next scan');
   }
 }
 function clrPend(outcome){
@@ -4688,7 +4728,8 @@ function init(){
   setTimeout(buildHeatmap,2000);
   // MASSIVE/GOLD: poll every 10s (Polygon has no WebSocket/SSE feed).
   // weex / binance / hyperliquid: SSE stream handles live price + chart bar.
-  setInterval(function(){if(activeBroker==='massive'||coin==='GOLD')fetchPrice(coin);},10000);
+  if(window._goldPollHandle)clearInterval(window._goldPollHandle);
+  window._goldPollHandle=setInterval(function(){if(activeBroker==='massive'||coin==='GOLD')fetchPrice(coin);},10000);
   // Start SSE live price stream for current broker/coin
   startLivePrice(activeBroker,coin,tf);
   // Connect SSE for server-side scan events (signals, alerts, outcomes)
