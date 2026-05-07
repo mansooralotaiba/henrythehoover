@@ -208,11 +208,14 @@ app.get('/auth/callback', async (req, res) => {
         return res.redirect('/login?error=' + encodeURIComponent(error?.message || 'verify_failed'));
       }
       const email = data.user.email.toLowerCase();
-      const profile = await loadProfile(email);
-      if (!profile.user_id) {
+      setAuthCookies(res, data.session.access_token, data.session.refresh_token);
+      // Recovery flow → send to password-reset page (session cookie is now set)
+      if (type === 'recovery') return res.redirect('/reset-password');
+      // Magic-link / email OTP flow → normal login
+      const profile = await loadProfile(email).catch(() => null);
+      if (profile && !profile.user_id) {
         await supaAdmin.from('profiles').update({ user_id: data.user.id }).eq('email', email);
       }
-      setAuthCookies(res, data.session.access_token, data.session.refresh_token);
       const isAdmin = email === ADMIN_EMAIL;
       const subscribed = isAdmin || profile?.subscription_status === 'active';
       return res.redirect(subscribed ? '/terminal' : '/subscribe');
@@ -243,8 +246,10 @@ app.get('/auth/callback', async (req, res) => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ access_token, refresh_token })
     });
-    if (r.ok) location.replace('/');
-    else { const t = await r.text(); msg.textContent = 'Sign-in failed (' + r.status + '): ' + t; }
+    if (r.ok) {
+      const isRecovery = params.get('type') === 'recovery';
+      location.replace(isRecovery ? '/reset-password' : '/terminal');
+    } else { const t = await r.text(); msg.textContent = 'Sign-in failed (' + r.status + '): ' + t; }
   } catch (e) { msg.textContent = 'Network error: ' + e.message; }
 })();
 </script>`);
@@ -278,11 +283,28 @@ app.post('/auth/logout', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/login',    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
-app.get('/register', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
-app.get('/subscribe',(_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'subscribe.html')));
+app.get('/login',          (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.get('/register',       (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
+app.get('/subscribe',      (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'subscribe.html')));
 app.get('/subscribe/success', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'subscribe-success.html')));
-app.get('/account',  requireSession, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
+app.get('/reset-password', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reset-password.html')));
+app.get('/account',        requireSession, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
+
+// Set a new password — requires valid session set by /auth/callback (recovery flow)
+app.post('/api/auth/update-password', requireSession, express.json(), async (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  }
+  try {
+    const { error } = await supaAdmin.auth.admin.updateUserById(req.user.id, { password });
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[update-password]', err);
+    res.status(500).json({ error: 'Password update failed.' });
+  }
+});
 
 // ── Email + password auth ────────────────────────────────────────────────────
 app.post('/api/auth/register', express.json(), async (req, res) => {
@@ -334,7 +356,7 @@ app.post('/api/auth/login', express.json(), async (req, res) => {
 app.post('/api/auth/forgot-password', express.json(), async (req, res) => {
   const addr = String(req.body?.email || '').trim().toLowerCase();
   if (!addr) return res.status(400).json({ error: 'missing_email' });
-  await supaAnon.auth.resetPasswordForEmail(addr, { redirectTo: `${SITE_URL}/login?reset=1` });
+  await supaAnon.auth.resetPasswordForEmail(addr, { redirectTo: `${SITE_URL}/auth/callback` });
   res.json({ ok: true }); // always OK — don't expose whether email exists
 });
 
