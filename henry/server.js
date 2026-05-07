@@ -1046,6 +1046,28 @@ app.post('/api/scan/update-watchlist', requireAuth, express.json(), (req, res) =
   res.json({ ok: true, count: sub.watchlist.length });
 });
 
+// Returns the user's current pending signal if the server-side AI generated one.
+// Browser polls this on page load to sync UI with server state when the AI was
+// generated while no browser was open.
+app.get('/api/scan/current-signal', requireAuth, (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (!sub || !sub.pendSignal) return res.json({ signal: null });
+  res.json({
+    signal: sub.pendSignal,
+    signalId: sub.signalId,
+    signalTimestamp: sub.signalTimestamp,
+    coin: sub.coin,
+    tf: sub.tf,
+    broker: sub.broker,
+    state: {
+      entryAlerted: !!sub._entryAlerted,
+      beAlerted:    !!sub._beAlerted,
+      tpAlerted:    !!sub._tpAlerted,
+      outcomeLogged:!!sub._outcomeLogged,
+    },
+  });
+});
+
 app.post('/api/scan/stop', requireAuth, (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (sub) sub.active = false;
@@ -1191,10 +1213,14 @@ async function runServerTradeMonitor(userId, sub) {
         await logSignalOutcomeAndJournal(userId, sub.signalId, 'TP', parseFloat(pendSignal.rr) || 2)
           .catch(e => console.error('[server TP outcome]', e.message));
       }
+      // Clear so the next scan can resume on the watchlist
+      sub.pendSignal = null; sub.signalId = null; sub.signalTimestamp = null;
+      sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false; sub._outcomeLogged = false;
+      return;
     }
   }
 
-  // SL — resets all flags
+  // SL — also clears the active trade so next scan resumes
   const slHit = isLong ? price <= slP : price >= slP;
   if (slHit) {
     // Decide BE vs SL BEFORE clearing flags
@@ -1204,15 +1230,17 @@ async function runServerTradeMonitor(userId, sub) {
       await logSignalOutcomeAndJournal(userId, sub.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1)
         .catch(e => console.error('[server SL outcome]', e.message));
     }
-    sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false;
     await notifyUser(userId, isAdmin, {
       title: `${wasBE ? '⚑ STOPPED AT BE' : '🛑 SL HIT'}: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
       body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${price.toFixed(2)}. Logged automatically.`,
       color: wasBE ? 'am' : 're',
     });
+    sub.pendSignal = null; sub.signalId = null; sub.signalTimestamp = null;
+    sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false; sub._outcomeLogged = false;
+    return;
   }
 
-  // Expiry — only if entry never hit, fires once
+  // Expiry — only if entry never hit, fires once, clears the trade
   if (!sub._entryAlerted && !sub._expiryAlerted && pendSignal.expiry_candles) {
     const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
     const maxMs = pendSignal.expiry_candles * (tfMs[tf] || 900000);
@@ -1223,6 +1251,9 @@ async function runServerTradeMonitor(userId, sub) {
         body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles.`,
         color: 'am',
       });
+      // Clear so scan resumes — but don't log outcome to journal (no trade actually happened)
+      sub.pendSignal = null; sub.signalId = null; sub.signalTimestamp = null;
+      sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false; sub._outcomeLogged = false;
     }
   }
 }
@@ -1274,6 +1305,332 @@ function detectTrigger(candles) {
   return null;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// SERVER-SIDE AI SIGNAL GENERATION
+// When a trigger fires, the server runs the full AI flow autonomously so the
+// phone push has the complete signal even if no browser is open.
+// ════════════════════════════════════════════════════════════════════════════
+
+async function fetchFundingRateServer(coin) {
+  // Binance gives funding for almost every USDT-perp; use it regardless of broker.
+  try {
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${coin}`);
+    const d = await r.json();
+    return parseFloat(d.lastFundingRate);
+  } catch { return null; }
+}
+
+async function fetchOpenInterestServer(coin) {
+  try {
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${coin}`);
+    const d = await r.json();
+    return parseFloat(d.openInterest) || null;
+  } catch { return null; }
+}
+
+// Direct Anthropic API call (bypasses /api/claude proxy — no cookie auth needed server-side).
+async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800) {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    }),
+  });
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message || 'Anthropic API error');
+  return (d.content && d.content[0] && d.content[0].text) || '';
+}
+
+function parseSignalJSONServer(text) {
+  try {
+    const m = text.match(/\{[\s\S]*\}/);
+    return m ? JSON.parse(m[0]) : JSON.parse(text);
+  } catch { return null; }
+}
+
+function validateSignalLevelsServer(sig) {
+  if (!sig || !sig.direction) return false;
+  if (sig.direction === 'NO TRADE') return true;
+  if (sig.entry == null || sig.sl == null || sig.tp == null) return false;
+  const e = parseFloat(sig.entry), sl = parseFloat(sig.sl), tp = parseFloat(sig.tp);
+  if (Number.isNaN(e) || Number.isNaN(sl) || Number.isNaN(tp)) return false;
+  if (sig.direction === 'LONG')  return sl < e && tp > e;
+  if (sig.direction === 'SHORT') return sl > e && tp < e;
+  return false;
+}
+
+function validateAndFixBEServer(sig) {
+  if (!sig || !sig.be_note || sig.direction === 'NO TRADE') return sig;
+  const isLong = sig.direction === 'LONG';
+  const e = parseFloat(sig.entry), tp = parseFloat(sig.tp);
+  const m = String(sig.be_note).match(/(?:at|@)\s*\$?([\d,]+(?:\.\d+)?)/i);
+  const bePrice = m ? parseFloat(m[1].replace(/,/g, '')) : null;
+  const validSide = bePrice != null && (isLong ? (bePrice > e && bePrice < tp) : (bePrice < e && bePrice > tp));
+  if (!validSide) {
+    const correctBE = isLong ? e + (tp - e) * 0.5 : e - (e - tp) * 0.5;
+    const decimals = e >= 1000 ? 2 : e >= 100 ? 2 : e >= 1 ? 4 : 6;
+    sig.be_note = `Move SL to BE at ${correctBE.toFixed(decimals)} (50% to TP)`;
+  }
+  return sig;
+}
+
+function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger }) {
+  const lines = [];
+  lines.push(`AUTO TRIGGER: ${trigger.type.toUpperCase()} — ${trigger.desc}`);
+
+  if (baseCandles && baseCandles.length >= 5) {
+    const recent = baseCandles.slice(-15);
+    const closes = recent.map(c => c.c);
+    const highs = recent.map(c => c.h);
+    const lows  = recent.map(c => c.l);
+    const high = Math.max(...highs), low = Math.min(...lows);
+    const lastClose = closes[closes.length - 1];
+    const dir = closes[0] < lastClose ? 'rising' : 'falling';
+    lines.push(`\n${tf} STRUCTURE (last 15 candles): range ${low.toFixed(4)} — ${high.toFixed(4)}, last close ${lastClose}, recent ${dir}.`);
+  }
+
+  if (mtfH1 && mtfH1.length >= 10) {
+    const last = mtfH1[mtfH1.length - 1];
+    const slice = mtfH1.slice(-20);
+    const ema = slice.reduce((s, c) => s + c.c, 0) / slice.length;
+    const high = Math.max(...slice.map(c => c.h));
+    const low  = Math.min(...slice.map(c => c.l));
+    lines.push(`1H CONTEXT: last ${last.c.toFixed(4)} | 20-EMA ${ema.toFixed(4)} (${last.c > ema ? 'above' : 'below'}) | range ${low.toFixed(4)} — ${high.toFixed(4)}.`);
+  }
+
+  if (mtfH4 && mtfH4.length >= 5) {
+    const last = mtfH4[mtfH4.length - 1];
+    const slice = mtfH4.slice(-10);
+    const ema = slice.reduce((s, c) => s + c.c, 0) / slice.length;
+    lines.push(`4H CONTEXT (HTF bias): last ${last.c.toFixed(4)} | 10-EMA ${ema.toFixed(4)} — ${last.c > ema ? 'above (bullish HTF)' : 'below (bearish HTF)'}.`);
+  }
+
+  if (btcCandles && btcCandles.length >= 5 && coin !== 'BTCUSDT') {
+    const first = btcCandles[0].c;
+    const last = btcCandles[btcCandles.length - 1].c;
+    const pct = ((last - first) / first * 100).toFixed(2);
+    const bias = parseFloat(pct) > 0.5 ? 'bullish' : parseFloat(pct) < -0.5 ? 'bearish' : 'neutral';
+    lines.push(`BTC CORRELATION: BTC moved ${pct}% across recent candles — ${bias} for risk-on alts.`);
+  }
+
+  if (funding != null && !Number.isNaN(funding)) {
+    const fpct = (funding * 100).toFixed(4);
+    let fbias = 'neutral';
+    if (funding >  0.01)  fbias = 'extreme positive (overcrowded longs — fade SHORT)';
+    else if (funding >  0.005) fbias = 'positive (longs paying)';
+    else if (funding < -0.01)  fbias = 'extreme negative (overcrowded shorts — fade LONG)';
+    else if (funding < -0.005) fbias = 'negative (shorts paying)';
+    lines.push(`FUNDING RATE: ${fpct}% — ${fbias}.`);
+  }
+
+  if (oi != null && !Number.isNaN(oi)) {
+    lines.push(`OPEN INTEREST: ${(oi / 1e6).toFixed(2)}M contracts.`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
+  const isMetal = /^(XAU|XAG|XTI|XBR)/.test(coin);
+  const offset = isMetal ? 8 : (lastClose || 1) * 0.003;
+  const slDist = isMetal ? 22 : (lastClose || 1) * 0.008;
+  const tpDist = isMetal ? 38 : (lastClose || 1) * 0.012;
+  const fmt = (v) => v != null ? v.toFixed(lastClose >= 1000 ? 2 : 4) : '0';
+  const exLE = lastClose ? fmt(lastClose - offset) : '0';
+  const exLS = lastClose ? fmt(lastClose - offset - slDist) : '0';
+  const exLT = lastClose ? fmt(lastClose - offset + tpDist) : '0';
+  const exSE = lastClose ? fmt(lastClose + offset) : '0';
+  const exSS = lastClose ? fmt(lastClose + offset + slDist) : '0';
+  const exST = lastClose ? fmt(lastClose + offset - tpDist) : '0';
+
+  return [
+    `You are Henry, an institutional futures trading AI. You are analysing ${coin} on ${tf} timeframe (${broker} broker) AUTONOMOUSLY (no human will retry — your output goes to a phone push and Discord embed directly).`,
+    '',
+    'CONTEXT FROM SERVER-SIDE SCAN:',
+    contextStr,
+    '',
+    'CURRENT PRICE: ' + (lastClose != null ? lastClose : 'unknown') + '. DO NOT use current price as entry — choose a structural level (zone/FVG/OB/post-sweep).',
+    '',
+    'DIRECTION RULES — READ CAREFULLY:',
+    `LONG: entry < current_price, SL BELOW entry, TP ABOVE entry. Example: entry=${exLE}, sl=${exLS}, tp=${exLT}`,
+    `SHORT: entry > current_price (or at current for market), SL ABOVE entry, TP BELOW entry. Example: entry=${exSE}, sl=${exSS}, tp=${exST}`,
+    'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5.',
+    '',
+    'BE_NOTE RULES:',
+    'be_note is the price at which the user moves SL to entry (breakeven).',
+    'For LONG: BE price MUST be ABOVE entry, BELOW TP. Recommended: halfway between entry and TP.',
+    'For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: halfway between entry and TP.',
+    'Format: "Move SL to BE at <PRICE>".',
+    '',
+    'WHEN UNSURE: return direction "NO TRADE" with reasoning explaining why. Do NOT force a low-quality signal.',
+    '',
+    'Output ONLY this JSON (no markdown, no extra text):',
+    `{"pair":"${coin}","direction":"LONG or SHORT or NO TRADE","entry":${exLE},"sl":${exLS},"tp":${exLT},"rr":2.1,"confidence":72,"session":"","entry_reason":"Level and why","reasoning":"Reference the data sources you used (1H/4H/BTC/funding/etc).","be_note":"Move SL to BE at X","key_risk":"Main risk","expiry_candles":3,"invalidation":"Price action that cancels trade"}`,
+    '',
+    'VERIFY BEFORE OUTPUT: if SHORT then tp < entry < sl AND be_note price between tp and entry. If LONG then sl < entry < tp AND be_note price between entry and tp.',
+  ].join('\n');
+}
+
+async function saveServerSignal(userId, signal, trigger, broker, tf) {
+  try {
+    const { data, error } = await supaAdmin.from('signals').insert({
+      user_id: userId,
+      pair: signal.pair,
+      direction: signal.direction,
+      entry: signal.entry || null,
+      sl: signal.sl || null,
+      tp: signal.tp || null,
+      rr: signal.rr || null,
+      confidence: signal.confidence || null,
+      session_name: signal.session || null,
+      broker: broker || null,
+      timeframe: tf || null,
+      trigger_type: trigger?.type || null,
+      trigger_desc: trigger?.desc || null,
+      entry_reason: signal.entry_reason || null,
+      reasoning: signal.reasoning || null,
+      be_note: signal.be_note || null,
+      key_risk: signal.key_risk || null,
+      invalidation: signal.invalidation || null,
+      expiry_candles: signal.expiry_candles || null,
+    }).select('id').single();
+    if (error) { console.error('[saveServerSignal]', error.message); return null; }
+    return data.id;
+  } catch (e) { console.error('[saveServerSignal]', e.message); return null; }
+}
+
+async function postServerSignalToDiscord(signal, trigger, broker, tf) {
+  const url = process.env.DISCORD_AUTO_WEBHOOK;
+  if (!url || !signal || signal.direction === 'NO TRADE') return;
+  const isLong = signal.direction === 'LONG';
+  const triggerLabel = trigger ? `[AUTO ${trigger.type.toUpperCase()}] ${trigger.desc}` : 'Auto-generated';
+  const fields = [
+    { name: 'Entry',      value: '`' + (signal.entry ?? '—') + '`',          inline: true },
+    { name: 'Stop Loss',  value: '`' + (signal.sl    ?? '—') + '`',          inline: true },
+    { name: 'Take Profit',value: '`' + (signal.tp    ?? '—') + '`',          inline: true },
+    { name: 'RR',         value: '`' + (signal.rr    ?? '—') + 'R`',         inline: true },
+    { name: 'Confidence', value: '`' + (signal.confidence ?? '—') + '%`',    inline: true },
+    { name: 'Broker / TF',value: '`' + (broker || '—') + ' / ' + (tf || '—') + '`', inline: true },
+  ];
+  const embed = {
+    title: `⚡ ${isLong ? '🟢' : '🔴'} SERVER AUTO: ${signal.pair} ${signal.direction}`,
+    color: isLong ? 3066993 : 15548997,
+    description: `**Trigger:** ${triggerLabel}\n`
+      + (signal.entry_reason ? `**Entry:** ${signal.entry_reason}\n` : '')
+      + (signal.reasoning ? String(signal.reasoning).slice(0, 600) : '')
+      + (signal.be_note ? `\n⚑ **${signal.be_note}**` : '')
+      + (signal.key_risk ? `\n⚠ ${signal.key_risk}` : '')
+      + (signal.invalidation ? `\n✕ Invalidated if: ${signal.invalidation}` : '')
+      + (signal.expiry_candles ? `\n⏱ Expires: ${signal.expiry_candles} candles on ${tf}` : ''),
+    fields,
+    footer: { text: 'Henry Server Auto-Scan | ' + new Date().toUTCString() },
+    timestamp: new Date().toISOString(),
+  };
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ embeds: [embed], username: 'Henry Auto' }),
+    });
+  } catch (e) { console.error('[server signal discord]', e.message); }
+}
+
+// Main entry — runs the full AI flow on the server when a trigger fires.
+async function runServerAI(userId, sub, trigger, baseCandles) {
+  const { coin, tf, broker, isAdmin } = sub;
+  const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
+
+  // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
+  const [mtfH1, mtfH4, btcCandles, funding, oi] = await Promise.all([
+    fetchCandlesServer(coin, '1h', 50, broker).catch(() => []),
+    fetchCandlesServer(coin, '4h', 30, broker).catch(() => []),
+    coin !== 'BTCUSDT' ? fetchCandlesServer('BTCUSDT', tf, 30, broker).catch(() => []) : Promise.resolve([]),
+    fetchFundingRateServer(coin).catch(() => null),
+    fetchOpenInterestServer(coin).catch(() => null),
+  ]);
+
+  const contextStr = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger });
+  const systemPrompt = buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose);
+  const userMessage = `Analyse ${coin} on ${tf}. Auto trigger fired: ${trigger.type.toUpperCase()} — ${trigger.desc}. Output the signal JSON.`;
+
+  let signal = null;
+  try {
+    const text = await callAnthropicServer(systemPrompt, userMessage, 800);
+    signal = parseSignalJSONServer(text);
+  } catch (e) {
+    console.error('[runServerAI call]', e.message);
+    return null;
+  }
+  if (!signal) { console.error('[runServerAI] no JSON parsed'); return null; }
+
+  // Validate levels — auto-retry once with explicit correction
+  if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) {
+    const correction = `Your previous output had invalid levels. Direction was ${signal.direction} but: entry=${signal.entry} SL=${signal.sl} TP=${signal.tp}. ` +
+      (signal.direction === 'LONG' ? 'For LONG: SL must be BELOW entry, TP must be ABOVE entry.' : 'For SHORT: SL must be ABOVE entry, TP must be BELOW entry.') +
+      ' Recalculate and output corrected JSON only.';
+    try {
+      const retryText = await callAnthropicServer(systemPrompt, userMessage + '\n\n' + correction, 800);
+      const retried = parseSignalJSONServer(retryText);
+      if (retried && validateSignalLevelsServer(retried)) signal = retried;
+    } catch (e) { console.error('[runServerAI retry]', e.message); }
+  }
+  if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) {
+    console.error('[runServerAI] invalid levels after retry, aborting');
+    return null;
+  }
+
+  // NO TRADE — just push a notification, don't activate the monitor
+  if (signal.direction === 'NO TRADE') {
+    await sendPushTo(userId, {
+      title: `${coin.replace('USDT', '')}: NO TRADE`,
+      body: signal.reasoning ? String(signal.reasoning).slice(0, 120) : 'AI suggests no trade right now.',
+      icon: '/manifest.json',
+    });
+    return signal;
+  }
+
+  signal = validateAndFixBEServer(signal);
+  if (signal.confidence != null) signal.confidence = Math.max(0, Math.min(100, parseFloat(signal.confidence) || 0));
+
+  const signalId = await saveServerSignal(userId, signal, trigger, broker, tf);
+
+  // Rich push with the full signal — phone shows entry/SL/TP/RR/confidence inline
+  await sendPushTo(userId, {
+    title: `⚡ ${signal.direction === 'LONG' ? '🟢' : '🔴'} ${coin.replace('USDT', '')} ${signal.direction}`,
+    body: `Entry ${signal.entry} | SL ${signal.sl} | TP ${signal.tp} | ${signal.rr || '—'}R @ ${signal.confidence || '—'}%`,
+    icon: '/manifest.json',
+    data: { coin, tf, broker, signalId, trigger, signal },
+  });
+
+  // Discord (admin-only — auto-scan is admin-only anyway, but defensive)
+  if (isAdmin) {
+    await postServerSignalToDiscord(signal, trigger, broker, tf).catch(e => console.error('[discord auto]', e.message));
+  }
+
+  // Activate the trade monitor — the next scan tick will route to runServerTradeMonitor
+  sub.pendSignal = signal;
+  sub.signalId = signalId;
+  sub.signalTimestamp = Date.now();
+  sub._entryAlerted = false;
+  sub._beAlerted = false;
+  sub._tpAlerted = false;
+  sub._expiryAlerted = false;
+  sub._outcomeLogged = false;
+  // Lock the monitor onto the triggered pair (in case watchlist scan picked a different one)
+  sub.coin = signal.pair;
+
+  return signal;
+}
+
 async function runServerScan(userId, sub) {
   if (Date.now() < sub.cooldownUntil) return;
   if (sub.pendSignal) return runServerTradeMonitor(userId, sub);
@@ -1289,9 +1646,9 @@ async function runServerScan(userId, sub) {
     try {
       const candles = await fetchCandlesServer(p.sym, sub.tf, 30, sub.broker);
       const trigger = candles && candles.length >= 11 ? detectTrigger(candles) : null;
-      return { pair: p, trigger };
+      return { pair: p, candles, trigger };
     } catch {
-      return { pair: p, trigger: null };
+      return { pair: p, candles: [], trigger: null };
     }
   }));
 
@@ -1307,14 +1664,25 @@ async function runServerScan(userId, sub) {
   // Apply cooldown — only count the scan as "fired" when something actually triggered
   sub.cooldownUntil = Date.now() + sub.cooldownMs;
 
-  // Push notification mentions which pair triggered (so phone alerts make sense
-  // when the user has 5+ pairs in the watchlist).
-  await sendPushTo(userId, {
-    title: `⚡ ${best.trigger.type.toUpperCase()}: ${best.pair.lbl}`,
-    body: `${best.trigger.desc}. Open Henry to run AI analysis.`,
-    icon: '/manifest.json',
-    data: { coin: best.pair.sym, tf: sub.tf, broker: sub.broker, trigger: best.trigger },
-  });
+  // Run full AI analysis on the triggered pair (autonomous: phone push + Discord get full signal).
+  const originalCoin = sub.coin;
+  sub.coin = best.pair.sym; // temporarily so context strings reference the right pair
+  let aiSignal = null;
+  try {
+    aiSignal = await runServerAI(userId, sub, best.trigger, best.candles);
+  } catch (e) { console.error('[runServerAI top]', e.message); }
+
+  // If AI failed (network/API error), restore coin and fall back to a trigger-only push
+  // so the user still hears about the signal candidate.
+  if (!aiSignal) {
+    sub.coin = originalCoin;
+    await sendPushTo(userId, {
+      title: `⚡ ${best.trigger.type.toUpperCase()}: ${best.pair.lbl}`,
+      body: `${best.trigger.desc}. Open Henry to run AI analysis.`,
+      icon: '/manifest.json',
+      data: { coin: best.pair.sym, tf: sub.tf, broker: sub.broker, trigger: best.trigger },
+    });
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

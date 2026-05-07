@@ -3209,6 +3209,8 @@ function toggleAutoScan(){
     panel.style.display='flex';
     buildWatchlistUI();
     updateScanStatus();
+    // Pull any signal the server already has so we don't double-scan
+    syncServerSignal();
     startAutoScan();
     // Kick off Discord status updates with whatever interval the dropdown shows
     var sel=document.getElementById('status-interval');
@@ -4025,7 +4027,8 @@ function _drawSigCard(sig){
   pend=sig;
   // Persist to Supabase + sync with server-side trade monitor (admins only).
   // Only persist real signals — skip the "NO TRADE" responses.
-  if(sig.direction==='LONG'||sig.direction==='SHORT'){
+  // Also skip if this signal came from the server's auto-AI (already saved + synced server-side).
+  if((sig.direction==='LONG'||sig.direction==='SHORT')&&!sig._fromServer){
     try{saveSignalToHistory(sig,window._autoTrigger&&window._autoTrigger.trigger);}catch(e){}
     try{serverScanSyncSignal(sig);}catch(e){}
   }
@@ -4908,6 +4911,38 @@ function init(){
       if(cd)cd.innerHTML='<div style="padding:20px;text-align:center;font-size:11px;color:var(--re)">Chart library failed to load.<br><button onclick="loadChart()" style="margin-top:8px;padding:4px 10px;background:transparent;border:1px solid var(--cy);color:var(--cy);font-family:var(--mn);font-size:10px;cursor:pointer">RETRY</button></div>';
     }
   },200);
+  // Sync server-generated signals: if the server's auto-AI fired while no browser
+  // was open, render the signal card so the user sees it on next page load.
+  syncServerSignal();
+}
+
+function syncServerSignal(){
+  if(!IS_ADMIN)return;
+  fetch('/api/scan/current-signal',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){
+      if(!d||!d.signal)return;
+      // Already showing a signal locally — server's pending matches what we have. Skip.
+      if(pend&&window._lastSignalId===d.signalId)return;
+      // If we're on a different pair than the server signal, switch to it.
+      if(d.coin&&d.coin!==coin){
+        var btn=document.getElementById('cb-'+d.coin);
+        if(btn)pickCoin(btn,d.coin);
+        else switchToCoin(d.coin);
+      }
+      // _confirmed → skip entry watch. _fromServer → skip duplicate save/sync (server did it).
+      var sig=Object.assign({},d.signal,{_confirmed:true,_fromServer:true});
+      window._lastSignalId=d.signalId;
+      // Restore alert flags so the browser monitor doesn't re-fire alerts
+      // for events the server already announced via push/Discord.
+      if(d.state){
+        if(d.state.entryAlerted)window._entryAlerted=true;
+        if(d.state.beAlerted)   window._beAlerted=true;
+        if(d.state.tpAlerted)   window._tpAlerted=true;
+      }
+      setTimeout(function(){drawSig(sig);},800);
+    })
+    .catch(function(){});
 }
 // Auth is handled server-side; just boot the terminal.
 init();
