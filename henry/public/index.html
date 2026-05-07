@@ -3149,9 +3149,6 @@ function setAutoStatus(msg){
 }
 
 function getPairsToScan(){
-  // Gold uses Polygon (no WebSocket/SSE) — exclude from auto-scan to prevent
-  // phantom signals after a manual gold trade is closed.
-  if(activeBroker==='massive'||coin==='GOLD')return [];
   // Focused mode only — always scan current selected pair
   return [{sym:coin,lbl:coin.replace('USDT','')}];
 }
@@ -3172,6 +3169,9 @@ function runAutoScan(){
     runTradeMonitor();
     return;
   }
+  // Entry confirmation watcher is active — hold off on scanning for new signals
+  // (ocrow is hidden during watch so the check above won't catch it)
+  if(_entryWatchActive)return;
   autoScanning=true;
   setAutoStatus('Scanning '+coin.replace('USDT','')+' on '+liqTF+'...');
   // Scan all pairs in parallel (lightweight — only 20 candles each)
@@ -3719,6 +3719,13 @@ function checkEntryConfirmation(sig){
 
 function startEntryWatch(sig){
   if(!sig||sig.direction==='NO TRADE')return;
+  // Gold uses Polygon — no 1m Binance/Weex futures data available for confirmation.
+  // Render the card immediately; monitoring works fine via the Polygon 10s poll.
+  if(activeBroker==='massive'||coin==='GOLD'){
+    sig._confirmed=true;
+    _drawSigCard(sig);
+    return;
+  }
   _entryWatchActive=true;
   window._entryWatchSig=sig;
   var isLong=sig.direction==='LONG';
