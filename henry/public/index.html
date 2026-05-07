@@ -2083,9 +2083,15 @@ function buildSys(){
     +'LONG: entry < current_price, SL BELOW entry, TP ABOVE entry. Example: entry='+exLongEntry+', sl='+exLongSL+', tp='+exLongTP+'\n'
     +'SHORT: entry > current_price (or at current for market), SL ABOVE entry, TP BELOW entry. Example: entry='+exShortEntry+', sl='+exShortSL+', tp='+exShortTP+'\n'
     +'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5\n\n'
+    +'BE_NOTE RULES — CRITICAL:\n'
+    +'be_note is the price at which the user moves their stop-loss to entry (breakeven), locking in no-loss once price travels toward TP.\n'
+    +'For LONG: BE price MUST BE between entry and TP (i.e. ABOVE entry, BELOW TP). Recommended: halfway between entry and TP.\n'
+    +'For SHORT: BE price MUST BE between TP and entry (i.e. BELOW entry, ABOVE TP). Recommended: halfway between entry and TP.\n'
+    +'NEVER put the BE price on the SL side of entry — that would lock in a loss instead of breakeven.\n'
+    +'Format: "Move SL to BE at <PRICE>" — the price must satisfy the rule above.\n\n'
     +'Output ONLY this JSON (no markdown):\n'
     +'{"pair":"'+coin+'","direction":"LONG or SHORT or NO TRADE","entry":'+exLongEntry+',"sl":'+exLongSL+',"tp":'+exLongTP+',"rr":2.1,"confidence":72,"session":"'+sName()+'","entry_reason":"Level and why","reasoning":"All 13 sources referenced.","be_note":"Move SL to BE at X","key_risk":"Main risk","expiry_candles":3,"invalidation":"Price action that cancels trade"}\n\n'
-    +'VERIFY BEFORE OUTPUT: if SHORT then tp < entry < sl. If LONG then sl < entry < tp. Wrong order = invalid signal.';
+    +'VERIFY BEFORE OUTPUT: if SHORT then tp < entry < sl AND be_note price is between tp and entry. If LONG then sl < entry < tp AND be_note price is between entry and tp. Wrong order = invalid signal.';
 }
 
 // ═══════════════════════════════════════════
@@ -3861,6 +3867,20 @@ function _drawSigCard(sig){
     // Check RR minimum after calculation
     if(!sig._needsRetry&&sig.rr&&sig.rr<1.5&&sig.direction!=='NO TRADE'){
       sig._rrWarn=true;
+    }
+    // ── BE NOTE VALIDATION ──
+    // For LONG: BE must be ABOVE entry (toward TP). For SHORT: BE must be BELOW entry (toward TP).
+    // If AI generated a wrong-side BE level, replace with the calculated halfway-to-TP price.
+    if(sig.be_note&&!sig._needsRetry&&(sig.direction==='LONG'||sig.direction==='SHORT')){
+      var _isLong=sig.direction==='LONG';
+      var _beMatch=String(sig.be_note).match(/(?:at|@)\s*\$?([\d,]+(?:\.\d+)?)/i);
+      var _bePrice=_beMatch?parseFloat(_beMatch[1].replace(/,/g,'')):null;
+      var _validSide=_bePrice&&(_isLong?(_bePrice>e&&_bePrice<tp):(_bePrice<e&&_bePrice>tp));
+      if(!_validSide){
+        var _correctBE=_isLong?(e+(tp-e)*0.5):(e-(e-tp)*0.5);
+        var _decimals=(coin.indexOf('USDT')>-1&&e>=1000)?2:e>=100?2:e>=1?4:6;
+        sig.be_note='Move SL to BE at '+_correctBE.toFixed(_decimals)+' (50% to TP)';
+      }
     }
   }
   pend=sig;
