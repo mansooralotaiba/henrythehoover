@@ -303,7 +303,7 @@ app.post('/api/auth/register', express.json(), async (req, res) => {
         subscription_status: 'inactive', plan: 'none',
       });
     }
-    // Auto sign-in so browser can hit /api/stripe/create-checkout straight away
+    // Auto sign-in so browser can proceed to subscribe page straight away
     const { data: si, error: sie } = await supaAnon.auth.signInWithPassword({ email: addr, password });
     if (!sie && si?.session) setAuthCookies(res, si.session.access_token, si.session.refresh_token);
     res.json({ ok: true });
@@ -1301,6 +1301,6 @@ app.listen(PORT, () => {
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');
   if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
-  if (!stripe) console.warn('[warn] STRIPE_SECRET_KEY not set — payments disabled');
-  if (!process.env.STRIPE_PRICE_ID) console.warn('[warn] STRIPE_PRICE_ID not set');
+  if (!process.env.PADDLE_API_KEY) console.warn('[warn] PADDLE_API_KEY not set — payments disabled');
+  if (!process.env.PADDLE_PRICE_ID) console.warn('[warn] PADDLE_PRICE_ID not set');
 });
