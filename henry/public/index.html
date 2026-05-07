@@ -395,6 +395,14 @@ body.massive-mode #extrapairs{display:none!important}
       <div id="watchlist-picks" style="display:flex;flex-wrap:wrap;gap:4px"></div>
     </div>
 
+    <!-- Per-pair status grid: one box per watchlist pair, polled every 5s -->
+    <div id="pair-monitor" style="width:100%;margin-top:8px;display:none">
+      <div style="font-size:9px;color:var(--mu);letter-spacing:.1em;margin-bottom:5px">LIVE PAIR STATUS:
+        <span style="color:var(--di);margin-left:6px">(click to focus)</span>
+      </div>
+      <div id="pair-monitor-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px"></div>
+    </div>
+
   </div>
 
   <!-- Price bar -->
@@ -801,6 +809,119 @@ function changeStatusInterval(val){
 function postStatusNow(){
   if(!IS_ADMIN)return;
   fetch('/api/status/now',{method:'POST',credentials:'same-origin'}).catch(function(){});
+}
+
+// ── Per-pair monitor grid ────────────────────────────────────────────
+var _pairMonitorPoll=null;
+
+function startPairMonitor(){
+  if(!IS_ADMIN)return;
+  var box=document.getElementById('pair-monitor');
+  if(box)box.style.display='block';
+  if(_pairMonitorPoll)clearInterval(_pairMonitorPoll);
+  refreshPairMonitor();
+  _pairMonitorPoll=setInterval(refreshPairMonitor,5000);
+}
+function stopPairMonitor(){
+  if(_pairMonitorPoll){clearInterval(_pairMonitorPoll);_pairMonitorPoll=null;}
+  var box=document.getElementById('pair-monitor');
+  if(box)box.style.display='none';
+}
+
+function refreshPairMonitor(){
+  fetch('/api/scan/all-pairs',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){if(d)renderPairMonitor(d);})
+    .catch(function(){});
+}
+
+function renderPairMonitor(data){
+  var grid=document.getElementById('pair-monitor-grid');
+  if(!grid)return;
+  var pairs=data.pairs||[];
+  if(!pairs.length){grid.innerHTML='<div style="font-size:10px;color:var(--mu);padding:6px">No pairs scanning</div>';return;}
+  // Build grid via DOM API (escapes-safe; no innerHTML interpolation of server data)
+  grid.innerHTML='';
+  pairs.forEach(function(p){
+    var box=document.createElement('div');
+    box.style.cssText='border:1px solid var(--b1);border-radius:3px;padding:8px 10px;background:var(--bg2);cursor:pointer;font-size:10px;line-height:1.5;transition:border-color 0.15s';
+    box.title='Click to view '+p.coin;
+    box.addEventListener('click',function(){
+      var btn=document.getElementById('cb-'+p.coin);
+      if(btn)pickCoin(btn,p.coin);
+      else switchToCoin(p.coin);
+    });
+    box.addEventListener('mouseenter',function(){box.style.borderColor='var(--cy)';});
+    box.addEventListener('mouseleave',function(){box.style.borderColor='var(--b1)';});
+
+    // Header: pair label + status badge
+    var lbl=p.coin.replace('USDT','').replace('1000','');
+    var hdr=document.createElement('div');
+    hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px';
+    var name=document.createElement('span');
+    name.style.cssText='font-weight:bold;letter-spacing:.05em;color:var(--fg)';
+    name.textContent=lbl;
+    var badge=document.createElement('span');
+    badge.style.cssText='font-size:9px;padding:1px 6px;border-radius:2px;letter-spacing:.05em';
+    var badgeColor='var(--mu)',badgeBg='rgba(255,255,255,0.04)',badgeBorder='var(--b1)',badgeText='IDLE';
+    if(p.hasSignal&&p.entryAlerted){badgeColor='var(--gr)';badgeBg='rgba(0,229,160,0.08)';badgeBorder='rgba(0,229,160,0.3)';badgeText='IN TRADE';}
+    else if(p.hasSignal){badgeColor='var(--am)';badgeBg='rgba(255,184,48,0.08)';badgeBorder='rgba(255,184,48,0.3)';badgeText='WAITING';}
+    else if(p.cooldownRemaining>0){badgeColor='var(--mu)';badgeBg='rgba(255,255,255,0.04)';badgeBorder='var(--b1)';badgeText='COOLDOWN '+Math.ceil(p.cooldownRemaining/1000)+'s';}
+    else{badgeColor='var(--cy)';badgeBg='rgba(0,212,255,0.06)';badgeBorder='rgba(0,212,255,0.25)';badgeText='SCANNING';}
+    badge.style.color=badgeColor;badge.style.background=badgeBg;badge.style.border='1px solid '+badgeBorder;
+    badge.textContent=badgeText;
+    hdr.appendChild(name);hdr.appendChild(badge);
+    box.appendChild(hdr);
+
+    // Price
+    if(p.lastPrice!=null){
+      var price=document.createElement('div');
+      price.style.cssText='color:var(--mu);font-size:9px';
+      price.textContent='Price: '+(p.lastPrice>=1000?p.lastPrice.toFixed(2):p.lastPrice>=10?p.lastPrice.toFixed(4):p.lastPrice.toFixed(6));
+      box.appendChild(price);
+    }
+
+    // Signal levels (if present)
+    if(p.hasSignal&&p.signal){
+      var dir=document.createElement('div');
+      var dirColor=p.signal.direction==='LONG'?'var(--gr)':'var(--re)';
+      dir.style.cssText='color:'+dirColor+';font-weight:bold;margin-top:3px';
+      dir.textContent=p.signal.direction+' @ '+p.signal.entry;
+      box.appendChild(dir);
+      var sltp=document.createElement('div');
+      sltp.style.cssText='color:var(--mu);font-size:9px';
+      sltp.textContent='SL '+p.signal.sl+' | TP '+p.signal.tp+' | '+(p.signal.rr||'—')+'R';
+      box.appendChild(sltp);
+      if(p.entryAlerted){
+        var prog=document.createElement('div');
+        prog.style.cssText='color:var(--cy);font-size:9px;margin-top:2px';
+        if(p.lastPrice!=null){
+          var e=parseFloat(p.signal.entry),tp=parseFloat(p.signal.tp);
+          if(e&&tp){
+            var pct=Math.round(Math.abs(p.lastPrice-e)/Math.abs(tp-e)*100);
+            prog.textContent='→ '+pct+'% to TP';
+          }
+        }
+        if(prog.textContent)box.appendChild(prog);
+        if(p.beAlerted){
+          var be=document.createElement('div');
+          be.style.cssText='color:var(--am);font-size:9px;margin-top:2px';
+          be.textContent='⚑ Move SL to BE';
+          box.appendChild(be);
+        }
+      }
+    }
+
+    // Last trigger (when scanning)
+    if(!p.hasSignal&&p.lastTrigger){
+      var trig=document.createElement('div');
+      trig.style.cssText='color:var(--mu);font-size:9px;margin-top:2px;font-style:italic';
+      trig.textContent='Last: '+p.lastTrigger.type+' — '+p.lastTrigger.desc.slice(0,40);
+      box.appendChild(trig);
+    }
+
+    grid.appendChild(box);
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -3212,6 +3333,8 @@ function toggleAutoScan(){
     // Pull any signal the server already has so we don't double-scan
     syncServerSignal();
     startAutoScan();
+    // Start polling per-pair status grid
+    startPairMonitor();
     // Kick off Discord status updates with whatever interval the dropdown shows
     var sel=document.getElementById('status-interval');
     var mins=sel?parseInt(sel.value,10):15;
@@ -3221,6 +3344,7 @@ function toggleAutoScan(){
     btn.textContent='⚡ AUTO';
     panel.style.display='none';
     stopAutoScan();
+    stopPairMonitor();
     // Stop Discord status updates when auto-scan turns off
     changeStatusInterval(0);
   }

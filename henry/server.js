@@ -887,9 +887,18 @@ app.post('/api/signals', requireAuth, express.json({ limit: '512kb' }), async (r
 app.patch('/api/signals/:id/outcome', requireAuth, express.json(), async (req, res) => {
   const { outcome, outcomeRr } = req.body || {};
   await logSignalOutcomeAndJournal(req.user.id, req.params.id, outcome, outcomeRr);
-  // Mark in-memory sub so the server-side monitor doesn't try to log it again.
+  // Mark the pair-state so the server-side monitor doesn't fire it again.
   const sub = scanSubscriptions.get(req.user.id);
-  if (sub) sub._outcomeLogged = true;
+  if (sub && sub.pairs) {
+    for (const ps of Object.values(sub.pairs)) {
+      if (ps.signalId === req.params.id) {
+        ps._outcomeLogged = true;
+        // Browser logged the outcome — clear the trade so this pair returns to scanning.
+        clearPairState(ps);
+        break;
+      }
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -1023,17 +1032,48 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
 const scanSubscriptions = new Map(); // userId → { active, coin, tf, broker, isAdmin, ... }
 const SCAN_INTERVAL_MS = 30000;
 
+// ── Per-pair state helpers ─────────────────────────────────────────────────
+// Each scan subscription tracks state PER PAIR so multiple pairs can be in
+// monitoring concurrently. Pairs with no active signal keep scanning while
+// pairs with active signals are monitored independently.
+function getPairState(sub, coin) {
+  if (!sub.pairs) sub.pairs = {};
+  if (!sub.pairs[coin]) {
+    sub.pairs[coin] = {
+      cooldownUntil: 0,
+      pendSignal: null, signalId: null, signalTimestamp: null,
+      _entryAlerted: false, _beAlerted: false, _tpAlerted: false, _expiryAlerted: false,
+      _outcomeLogged: false,
+      lastPrice: null,
+      lastTrigger: null,
+      lastStatus: 'idle', // 'idle' | 'scanning' | 'cooldown' | 'waiting' | 'in-trade'
+    };
+  }
+  return sub.pairs[coin];
+}
+function clearPairState(ps) {
+  ps.pendSignal = null;
+  ps.signalId = null;
+  ps.signalTimestamp = null;
+  ps._entryAlerted = false;
+  ps._beAlerted = false;
+  ps._tpAlerted = false;
+  ps._expiryAlerted = false;
+  ps._outcomeLogged = false;
+  ps.lastStatus = 'idle';
+}
+
 app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
   const { coin, tf, broker, cooldownMs, watchlist } = req.body || {};
   if (!coin || !tf) return res.status(400).json({ error: 'missing_coin_or_tf' });
+  // Preserve existing per-pair state if scan is restarted (e.g. user toggled AUTO off and on)
+  const prev = scanSubscriptions.get(req.user.id);
   scanSubscriptions.set(req.user.id, {
     active: true, coin, tf, broker: broker || 'weex',
-    cooldownMs: cooldownMs || 180000, cooldownUntil: 0,
+    cooldownMs: cooldownMs || 180000,
     watchlist: Array.isArray(watchlist) ? watchlist : [],
-    pendSignal: null, signalId: null, signalTimestamp: null,
     isAdmin: !!req.profile.is_admin,
-    _entryAlerted: false, _beAlerted: false, _tpAlerted: false, _expiryAlerted: false,
-    _outcomeLogged: false,
+    pairs: prev?.pairs || {},
   });
   res.json({ ok: true });
 });
@@ -1046,25 +1086,80 @@ app.post('/api/scan/update-watchlist', requireAuth, express.json(), (req, res) =
   res.json({ ok: true, count: sub.watchlist.length });
 });
 
-// Returns the user's current pending signal if the server-side AI generated one.
-// Browser polls this on page load to sync UI with server state when the AI was
-// generated while no browser was open.
+// Returns the focused pair's pending signal if the server-side AI generated one.
+// Browser polls this on page load / AUTO toggle to sync UI with server state.
 app.get('/api/scan/current-signal', requireAuth, (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
-  if (!sub || !sub.pendSignal) return res.json({ signal: null });
+  if (!sub || !sub.pairs) return res.json({ signal: null });
+  const ps = sub.pairs[sub.coin];
+  if (!ps || !ps.pendSignal) {
+    // Also check ANY pair with a pending signal — if user is viewing BTC but server
+    // generated a signal on ETH, browser should pick it up too.
+    for (const [k, v] of Object.entries(sub.pairs)) {
+      if (v.pendSignal) {
+        return res.json({
+          signal: v.pendSignal,
+          signalId: v.signalId,
+          signalTimestamp: v.signalTimestamp,
+          coin: k,
+          tf: sub.tf,
+          broker: sub.broker,
+          state: {
+            entryAlerted: !!v._entryAlerted, beAlerted: !!v._beAlerted,
+            tpAlerted: !!v._tpAlerted, outcomeLogged: !!v._outcomeLogged,
+          },
+        });
+      }
+    }
+    return res.json({ signal: null });
+  }
   res.json({
-    signal: sub.pendSignal,
-    signalId: sub.signalId,
-    signalTimestamp: sub.signalTimestamp,
+    signal: ps.pendSignal,
+    signalId: ps.signalId,
+    signalTimestamp: ps.signalTimestamp,
     coin: sub.coin,
     tf: sub.tf,
     broker: sub.broker,
     state: {
-      entryAlerted: !!sub._entryAlerted,
-      beAlerted:    !!sub._beAlerted,
-      tpAlerted:    !!sub._tpAlerted,
-      outcomeLogged:!!sub._outcomeLogged,
+      entryAlerted: !!ps._entryAlerted, beAlerted: !!ps._beAlerted,
+      tpAlerted: !!ps._tpAlerted, outcomeLogged: !!ps._outcomeLogged,
     },
+  });
+});
+
+// Returns state for ALL pairs in the watchlist — used by mini-cards UI.
+app.get('/api/scan/all-pairs', requireAuth, (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (!sub) return res.json({ active: false, pairs: [] });
+  // Pairs to report on: union of watchlist + any pair that has state (e.g. signal active)
+  const pairCoins = new Set([
+    ...(sub.watchlist || []),
+    ...(sub.pairs ? Object.keys(sub.pairs) : []),
+  ]);
+  if (!pairCoins.size && sub.coin) pairCoins.add(sub.coin);
+  const pairs = [];
+  for (const coin of pairCoins) {
+    const ps = sub.pairs && sub.pairs[coin];
+    pairs.push({
+      coin,
+      hasSignal:    !!(ps && ps.pendSignal),
+      signal:       ps && ps.pendSignal ? ps.pendSignal : null,
+      signalId:     ps && ps.signalId   ? ps.signalId   : null,
+      lastPrice:    ps && ps.lastPrice  != null ? ps.lastPrice : null,
+      lastTrigger:  ps && ps.lastTrigger ? ps.lastTrigger : null,
+      cooldownUntil: ps ? ps.cooldownUntil : 0,
+      cooldownRemaining: ps ? Math.max(0, ps.cooldownUntil - Date.now()) : 0,
+      status: ps ? ps.lastStatus : 'idle',
+      entryAlerted: !!(ps && ps._entryAlerted),
+      beAlerted:    !!(ps && ps._beAlerted),
+      tpAlerted:    !!(ps && ps._tpAlerted),
+    });
+  }
+  res.json({
+    active: !!sub.active,
+    tf: sub.tf,
+    broker: sub.broker,
+    pairs,
   });
 });
 
@@ -1079,28 +1174,26 @@ app.post('/api/scan/stop', requireAuth, (req, res) => {
 app.post('/api/scan/signal', requireAuth, express.json({ limit: '512kb' }), (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (!sub) return res.status(404).json({ error: 'no_scan_session' });
-  sub.pendSignal = req.body?.signal || null;
-  sub.signalId = req.body?.signalId || null;
-  sub.signalTimestamp = Date.now();
-  sub._entryAlerted = false;
-  sub._beAlerted = false;
-  sub._tpAlerted = false;
-  sub._expiryAlerted = false;
-  sub._outcomeLogged = false;
+  // Use signal.pair as the pair key, fall back to focused coin
+  const targetCoin = (req.body?.signal?.pair) || sub.coin;
+  const ps = getPairState(sub, targetCoin);
+  ps.pendSignal = req.body?.signal || null;
+  ps.signalId = req.body?.signalId || null;
+  ps.signalTimestamp = Date.now();
+  ps._entryAlerted = false;
+  ps._beAlerted = false;
+  ps._tpAlerted = false;
+  ps._expiryAlerted = false;
+  ps._outcomeLogged = false;
+  ps.lastStatus = 'waiting';
   res.json({ ok: true });
 });
 
-app.post('/api/scan/clear', requireAuth, (req, res) => {
+app.post('/api/scan/clear', requireAuth, express.json(), (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
-  if (sub) {
-    sub.pendSignal = null;
-    sub.signalId = null;
-    sub._entryAlerted = false;
-    sub._beAlerted = false;
-    sub._tpAlerted = false;
-    sub._expiryAlerted = false;
-    sub._outcomeLogged = false;
-  }
+  if (!sub) return res.json({ ok: true });
+  const targetCoin = req.body?.coin || sub.coin;
+  if (sub.pairs && sub.pairs[targetCoin]) clearPairState(sub.pairs[targetCoin]);
   res.json({ ok: true });
 });
 
@@ -1164,18 +1257,21 @@ async function notifyUser(userId, isAdmin, { title, body, color, data }) {
   await postAlertToDiscord(title, body, color || 'cy', isAdmin);
 }
 
-async function runServerTradeMonitor(userId, sub) {
-  const { pendSignal, coin, tf, broker, isAdmin } = sub;
+async function runServerTradeMonitorForPair(userId, sub, coin, ps) {
+  const { tf, broker, isAdmin } = sub;
+  const { pendSignal } = ps;
   const price = await getCurrentPriceServer(coin, broker);
   if (!price) return;
+  ps.lastPrice = price;
   const e = parseFloat(pendSignal.entry), slP = parseFloat(pendSignal.sl), tpP = parseFloat(pendSignal.tp);
   const isLong = pendSignal.direction === 'LONG';
 
   // Entry hit
   const entryHit = isLong ? price <= e : price >= e;
-  if (entryHit && !sub._entryAlerted) {
-    sub._entryAlerted = true;
-    sub._expiryAlerted = true;
+  if (entryHit && !ps._entryAlerted) {
+    ps._entryAlerted = true;
+    ps._expiryAlerted = true;
+    ps.lastStatus = 'in-trade';
     await notifyUser(userId, isAdmin, {
       title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
       body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
@@ -1184,11 +1280,11 @@ async function runServerTradeMonitor(userId, sub) {
   }
 
   // BE
-  if (sub._entryAlerted && !sub._beAlerted) {
+  if (ps._entryAlerted && !ps._beAlerted) {
     const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
     const beReached = isLong ? price >= bePrice : price <= bePrice;
     if (beReached) {
-      sub._beAlerted = true;
+      ps._beAlerted = true;
       await notifyUser(userId, isAdmin, {
         title: '⚑ MOVE SL TO BREAKEVEN',
         body: `${coin.replace('USDT', '')} reached BE @ ${price.toFixed(2)}. Move SL to ${e}.`,
@@ -1198,36 +1294,32 @@ async function runServerTradeMonitor(userId, sub) {
   }
 
   // TP
-  if (sub._entryAlerted && !sub._tpAlerted) {
+  if (ps._entryAlerted && !ps._tpAlerted) {
     const tpHit = isLong ? price >= tpP : price <= tpP;
     if (tpHit) {
-      sub._tpAlerted = true;
+      ps._tpAlerted = true;
       await notifyUser(userId, isAdmin, {
         title: `🎯 TP REACHED: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-        body: `Take profit hit @ ${price.toFixed(2)}. Log your outcome.`,
+        body: `Take profit hit @ ${price.toFixed(2)}. Logged.`,
         color: 'gr',
       });
-      // Persist outcome + post journal once (idempotent)
-      if (sub.signalId && !sub._outcomeLogged) {
-        sub._outcomeLogged = true;
-        await logSignalOutcomeAndJournal(userId, sub.signalId, 'TP', parseFloat(pendSignal.rr) || 2)
+      if (ps.signalId && !ps._outcomeLogged) {
+        ps._outcomeLogged = true;
+        await logSignalOutcomeAndJournal(userId, ps.signalId, 'TP', parseFloat(pendSignal.rr) || 2)
           .catch(e => console.error('[server TP outcome]', e.message));
       }
-      // Clear so the next scan can resume on the watchlist
-      sub.pendSignal = null; sub.signalId = null; sub.signalTimestamp = null;
-      sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false; sub._outcomeLogged = false;
+      clearPairState(ps);
       return;
     }
   }
 
-  // SL — also clears the active trade so next scan resumes
+  // SL — clears the trade so next scan resumes for this pair
   const slHit = isLong ? price <= slP : price >= slP;
   if (slHit) {
-    // Decide BE vs SL BEFORE clearing flags
-    const wasBE = sub._beAlerted;
-    if (sub.signalId && !sub._outcomeLogged) {
-      sub._outcomeLogged = true;
-      await logSignalOutcomeAndJournal(userId, sub.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1)
+    const wasBE = ps._beAlerted;
+    if (ps.signalId && !ps._outcomeLogged) {
+      ps._outcomeLogged = true;
+      await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1)
         .catch(e => console.error('[server SL outcome]', e.message));
     }
     await notifyUser(userId, isAdmin, {
@@ -1235,25 +1327,22 @@ async function runServerTradeMonitor(userId, sub) {
       body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${price.toFixed(2)}. Logged automatically.`,
       color: wasBE ? 'am' : 're',
     });
-    sub.pendSignal = null; sub.signalId = null; sub.signalTimestamp = null;
-    sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false; sub._outcomeLogged = false;
+    clearPairState(ps);
     return;
   }
 
   // Expiry — only if entry never hit, fires once, clears the trade
-  if (!sub._entryAlerted && !sub._expiryAlerted && pendSignal.expiry_candles) {
+  if (!ps._entryAlerted && !ps._expiryAlerted && pendSignal.expiry_candles) {
     const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
     const maxMs = pendSignal.expiry_candles * (tfMs[tf] || 900000);
-    if (Date.now() - sub.signalTimestamp > maxMs) {
-      sub._expiryAlerted = true;
+    if (Date.now() - ps.signalTimestamp > maxMs) {
+      ps._expiryAlerted = true;
       await notifyUser(userId, isAdmin, {
         title: '⏱ SIGNAL EXPIRED',
         body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles.`,
         color: 'am',
       });
-      // Clear so scan resumes — but don't log outcome to journal (no trade actually happened)
-      sub.pendSignal = null; sub.signalId = null; sub.signalTimestamp = null;
-      sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false; sub._outcomeLogged = false;
+      clearPairState(ps);
     }
   }
 }
@@ -1925,9 +2014,9 @@ async function postServerSignalToDiscord(signal, trigger, broker, tf) {
   } catch (e) { console.error('[server signal discord]', e.message); }
 }
 
-// Main entry — runs the full AI flow on the server when a trigger fires.
-async function runServerAI(userId, sub, trigger, baseCandles) {
-  const { coin, tf, broker, isAdmin } = sub;
+// Main entry — runs the full AI flow on the server when a trigger fires for a pair.
+async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles) {
+  const { tf, broker, isAdmin } = sub;
   const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
 
   // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
@@ -2014,71 +2103,82 @@ async function runServerAI(userId, sub, trigger, baseCandles) {
     await postServerSignalToDiscord(signal, trigger, broker, tf).catch(e => console.error('[discord auto]', e.message));
   }
 
-  // Activate the trade monitor — the next scan tick will route to runServerTradeMonitor
-  sub.pendSignal = signal;
-  sub.signalId = signalId;
-  sub.signalTimestamp = Date.now();
-  sub._entryAlerted = false;
-  sub._beAlerted = false;
-  sub._tpAlerted = false;
-  sub._expiryAlerted = false;
-  sub._outcomeLogged = false;
-  // Lock the monitor onto the triggered pair (in case watchlist scan picked a different one)
-  sub.coin = signal.pair;
+  // Activate the trade monitor for THIS pair — other pairs continue scanning independently.
+  ps.pendSignal = signal;
+  ps.signalId = signalId;
+  ps.signalTimestamp = Date.now();
+  ps._entryAlerted = false;
+  ps._beAlerted = false;
+  ps._tpAlerted = false;
+  ps._expiryAlerted = false;
+  ps._outcomeLogged = false;
+  ps.lastStatus = 'waiting';
 
   return signal;
 }
 
 async function runServerScan(userId, sub) {
-  if (Date.now() < sub.cooldownUntil) return;
-  if (sub.pendSignal) return runServerTradeMonitor(userId, sub);
+  if (!sub.active) return;
 
-  // Determine pairs to scan: custom watchlist if set, else fall back to current coin
-  const pairsToScan = (sub.watchlist && sub.watchlist.length)
-    ? sub.watchlist.map(s => ({ sym: s, lbl: s.replace('USDT', '').replace('1000', '') }))
-    : [{ sym: sub.coin, lbl: sub.coin.replace('USDT', '') }];
+  // Determine pairs to process: custom watchlist if set, else fall back to current coin
+  const pairs = (sub.watchlist && sub.watchlist.length)
+    ? sub.watchlist
+    : [sub.coin];
 
-  // Scan all pairs in parallel — lightweight (30 candles each).
-  // Errors per-pair are isolated; one broken symbol doesn't kill the whole scan.
-  const results = await Promise.all(pairsToScan.map(async p => {
+  // Process each pair INDEPENDENTLY in parallel.
+  // Pairs in active trade are monitored. Pairs idle + past cooldown get scanned + analysed.
+  // Pairs in cooldown skip this tick.
+  await Promise.all(pairs.map(coin => processPair(userId, sub, coin)));
+}
+
+async function processPair(userId, sub, coin) {
+  const ps = getPairState(sub, coin);
+
+  // 1) If pair has an active signal → monitor it (entry/BE/TP/SL/expiry)
+  if (ps.pendSignal) {
     try {
-      const candles = await fetchCandlesServer(p.sym, sub.tf, 30, sub.broker);
-      const trigger = candles && candles.length >= 11 ? detectTrigger(candles) : null;
-      return { pair: p, candles, trigger };
-    } catch {
-      return { pair: p, candles: [], trigger: null };
-    }
-  }));
+      await runServerTradeMonitorForPair(userId, sub, coin, ps);
+    } catch (e) { console.error('[monitor]', coin, e.message); }
+    return;
+  }
 
-  // Pick highest-priority trigger across all pairs (BOS > sweep)
-  const priority = ['bos', 'sweep'];
-  const triggered = results
-    .filter(r => r.trigger !== null)
-    .sort((a, b) => priority.indexOf(a.trigger.type) - priority.indexOf(b.trigger.type));
+  // 2) Else if past cooldown → scan + (if triggered) run AI
+  if (Date.now() < ps.cooldownUntil) {
+    ps.lastStatus = 'cooldown';
+    return;
+  }
+  ps.lastStatus = 'scanning';
 
-  if (!triggered.length) return;
-  const best = triggered[0];
+  // Fetch candles + detect trigger
+  let candles, trigger;
+  try {
+    candles = await fetchCandlesServer(coin, sub.tf, 30, sub.broker);
+    trigger = (candles && candles.length >= 11) ? detectTrigger(candles) : null;
+  } catch (e) {
+    console.error('[scan]', coin, e.message);
+    return;
+  }
+  if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
+  if (!trigger) return;
 
-  // Apply cooldown — only count the scan as "fired" when something actually triggered
-  sub.cooldownUntil = Date.now() + sub.cooldownMs;
+  // Apply per-pair cooldown
+  ps.cooldownUntil = Date.now() + sub.cooldownMs;
+  ps.lastTrigger = trigger;
 
-  // Run full AI analysis on the triggered pair (autonomous: phone push + Discord get full signal).
-  const originalCoin = sub.coin;
-  sub.coin = best.pair.sym; // temporarily so context strings reference the right pair
+  // Run full AI analysis for this pair
   let aiSignal = null;
   try {
-    aiSignal = await runServerAI(userId, sub, best.trigger, best.candles);
-  } catch (e) { console.error('[runServerAI top]', e.message); }
+    aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles);
+  } catch (e) { console.error('[runServerAIForPair]', coin, e.message); }
 
-  // If AI failed (network/API error), restore coin and fall back to a trigger-only push
-  // so the user still hears about the signal candidate.
+  // Fallback: AI failed → still push a trigger alert
   if (!aiSignal) {
-    sub.coin = originalCoin;
+    ps.lastStatus = 'cooldown';
     await sendPushTo(userId, {
-      title: `⚡ ${best.trigger.type.toUpperCase()}: ${best.pair.lbl}`,
-      body: `${best.trigger.desc}. Open Henry to run AI analysis.`,
+      title: `⚡ ${trigger.type.toUpperCase()}: ${coin.replace('USDT', '').replace('1000', '')}`,
+      body: `${trigger.desc}. Open Henry to run AI analysis.`,
       icon: '/manifest.json',
-      data: { coin: best.pair.sym, tf: sub.tf, broker: sub.broker, trigger: best.trigger },
+      data: { coin, tf: sub.tf, broker: sub.broker, trigger },
     });
   }
 }
@@ -2113,59 +2213,53 @@ async function postUserStatus(userId) {
   if (!process.env.DISCORD_STATUS_WEBHOOK) return;
   const sub = scanSubscriptions.get(userId);
   if (!sub) return;
-  const { coin, tf, broker, pendSignal } = sub;
+  const { tf, broker } = sub;
   const lines = [];
 
-  if (pendSignal && pendSignal.direction !== 'NO TRADE') {
-    const e = parseFloat(pendSignal.entry);
-    const slP = parseFloat(pendSignal.sl);
-    const tpP = parseFloat(pendSignal.tp);
-    const isLong = pendSignal.direction === 'LONG';
-    const cp = await getCurrentPriceServer(coin, broker).catch(() => null);
+  // Iterate all watchlist pairs (or just the focused coin) — show each pair's status
+  const pairs = (sub.watchlist && sub.watchlist.length) ? sub.watchlist : [sub.coin];
+  let inTradeCount = 0, waitingCount = 0;
 
-    if (sub._entryAlerted) {
-      // ── In trade ──
-      const pctToTp = (tpP && e && cp) ? Math.round(Math.abs(cp - e) / Math.abs(tpP - e) * 100) : 0;
-      const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
-      const beReached = cp != null ? (isLong ? cp >= bePrice : cp <= bePrice) : false;
-      lines.push('✅ **IN TRADE**');
-      lines.push(`${coin.replace('USDT', '')} **${pendSignal.direction}** @ \`${e}\``);
-      lines.push(`SL: \`${slP}\` | TP: \`${tpP}\` | ${pendSignal.rr || '—'}R`);
-      if (cp != null) lines.push(`Current: \`${cp.toFixed(2)}\` | Progress: **${pctToTp}%** to TP`);
-      lines.push(`BE: \`${bePrice.toFixed(2)}\` ${beReached ? '✓ REACHED — move SL now' : '(not yet reached)'}`);
-      if (pendSignal.invalidation) lines.push(`Invalidation: ${pendSignal.invalidation}`);
+  for (const coin of pairs) {
+    const ps = (sub.pairs && sub.pairs[coin]) || null;
+    const ticker = coin.replace('USDT', '').replace('1000', '');
+    if (ps && ps.pendSignal && ps.pendSignal.direction !== 'NO TRADE') {
+      const e   = parseFloat(ps.pendSignal.entry);
+      const slP = parseFloat(ps.pendSignal.sl);
+      const tpP = parseFloat(ps.pendSignal.tp);
+      const isLong = ps.pendSignal.direction === 'LONG';
+      const cp = ps.lastPrice != null ? ps.lastPrice : null;
+      if (ps._entryAlerted) {
+        inTradeCount++;
+        const pctToTp = (tpP && e && cp) ? Math.round(Math.abs(cp - e) / Math.abs(tpP - e) * 100) : 0;
+        const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
+        const beReached = cp != null ? (isLong ? cp >= bePrice : cp <= bePrice) : false;
+        lines.push(`✅ **IN TRADE — ${ticker} ${ps.pendSignal.direction}** @ \`${e}\``);
+        lines.push(`   SL: \`${slP}\` | TP: \`${tpP}\` | ${ps.pendSignal.rr || '—'}R${cp != null ? ` | Current: \`${cp.toFixed(2)}\` (${pctToTp}% to TP)` : ''}`);
+        if (beReached && !ps._beAlerted) lines.push(`   ⚑ BE @ \`${bePrice.toFixed(2)}\` REACHED — move SL`);
+      } else {
+        waitingCount++;
+        const distPct = (cp != null && e) ? Math.abs((cp - e) / e * 100).toFixed(2) : null;
+        lines.push(`⏳ **WAITING ENTRY — ${ticker} ${ps.pendSignal.direction}** @ \`${e}\``);
+        lines.push(`   SL: \`${slP}\` | TP: \`${tpP}\` | ${ps.pendSignal.rr || '—'}R${distPct != null ? ` | Distance: ${distPct}%` : ''}`);
+      }
+    } else if (ps && ps.cooldownUntil > Date.now()) {
+      const secs = Math.ceil((ps.cooldownUntil - Date.now()) / 1000);
+      lines.push(`⏸ **${ticker}** — cooldown ${secs}s${ps.lastPrice != null ? ` (price ${ps.lastPrice.toFixed(2)})` : ''}`);
     } else {
-      // ── Waiting entry ──
-      const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
-      const elapsed = sub.signalTimestamp ? Date.now() - sub.signalTimestamp : 0;
-      const maxMs = pendSignal.expiry_candles ? pendSignal.expiry_candles * (tfMs[tf] || 900000) : null;
-      const remainingCandles = maxMs != null
-        ? Math.max(0, Math.ceil((maxMs - elapsed) / (tfMs[tf] || 900000)))
-        : null;
-      const distPct = (cp != null && e) ? Math.abs((cp - e) / e * 100).toFixed(2) : null;
-      lines.push('⏳ **WAITING ENTRY**');
-      lines.push(`${coin.replace('USDT', '')} **${pendSignal.direction}** @ \`${e}\``);
-      lines.push(`SL: \`${slP}\` | TP: \`${tpP}\` | ${pendSignal.rr || '—'}R | Conf: ${pendSignal.confidence || '—'}%`);
-      if (cp != null) lines.push(`Current: \`${cp.toFixed(2)}\` | Distance: ${distPct}% from entry`);
-      if (remainingCandles !== null) lines.push(`Expires: **${remainingCandles} candles** remaining on ${tf}`);
-      if (pendSignal.invalidation) lines.push(`Cancel if: ${pendSignal.invalidation}`);
-    }
-  } else {
-    lines.push('💤 **No active signal**');
-    lines.push(`Scanning: ${coin.replace('USDT', '')} on ${tf} (${broker})`);
-    if (sub.cooldownUntil > Date.now()) {
-      const secs = Math.ceil((sub.cooldownUntil - Date.now()) / 1000);
-      lines.push(`Cooldown: ${secs}s remaining`);
+      lines.push(`🔍 **${ticker}** — scanning${ps && ps.lastPrice != null ? ` (price ${ps.lastPrice.toFixed(2)})` : ''}`);
     }
   }
+
+  if (!lines.length) lines.push('💤 No active scan.');
   lines.push('');
-  lines.push(`⚡ Scan: ${sub.active ? 'ACTIVE' : 'STOPPED'} | Broker: ${broker}`);
+  lines.push(`⚡ Scan: ${sub.active ? 'ACTIVE' : 'STOPPED'} | ${pairs.length} pair${pairs.length === 1 ? '' : 's'} | Broker: ${broker} | TF: ${tf}`);
 
   const utcTime = new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit' });
   const embed = {
     title: `📊 Henry Status — ${utcTime} UTC`,
     description: lines.join('\n'),
-    color: sub._entryAlerted ? 3066993 : pendSignal ? 16750848 : 9699539,
+    color: inTradeCount > 0 ? 3066993 : waitingCount > 0 ? 16750848 : 9699539,
     footer: { text: `Henry The Hoover | ${new Date().toUTCString()}` },
     timestamp: new Date().toISOString(),
   };
