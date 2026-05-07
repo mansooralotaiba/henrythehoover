@@ -1047,6 +1047,7 @@ function fetchFootprintHL(symbol){
 }
 
 function fetchCandles(symbol,interval,limit){
+  if(activeBroker==='massive') return fetchCandlesMassive(interval,limit);
   if(activeBroker==='hyperliquid') return fetchCandlesHL(symbol,interval,limit);
   if(activeBroker==='binance') return fetchCandlesBinance(symbol,interval,limit);
   var fsym=FUTURES_SYM[symbol]||('cmt_'+symbol.toLowerCase());
