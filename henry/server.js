@@ -886,14 +886,107 @@ app.post('/api/signals', requireAuth, express.json({ limit: '512kb' }), async (r
 
 app.patch('/api/signals/:id/outcome', requireAuth, express.json(), async (req, res) => {
   const { outcome, outcomeRr } = req.body || {};
+  await logSignalOutcomeAndJournal(req.user.id, req.params.id, outcome, outcomeRr);
+  // Mark in-memory sub so the server-side monitor doesn't try to log it again.
+  const sub = scanSubscriptions.get(req.user.id);
+  if (sub) sub._outcomeLogged = true;
+  res.json({ ok: true });
+});
+
+// ── Shared outcome logger — used by browser PATCH endpoint AND server-side monitor.
+//    Always updates the row; only fires the journal Discord post on the FIRST transition
+//    from null → set so re-classifications don't double-post.
+async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr) {
+  if (!signalId) return;
+  const { data: existing } = await supaAdmin
+    .from('signals')
+    .select('*')
+    .eq('id', signalId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (!existing) return;
+  const wasUnset = existing.outcome == null;
   const { error } = await supaAdmin
     .from('signals')
     .update({ outcome, outcome_rr: outcomeRr ?? null, outcome_at: new Date().toISOString() })
-    .eq('id', req.params.id)
-    .eq('user_id', req.user.id);
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ ok: true });
-});
+    .eq('id', signalId)
+    .eq('user_id', userId);
+  if (error) { console.error('[outcome update]', error.message); return; }
+  // Only post to journal Discord on the first outcome assignment, not re-classifications.
+  if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE')) {
+    const stats = await getUserStats(userId).catch(() => null);
+    postJournalToDiscord({ ...existing, outcome, outcome_rr: outcomeRr ?? null }, outcome, outcomeRr, stats)
+      .catch(e => console.error('[journal post]', e.message));
+  }
+}
+
+// ── Stats helper used by journal posts ──
+async function getUserStats(userId) {
+  try {
+    const { data } = await supaAdmin
+      .from('signals')
+      .select('outcome, outcome_rr')
+      .eq('user_id', userId)
+      .not('outcome', 'is', null);
+    if (!data || !data.length) return null;
+    const tp = data.filter(s => s.outcome === 'TP').length;
+    const sl = data.filter(s => s.outcome === 'SL').length;
+    const be = data.filter(s => s.outcome === 'BE').length;
+    const totalRr = data.reduce((sum, s) => sum + (parseFloat(s.outcome_rr) || 0), 0);
+    const closed = tp + sl + be;
+    const winRate = closed ? +(((tp + be * 0.5) / closed) * 100).toFixed(1) : 0;
+    return { tp, sl, be, totalRr: totalRr.toFixed(2), winRate, total: data.length };
+  } catch { return null; }
+}
+
+// ── Journal Discord posting ──
+async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
+  if (!process.env.DISCORD_JOURNAL_WEBHOOK || !signal) return;
+  const isWin = outcome === 'TP';
+  const isBE  = outcome === 'BE';
+  const outcomeEmoji = isWin ? '🟢' : isBE ? '🟡' : '🔴';
+  const outcomeLabel = isWin ? 'TAKE PROFIT' : isBE ? 'BREAKEVEN' : 'STOP LOSS';
+  const rrDisplay = isWin ? `+${outcomeRr ?? signal.rr ?? '—'}R` : isBE ? '0R' : '-1R';
+  const fields = [
+    { name: 'Pair',       value: `\`${signal.pair || '—'}\``,                  inline: true },
+    { name: 'Direction',  value: `\`${signal.direction || '—'}\``,             inline: true },
+    { name: 'Outcome',    value: `\`${outcomeLabel}\``,                        inline: true },
+    { name: 'Entry',      value: `\`${signal.entry ?? '—'}\``,                 inline: true },
+    { name: 'SL',         value: `\`${signal.sl ?? '—'}\``,                    inline: true },
+    { name: 'TP',         value: `\`${signal.tp ?? '—'}\``,                    inline: true },
+    { name: 'Target RR',  value: `\`${signal.rr ?? '—'}R\``,                   inline: true },
+    { name: 'Result',     value: `\`${rrDisplay}\``,                           inline: true },
+    { name: 'Confidence', value: `\`${signal.confidence ?? '—'}%\``,           inline: true },
+  ];
+  let statsText = '';
+  if (stats) {
+    statsText = `\n\n**Running Stats (${stats.total} trades)**\n`
+      + `Win: ${stats.tp} | Loss: ${stats.sl} | BE: ${stats.be} | Win rate: ${stats.winRate}%\n`
+      + `Total P&L: ${parseFloat(stats.totalRr) >= 0 ? '+' : ''}${parseFloat(stats.totalRr).toFixed(2)}R`;
+  }
+  const reasoning = signal.reasoning ? String(signal.reasoning).slice(0, 200) : '';
+  const embed = {
+    title: `${outcomeEmoji} ${outcomeLabel}: ${signal.pair || ''} ${signal.direction || ''}`.trim(),
+    description: (signal.entry_reason ? `**Entry:** ${signal.entry_reason}\n` : '')
+      + (reasoning ? `${reasoning}${reasoning.length === 200 ? '...' : ''}\n` : '')
+      + statsText,
+    color: isWin ? 3066993 : isBE ? 16776960 : 15548997,
+    fields,
+    footer: {
+      text: `Henry Journal | ${signal.broker || ''}${signal.timeframe ? ' | ' + signal.timeframe : ''} | ${new Date().toUTCString()}`,
+    },
+    timestamp: new Date().toISOString(),
+  };
+  try {
+    await fetch(process.env.DISCORD_JOURNAL_WEBHOOK, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ embeds: [embed], username: 'Henry Journal' }),
+    });
+  } catch (e) {
+    console.error('[journal webhook]', e.message);
+  }
+}
 
 app.get('/api/signals/history', requireAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);
@@ -946,6 +1039,8 @@ app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
 app.post('/api/scan/stop', requireAuth, (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (sub) sub.active = false;
+  // Also stop periodic status updates when the user stops auto-scanning
+  stopUserStatusUpdates(req.user.id);
   res.json({ ok: true });
 });
 
@@ -953,11 +1048,13 @@ app.post('/api/scan/signal', requireAuth, express.json({ limit: '512kb' }), (req
   const sub = scanSubscriptions.get(req.user.id);
   if (!sub) return res.status(404).json({ error: 'no_scan_session' });
   sub.pendSignal = req.body?.signal || null;
+  sub.signalId = req.body?.signalId || null;
   sub.signalTimestamp = Date.now();
   sub._entryAlerted = false;
   sub._beAlerted = false;
   sub._tpAlerted = false;
   sub._expiryAlerted = false;
+  sub._outcomeLogged = false;
   res.json({ ok: true });
 });
 
@@ -965,10 +1062,12 @@ app.post('/api/scan/clear', requireAuth, (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (sub) {
     sub.pendSignal = null;
+    sub.signalId = null;
     sub._entryAlerted = false;
     sub._beAlerted = false;
     sub._tpAlerted = false;
     sub._expiryAlerted = false;
+    sub._outcomeLogged = false;
   }
   res.json({ ok: true });
 });
@@ -1076,17 +1175,30 @@ async function runServerTradeMonitor(userId, sub) {
         body: `Take profit hit @ ${price.toFixed(2)}. Log your outcome.`,
         color: 'gr',
       });
+      // Persist outcome + post journal once (idempotent)
+      if (sub.signalId && !sub._outcomeLogged) {
+        sub._outcomeLogged = true;
+        await logSignalOutcomeAndJournal(userId, sub.signalId, 'TP', parseFloat(pendSignal.rr) || 2)
+          .catch(e => console.error('[server TP outcome]', e.message));
+      }
     }
   }
 
   // SL — resets all flags
   const slHit = isLong ? price <= slP : price >= slP;
   if (slHit) {
+    // Decide BE vs SL BEFORE clearing flags
+    const wasBE = sub._beAlerted;
+    if (sub.signalId && !sub._outcomeLogged) {
+      sub._outcomeLogged = true;
+      await logSignalOutcomeAndJournal(userId, sub.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1)
+        .catch(e => console.error('[server SL outcome]', e.message));
+    }
     sub._entryAlerted = false; sub._beAlerted = false; sub._tpAlerted = false; sub._expiryAlerted = false;
     await notifyUser(userId, isAdmin, {
-      title: `🛑 SL HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-      body: `Stop loss breached @ ${price.toFixed(2)}. Log your outcome.`,
-      color: 're',
+      title: `${wasBE ? '⚑ STOPPED AT BE' : '🛑 SL HIT'}: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+      body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${price.toFixed(2)}. Logged automatically.`,
+      color: wasBE ? 'am' : 're',
     });
   }
 
@@ -1168,6 +1280,122 @@ async function runServerScan(userId, sub) {
   });
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// PERIODIC STATUS UPDATES — server posts a status embed every X minutes per user
+// ════════════════════════════════════════════════════════════════════════════
+
+const STATUS_INTERVALS = new Map(); // userId → setInterval handle
+
+function startUserStatusUpdates(userId, intervalMins) {
+  // Clear any existing interval first
+  if (STATUS_INTERVALS.has(userId)) {
+    clearInterval(STATUS_INTERVALS.get(userId));
+    STATUS_INTERVALS.delete(userId);
+  }
+  if (!intervalMins || intervalMins <= 0) return;
+  const handle = setInterval(() => {
+    postUserStatus(userId).catch(e => console.error('[status loop]', userId, e.message));
+  }, intervalMins * 60000);
+  STATUS_INTERVALS.set(userId, handle);
+}
+
+function stopUserStatusUpdates(userId) {
+  if (STATUS_INTERVALS.has(userId)) {
+    clearInterval(STATUS_INTERVALS.get(userId));
+    STATUS_INTERVALS.delete(userId);
+  }
+}
+
+async function postUserStatus(userId) {
+  if (!process.env.DISCORD_STATUS_WEBHOOK) return;
+  const sub = scanSubscriptions.get(userId);
+  if (!sub) return;
+  const { coin, tf, broker, pendSignal } = sub;
+  const lines = [];
+
+  if (pendSignal && pendSignal.direction !== 'NO TRADE') {
+    const e = parseFloat(pendSignal.entry);
+    const slP = parseFloat(pendSignal.sl);
+    const tpP = parseFloat(pendSignal.tp);
+    const isLong = pendSignal.direction === 'LONG';
+    const cp = await getCurrentPriceServer(coin, broker).catch(() => null);
+
+    if (sub._entryAlerted) {
+      // ── In trade ──
+      const pctToTp = (tpP && e && cp) ? Math.round(Math.abs(cp - e) / Math.abs(tpP - e) * 100) : 0;
+      const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
+      const beReached = cp != null ? (isLong ? cp >= bePrice : cp <= bePrice) : false;
+      lines.push('✅ **IN TRADE**');
+      lines.push(`${coin.replace('USDT', '')} **${pendSignal.direction}** @ \`${e}\``);
+      lines.push(`SL: \`${slP}\` | TP: \`${tpP}\` | ${pendSignal.rr || '—'}R`);
+      if (cp != null) lines.push(`Current: \`${cp.toFixed(2)}\` | Progress: **${pctToTp}%** to TP`);
+      lines.push(`BE: \`${bePrice.toFixed(2)}\` ${beReached ? '✓ REACHED — move SL now' : '(not yet reached)'}`);
+      if (pendSignal.invalidation) lines.push(`Invalidation: ${pendSignal.invalidation}`);
+    } else {
+      // ── Waiting entry ──
+      const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
+      const elapsed = sub.signalTimestamp ? Date.now() - sub.signalTimestamp : 0;
+      const maxMs = pendSignal.expiry_candles ? pendSignal.expiry_candles * (tfMs[tf] || 900000) : null;
+      const remainingCandles = maxMs != null
+        ? Math.max(0, Math.ceil((maxMs - elapsed) / (tfMs[tf] || 900000)))
+        : null;
+      const distPct = (cp != null && e) ? Math.abs((cp - e) / e * 100).toFixed(2) : null;
+      lines.push('⏳ **WAITING ENTRY**');
+      lines.push(`${coin.replace('USDT', '')} **${pendSignal.direction}** @ \`${e}\``);
+      lines.push(`SL: \`${slP}\` | TP: \`${tpP}\` | ${pendSignal.rr || '—'}R | Conf: ${pendSignal.confidence || '—'}%`);
+      if (cp != null) lines.push(`Current: \`${cp.toFixed(2)}\` | Distance: ${distPct}% from entry`);
+      if (remainingCandles !== null) lines.push(`Expires: **${remainingCandles} candles** remaining on ${tf}`);
+      if (pendSignal.invalidation) lines.push(`Cancel if: ${pendSignal.invalidation}`);
+    }
+  } else {
+    lines.push('💤 **No active signal**');
+    lines.push(`Scanning: ${coin.replace('USDT', '')} on ${tf} (${broker})`);
+    if (sub.cooldownUntil > Date.now()) {
+      const secs = Math.ceil((sub.cooldownUntil - Date.now()) / 1000);
+      lines.push(`Cooldown: ${secs}s remaining`);
+    }
+  }
+  lines.push('');
+  lines.push(`⚡ Scan: ${sub.active ? 'ACTIVE' : 'STOPPED'} | Broker: ${broker}`);
+
+  const utcTime = new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit' });
+  const embed = {
+    title: `📊 Henry Status — ${utcTime} UTC`,
+    description: lines.join('\n'),
+    color: sub._entryAlerted ? 3066993 : pendSignal ? 16750848 : 9699539,
+    footer: { text: `Henry The Hoover | ${new Date().toUTCString()}` },
+    timestamp: new Date().toISOString(),
+  };
+  try {
+    await fetch(process.env.DISCORD_STATUS_WEBHOOK, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ embeds: [embed], username: 'Henry Status' }),
+    });
+  } catch (e) {
+    console.error('[status webhook]', e.message);
+  }
+}
+
+// ── API endpoints for browser to control the status loop ──
+app.post('/api/status/start', requireAuth, express.json(), (req, res) => {
+  const intervalMins = parseInt(req.body?.intervalMins, 10) || 15;
+  startUserStatusUpdates(req.user.id, intervalMins);
+  res.json({ ok: true, intervalMins });
+});
+
+app.post('/api/status/stop', requireAuth, (req, res) => {
+  stopUserStatusUpdates(req.user.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/status/now', requireAuth, async (req, res) => {
+  await postUserStatus(req.user.id).catch(e => console.error('[status now]', e.message));
+  res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+
 const _scanLoopHandle = setInterval(() => {
   for (const [userId, sub] of scanSubscriptions.entries()) {
     if (!sub.active) continue;
@@ -1175,10 +1403,12 @@ const _scanLoopHandle = setInterval(() => {
   }
 }, SCAN_INTERVAL_MS);
 
-// Clean shutdown — release scan loop and exchange WS connections
+// Clean shutdown — release scan loop, status loops, and exchange WS connections
 function _gracefulShutdown(signal) {
   console.log(`[shutdown] ${signal} received — cleaning up`);
   clearInterval(_scanLoopHandle);
+  for (const handle of STATUS_INTERVALS.values()) clearInterval(handle);
+  STATUS_INTERVALS.clear();
   for (const [, stream] of exchangeStreams.entries()) {
     if (stream.ws) try { stream.ws.close(); } catch {}
     if (stream.interval) clearInterval(stream.interval);
@@ -1353,6 +1583,8 @@ app.listen(PORT, () => {
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY not set');
   if (!process.env.DISCORD_WEBHOOK) console.warn('[warn] DISCORD_WEBHOOK not set');
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');
+  if (!process.env.DISCORD_STATUS_WEBHOOK) console.warn('[warn] DISCORD_STATUS_WEBHOOK not set — periodic status posts disabled');
+  if (!process.env.DISCORD_JOURNAL_WEBHOOK) console.warn('[warn] DISCORD_JOURNAL_WEBHOOK not set — trade journal posts disabled');
   if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
   if (!process.env.PADDLE_API_KEY) console.warn('[warn] PADDLE_API_KEY not set — payments disabled');

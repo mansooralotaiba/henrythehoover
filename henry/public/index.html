@@ -371,6 +371,22 @@ body.massive-mode #extrapairs{display:none!important}
       <span id="auto-status" style="font-size:9px;color:var(--mu);margin-left:auto">Scanning...</span>
     </div>
 
+    <!-- Discord status updates -->
+    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap;width:100%">
+      <span style="font-size:9px;color:var(--mu);letter-spacing:.1em">DISCORD STATUS:</span>
+      <select id="status-interval" onchange="changeStatusInterval(this.value)"
+        style="background:var(--bg3);border:1px solid var(--b2);color:var(--tx);font-family:var(--mn);font-size:9px;padding:2px 5px;border-radius:2px;outline:none">
+        <option value="0">OFF</option>
+        <option value="15" selected>Every 15min</option>
+        <option value="30">Every 30min</option>
+        <option value="60">Every 1h</option>
+      </select>
+      <button onclick="postStatusNow()"
+        style="padding:2px 10px;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.2);color:var(--cy);font-family:var(--mn);font-size:9px;cursor:pointer;border-radius:2px">
+        POST NOW
+      </button>
+    </div>
+
   </div>
 
   <!-- Price bar -->
@@ -731,15 +747,38 @@ function serverScanStop(){
 }
 function serverScanSyncSignal(sig){
   if(!IS_ADMIN||!sig)return;
-  fetch('/api/scan/signal',{
-    method:'POST',credentials:'same-origin',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({signal:sig})
-  }).catch(function(){});
+  // Wait briefly for signalId to land from saveSignalToHistory (it sets window._lastSignalId).
+  // If we miss it, the server can still post status — it just won't link the signal id.
+  setTimeout(function(){
+    fetch('/api/scan/signal',{
+      method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({signal:sig,signalId:window._lastSignalId||null})
+    }).catch(function(){});
+  },300);
 }
 function serverScanClearSignal(){
   if(!IS_ADMIN)return;
   fetch('/api/scan/clear',{method:'POST',credentials:'same-origin'}).catch(function(){});
+}
+
+// ── Discord periodic status updates ──────────────────────────────────
+function changeStatusInterval(val){
+  if(!IS_ADMIN)return;
+  var mins=parseInt(val,10)||0;
+  if(mins>0){
+    fetch('/api/status/start',{
+      method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({intervalMins:mins})
+    }).catch(function(){});
+  } else {
+    fetch('/api/status/stop',{method:'POST',credentials:'same-origin'}).catch(function(){});
+  }
+}
+function postStatusNow(){
+  if(!IS_ADMIN)return;
+  fetch('/api/status/now',{method:'POST',credentials:'same-origin'}).catch(function(){});
 }
 
 // ═══════════════════════════════════════════
@@ -3147,11 +3186,17 @@ function toggleAutoScan(){
     btn.textContent='⚡ AUTO ON';
     panel.style.display='flex';
     startAutoScan();
+    // Kick off Discord status updates with whatever interval the dropdown shows
+    var sel=document.getElementById('status-interval');
+    var mins=sel?parseInt(sel.value,10):15;
+    if(mins>0)changeStatusInterval(mins);
   } else {
     btn.style.borderColor='var(--di)';btn.style.color='var(--mu)';btn.style.background='transparent';
     btn.textContent='⚡ AUTO';
     panel.style.display='none';
     stopAutoScan();
+    // Stop Discord status updates when auto-scan turns off
+    changeStatusInterval(0);
   }
 }
 
