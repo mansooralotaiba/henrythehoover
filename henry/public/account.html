@@ -98,7 +98,7 @@ async function cancelSub() {
   btn.disabled = true; btn.textContent = '...';
   msg.className = ''; msg.textContent = '';
   try {
-    const r = await fetch('/api/stripe/cancel', { method: 'POST', credentials: 'same-origin' });
+    const r = await fetch('/api/paddle/cancel', { method: 'POST', credentials: 'same-origin' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
       msg.className = 'msg err';

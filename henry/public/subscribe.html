@@ -39,7 +39,7 @@
     <div class="plan-name">HENRY THE HOOVER PRO</div>
     <div class="plan-price">$500 <span>/ month</span></div>
     <ul class="features">
-      <li>AI signal generation (Claude Opus)</li>
+      <li>AI signal generation (Claude Sonnet)</li>
       <li>Auto-scan 24/7 with push alerts</li>
       <li>Discord webhook integration</li>
       <li>Trade journal with stats</li>
@@ -56,35 +56,91 @@
     <a href="/login">Already subscribed? Sign in</a>
     <a href="/register">No account? Register</a>
   </div>
-  <div class="secure">🔒 PAYMENTS SECURED BY STRIPE</div>
+  <div class="secure">🔒 PAYMENTS SECURED BY PADDLE</div>
 </div>
+
+<!-- Paddle.js v2 — loaded async, init happens after config fetch -->
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
 <script>
-document.getElementById('sub-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('sub-btn');
-  const msg = document.getElementById('msg');
-  btn.disabled = true; btn.textContent = 'REDIRECTING...';
-  msg.className = ''; msg.textContent = '';
+const btn = document.getElementById('sub-btn');
+const msg = document.getElementById('msg');
+let paddleReady = false;
+let cachedPriceId = '';
+let cachedEmail = '';
+let cachedUid = '';
+
+function showErr(text) {
+  msg.className = 'msg err';
+  msg.textContent = text;
+}
+
+async function init() {
   try {
-    const r = await fetch('/api/stripe/create-checkout', {
-      method: 'POST', credentials: 'same-origin',
-    });
-    if (r.status === 401) {
-      window.location.href = '/login?next=subscribe'; return;
-    }
-    const data = await r.json();
-    if (!r.ok) {
-      msg.className = 'msg err';
-      msg.textContent = data.error || 'Could not start checkout.';
-      btn.disabled = false; btn.textContent = 'SUBSCRIBE NOW →';
+    // Fetch Paddle config (client token + price ID)
+    const cfgRes = await fetch('/api/paddle/config');
+    const cfg = await cfgRes.json();
+    if (!cfg.clientToken || !cfg.priceId) {
+      showErr('Payment system not configured — please try again shortly.');
       return;
     }
-    window.location.href = data.url;
+    cachedPriceId = cfg.priceId;
+
+    // Initialise Paddle.js
+    Paddle.Initialize({
+      token: cfg.clientToken,
+      ...(cfg.environment === 'sandbox' ? { environment: 'sandbox' } : {}),
+      eventCallback(e) {
+        if (e.name === 'checkout.completed') {
+          // Payment done — redirect to success page
+          window.location.href = '/subscribe/success';
+        }
+      },
+    });
+
+    // Fetch current user (requireSession — works even if not yet subscribed)
+    const meRes = await fetch('/api/me', { credentials: 'same-origin' });
+    if (meRes.ok) {
+      const me = await meRes.json();
+      cachedEmail = me.email || '';
+      cachedUid   = me.id   || ''; // Supabase user UID
+      // If already active, skip straight to terminal
+      if (me.subscription_status === 'active' || me.is_admin) {
+        window.location.href = '/terminal';
+        return;
+      }
+    }
+
+    paddleReady = true;
+    btn.disabled = false;
   } catch (err) {
-    msg.className = 'msg err';
-    msg.textContent = 'Network error: ' + err.message;
-    btn.disabled = false; btn.textContent = 'SUBSCRIBE NOW →';
+    showErr('Failed to load payment system: ' + err.message);
   }
+}
+
+btn.disabled = true; // disable until Paddle is ready
+btn.addEventListener('click', () => {
+  if (!paddleReady) return;
+
+  // Not logged in — send to login first
+  if (!cachedEmail) {
+    window.location.href = '/login?next=subscribe';
+    return;
+  }
+
+  Paddle.Checkout.open({
+    items: [{ priceId: cachedPriceId, quantity: 1 }],
+    customer: { email: cachedEmail },
+    customData: { supabase_uid: cachedUid },
+    settings: {
+      displayMode: 'overlay',
+      theme: 'dark',
+      locale: 'en',
+      successUrl: window.location.origin + '/subscribe/success',
+    },
+  });
 });
+
+init();
 </script>
 </body>
 </html>

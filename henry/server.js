@@ -4,7 +4,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { createClient } from '@supabase/supabase-js';
 import webpush from 'web-push';
 import WebSocket from 'ws';
-import Stripe from 'stripe';
+import { createHmac } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
@@ -18,9 +18,9 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const SITE_URL = process.env.SITE_URL || `http://localhost:${PORT}`;
 const PROD = process.env.NODE_ENV === 'production';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').toLowerCase();
-const stripe = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
-  : null;
+const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
+  ? 'sandbox-api.paddle.com'
+  : 'api.paddle.com';
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -339,13 +339,15 @@ app.post('/api/auth/forgot-password', express.json(), async (req, res) => {
 });
 
 // Identity for the frontend — used to gate admin-only UI (share signal, auto-scan).
-app.get('/api/me', requireAuth, (req, res) => {
+// requireSession (not requireAuth) so unsubscribed users on /subscribe can also fetch their info.
+app.get('/api/me', requireSession, (req, res) => {
   res.json({
-    email: req.user.email,
-    is_admin: !!req.profile?.is_admin || req.user.email.toLowerCase() === ADMIN_EMAIL,
-    plan: req.profile?.plan || 'none',
+    id:                  req.user.id,
+    email:               req.user.email,
+    is_admin:            !!req.profile?.is_admin || req.user.email.toLowerCase() === ADMIN_EMAIL,
+    plan:                req.profile?.plan || 'none',
     subscription_status: req.profile?.subscription_status || 'inactive',
-    current_period_end: req.profile?.current_period_end || null,
+    current_period_end:  req.profile?.current_period_end || null,
   });
 });
 
@@ -387,110 +389,140 @@ app.post('/admin/deny', requireAdmin, express.json(), async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Stripe ──────────────────────────────────────────────────────────────────
+// ── Paddle ──────────────────────────────────────────────────────────────────
 
-// Webhook MUST use raw body — register before any json middleware touches this path.
-app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  if (!stripe) return res.status(500).send('Stripe not configured');
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err) {
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+// Paddle REST helper — server-side only (uses secret API key)
+async function paddleFetch(method, path, body = null) {
+  if (!process.env.PADDLE_API_KEY) throw new Error('PADDLE_API_KEY not set');
+  const r = await fetch(`https://${PADDLE_API_HOST}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${process.env.PADDLE_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return r.json();
+}
+
+// Verify the Paddle-Signature header: ts=<timestamp>;h1=<hmac-sha256>
+function verifyPaddleSignature(rawBody, signatureHeader, secret) {
+  if (!signatureHeader || !secret) return false;
+  const map = {};
+  for (const part of String(signatureHeader).split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0) map[part.slice(0, idx)] = part.slice(idx + 1);
   }
-  const obj = event.data.object;
+  const { ts, h1 } = map;
+  if (!ts || !h1) return false;
+  const expected = createHmac('sha256', secret)
+    .update(`${ts}:${rawBody}`)
+    .digest('hex');
+  return expected === h1;
+}
+
+// Public — returns the client-side token (safe to expose) and price ID.
+// subscribe.html uses these to initialise Paddle.js inline checkout.
+app.get('/api/paddle/config', (_req, res) => {
+  res.json({
+    clientToken:  process.env.PADDLE_CLIENT_TOKEN || '',
+    priceId:      process.env.PADDLE_PRICE_ID || '',
+    environment:  process.env.PADDLE_ENV === 'sandbox' ? 'sandbox' : 'production',
+  });
+});
+
+// Webhook — raw body required for signature verification.
+app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const rawBody = req.body.toString('utf8');
+  const sig     = req.headers['paddle-signature'];
+  const secret  = process.env.PADDLE_WEBHOOK_SECRET;
+
+  if (!verifyPaddleSignature(rawBody, sig, secret)) {
+    console.error('[paddle webhook] bad signature');
+    return res.status(400).send('Bad signature');
+  }
+
+  let event;
+  try { event = JSON.parse(rawBody); } catch { return res.status(400).send('Bad JSON'); }
+
+  const data = event.data || {};
   try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const uid = obj.metadata?.supabase_uid;
+    switch (event.event_type) {
+      // ── New subscription created (fires on first checkout) ─────────────────
+      case 'subscription.created': {
+        const uid = data.custom_data?.supabase_uid;
+        const updates = {
+          subscription_status: 'active',
+          subscription_id:     data.id,
+          stripe_customer_id:  data.customer_id, // reuse column — stores Paddle customer ID
+          plan:                'monthly',
+          current_period_end:  data.current_billing_period?.ends_at || null,
+          updated_at:          new Date().toISOString(),
+        };
         if (uid) {
-          await supaAdmin.from('profiles').update({
-            subscription_status: 'active',
-            subscription_id: obj.subscription,
-            plan: 'monthly',
-            updated_at: new Date().toISOString(),
-          }).eq('user_id', uid);
+          await supaAdmin.from('profiles').update(updates).eq('user_id', uid);
+        } else if (data.customer_id) {
+          await supaAdmin.from('profiles').update(updates).eq('stripe_customer_id', data.customer_id);
         }
         break;
       }
-      case 'invoice.paid': {
-        const sub = await stripe.subscriptions.retrieve(obj.subscription);
+      // ── Subscription renewed / status changed ──────────────────────────────
+      case 'subscription.updated': {
+        const status = data.status === 'active'   ? 'active'
+                     : data.status === 'canceled'  ? 'cancelled'
+                     : data.status === 'past_due'  ? 'past_due'
+                     : data.status || 'inactive';
         await supaAdmin.from('profiles').update({
-          subscription_status: 'active',
-          current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
-          updated_at: new Date().toISOString(),
-        }).eq('stripe_customer_id', obj.customer);
+          subscription_status: status,
+          current_period_end:  data.current_billing_period?.ends_at || null,
+          updated_at:          new Date().toISOString(),
+        }).eq('stripe_customer_id', data.customer_id);
         break;
       }
-      case 'invoice.payment_failed':
+      // ── Subscription fully cancelled ───────────────────────────────────────
+      case 'subscription.canceled': {
         await supaAdmin.from('profiles').update({
-          subscription_status: 'past_due', updated_at: new Date().toISOString(),
-        }).eq('stripe_customer_id', obj.customer);
+          subscription_status: 'inactive',
+          plan:                'none',
+          updated_at:          new Date().toISOString(),
+        }).eq('stripe_customer_id', data.customer_id);
         break;
-      case 'customer.subscription.deleted':
-        await supaAdmin.from('profiles').update({
-          subscription_status: 'inactive', plan: 'none', updated_at: new Date().toISOString(),
-        }).eq('stripe_customer_id', obj.customer);
+      }
+      // ── Payment received (backup activation for renewals) ──────────────────
+      case 'transaction.completed': {
+        if (data.subscription_id && data.customer_id) {
+          await supaAdmin.from('profiles').update({
+            subscription_status: 'active',
+            updated_at:          new Date().toISOString(),
+          }).eq('stripe_customer_id', data.customer_id);
+        }
         break;
-      case 'customer.subscription.updated':
-        await supaAdmin.from('profiles').update({
-          subscription_status: obj.status,
-          current_period_end: new Date(obj.current_period_end * 1000).toISOString(),
-          updated_at: new Date().toISOString(),
-        }).eq('stripe_customer_id', obj.customer);
-        break;
+      }
     }
   } catch (err) {
-    console.error('[stripe webhook]', event.type, err.message);
+    console.error('[paddle webhook]', event.event_type, err.message);
   }
   res.json({ received: true });
 });
 
-app.post('/api/stripe/create-checkout', requireSession, async (req, res) => {
-  if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
-  if (!process.env.STRIPE_PRICE_ID) return res.status(500).json({ error: 'STRIPE_PRICE_ID not set' });
-  try {
-    let customerId = req.profile?.stripe_customer_id;
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: req.user.email,
-        metadata: { supabase_uid: req.user.id },
-      });
-      customerId = customer.id;
-      await supaAdmin.from('profiles')
-        .update({ stripe_customer_id: customerId })
-        .eq('email', req.user.email.toLowerCase());
-    }
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ['card'],
-      mode: 'subscription',
-      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-      success_url: `${SITE_URL}/subscribe/success`,
-      cancel_url: `${SITE_URL}/subscribe`,
-      metadata: { supabase_uid: req.user.id },
-    });
-    res.json({ url: session.url });
-  } catch (err) {
-    console.error('[stripe/checkout]', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/stripe/cancel', requireSession, async (req, res) => {
-  if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
+// Cancel subscription at period end.
+app.post('/api/paddle/cancel', requireSession, async (req, res) => {
   try {
     const subId = req.profile?.subscription_id;
     if (!subId) return res.status(400).json({ error: 'No active subscription found.' });
-    await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+    const result = await paddleFetch('PATCH', `/subscriptions/${subId}`, {
+      scheduled_change: { action: 'cancel', effective_at: 'next_billing_period' },
+    });
+    if (result.error) {
+      return res.status(400).json({ error: result.error.detail || 'Cancel failed.' });
+    }
     await supaAdmin.from('profiles').update({
-      subscription_status: 'cancelled', updated_at: new Date().toISOString(),
+      subscription_status: 'cancelled',
+      updated_at:          new Date().toISOString(),
     }).eq('email', req.user.email.toLowerCase());
     res.json({ ok: true });
   } catch (err) {
-    console.error('[stripe/cancel]', err.message);
+    console.error('[paddle/cancel]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
