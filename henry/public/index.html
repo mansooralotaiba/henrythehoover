@@ -3317,13 +3317,16 @@ function runTradeMonitor(){
 
     var slDist=Math.abs(cp-sl)/sl*100;
 
-    // ── SL hit — only after entry is hit; fires once; journals as BE if BE alert already fired ──
-    // When BE alert has fired (user should have moved SL to entry), treat entry price as effective SL.
-    var effectiveSL=window._beAlerted?e:sl;
-    var slHit=isLong?cp<=effectiveSL:cp>=effectiveSL;
-    if(window._entryAlerted&&slHit&&!window._slAlerted){
+    // ── SL hit — only after entry is hit; fires once ──
+    var slHit=isLong?cp<=sl:cp>=sl;
+    // ── BE stop — separate check: fires when _beAlerted AND price returns to entry
+    //    but is still on the safe side of original SL (avoids double-firing with slHit).
+    //    LONG: price falls back to entry (cp <= e) but hasn't hit original SL yet (cp > sl)
+    //    SHORT: price rises back to entry (cp >= e) but hasn't hit original SL yet (cp < sl)
+    var beStopHit=window._beAlerted&&!window._slAlerted&&(isLong?(cp<=e&&cp>sl):(cp>=e&&cp<sl));
+    if(window._entryAlerted&&(slHit||beStopHit)&&!window._slAlerted){
       window._slAlerted=true;
-      if(window._beAlerted){
+      if(beStopHit||window._beAlerted){
         triggerAlert('⚑ STOPPED AT BREAKEVEN',coin+' '+(isLong?'LONG':'SHORT')+' closed at entry. Auto-logged as BE.','var(--am)');
         logTrade('BE');
       } else {
