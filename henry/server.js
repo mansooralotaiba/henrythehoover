@@ -262,13 +262,17 @@ app.post('/auth/session', express.json(), async (req, res) => {
     const { data, error } = await supaAnon.auth.getUser(access_token);
     if (error || !data?.user?.email) return res.status(401).json({ error: 'invalid_token' });
     const email = data.user.email.toLowerCase();
-    const profile = await loadProfile(email);
-    if (!profile) return res.status(403).json({ error: 'no_profile' });
-    if (!profile.user_id) {
-      await supaAdmin
-        .from('profiles')
-        .update({ user_id: data.user.id })
-        .eq('email', email);
+    const isAdmin = email === ADMIN_EMAIL;
+    // Admin bypasses profile check — they may not have a profiles row
+    if (!isAdmin) {
+      const profile = await loadProfile(email).catch(() => null);
+      if (!profile) return res.status(403).json({ error: 'no_profile' });
+      if (!profile.user_id) {
+        await supaAdmin
+          .from('profiles')
+          .update({ user_id: data.user.id })
+          .eq('email', email);
+      }
     }
     setAuthCookies(res, access_token, refresh_token);
     res.json({ ok: true });
