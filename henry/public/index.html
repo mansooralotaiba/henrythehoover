@@ -633,6 +633,7 @@ var autoScanning = false;       // prevent concurrent scans
 var crossCtx     = ''; // cross-broker comparison context
 var cvdCtx      = ''; // cumulative volume delta trend // calculated confluence score
 var footprintCtx = ''; // order flow analysis
+var regimeCtx    = ''; // market regime detection (Fix 4)
 var dxyData    = {dxy:null,xau:null,dxyChg:0,xauChg:0};
 var brokerOn   = false;
 var bKey='', bSec='', bPass='';
@@ -871,6 +872,7 @@ function setBroker(b){
   var cd=document.getElementById('chartdiv');if(cd)cd.innerHTML='';
   fetchPrice(coin);
   setTimeout(loadChart,200);
+  setTimeout(function(){startLivePrice(activeBroker,coin,tf);},300);
 }
 
 // ── Unified symbol resolver ──
@@ -1371,6 +1373,7 @@ function setTF(btn,t){
   btn.classList.add('on');
   if(tvChart){tvChart.remove();tvChart=null;tvSeries=null;tvSignalLines=[];}
   loadChart();
+  setTimeout(function(){startLivePrice(activeBroker,coin,tf);},300);
 }
 
 function toggleChart(){
@@ -1419,6 +1422,7 @@ function switchToCoin(c){
   fetchPrice(c);
   setTimeout(loadChart,100);
   setTimeout(buildHeatmap,600);
+  setTimeout(function(){startLivePrice(activeBroker,c,tf);},300);
 }
 
 function onPI(v){
@@ -1702,6 +1706,127 @@ function aiScan(){
 }
 
 // ═══════════════════════════════════════════
+// FIX 4 — MARKET REGIME DETECTION
+// Uses window._lastCandles (set in runAI before callAI).
+// Also reads module-level sentimentCtx and cvdCtx which are already set.
+// ═══════════════════════════════════════════
+function detectMarketRegime(){
+  var candles=window._lastCandles;
+  if(!candles||candles.length<10)return null;
+  var n=candles.length;
+  var closes=candles.map(function(c){return c.c;});
+
+  function ema(arr,p){
+    var k=2/(p+1),v=arr[0];
+    for(var i=1;i<arr.length;i++)v=arr[i]*k+v*(1-k);
+    return v;
+  }
+  var ema9=ema(closes,9),ema21=ema(closes,21);
+  var ema50=closes.length>=50?ema(closes,50):null;
+  var bullStack=ema9>ema21&&(ema50?ema21>ema50:true);
+  var bearStack=ema9<ema21&&(ema50?ema21<ema50:true);
+
+  // ATR expansion ratio
+  var trs=[];
+  for(var i=1;i<candles.length;i++){
+    trs.push(Math.max(
+      candles[i].h-candles[i].l,
+      Math.abs(candles[i].h-candles[i-1].c),
+      Math.abs(candles[i].l-candles[i-1].c)
+    ));
+  }
+  var recentATR=trs.slice(-14).reduce(function(s,v){return s+v;},0)/Math.min(14,trs.length)||1;
+  var prevSlice=trs.slice(-28,-14);
+  var prevATR=prevSlice.length?prevSlice.reduce(function(s,v){return s+v;},0)/prevSlice.length:recentATR;
+  var atrRatio=prevATR>0?recentATR/prevATR:1;
+
+  // BOS detection over last 30 candles
+  var slice=candles.slice(-30);
+  var swingH=[],swingL=[];
+  for(var i=2;i<slice.length-2;i++){
+    if(slice[i].h>slice[i-1].h&&slice[i].h>slice[i+1].h)swingH.push(slice[i].h);
+    if(slice[i].l<slice[i-1].l&&slice[i].l<slice[i+1].l)swingL.push(slice[i].l);
+  }
+  swingH.sort(function(a,b){return b-a;});
+  swingL.sort(function(a,b){return a-b;});
+  var cp=candles[n-1].c;
+  var avgVol=candles.slice(-20).reduce(function(s,c){return s+c.v;},0)/20||1;
+  var hasBullBOS=!!(swingH[0]&&cp>swingH[0]);
+  var hasBearBOS=!!(swingL[0]&&cp<swingL[0]);
+  var hasBOS=hasBullBOS||hasBearBOS;
+  var bosVolValid=false;
+  if(hasBOS){
+    var refLvl=hasBullBOS?swingH[0]:swingL[0];
+    var bc=candles.slice(-10).filter(function(c){return hasBullBOS?c.c>refLvl:c.c<refLvl;})[0];
+    bosVolValid=!!(bc&&bc.v>avgVol*1.5);
+  }
+
+  // Funding + OI from sentimentCtx string
+  var fundingExtreme=false,oiRising=false;
+  if(typeof sentimentCtx==='string'){
+    var frM=sentimentCtx.match(/Funding rate: ([-\d.]+)%/);
+    if(frM)fundingExtreme=Math.abs(parseFloat(frM[1]))>0.05;
+    oiRising=sentimentCtx.indexOf('RISING OI')>-1;
+  }
+  // CVD divergence: price direction vs CVD direction conflict
+  var cvdDivergence=false;
+  if(typeof cvdCtx==='string'&&n>5){
+    var priceUp=cp>candles[n-6].c;
+    var cvdDown=cvdCtx.indexOf('FALLING')>-1||cvdCtx.indexOf('Sellers dominant')>-1;
+    var cvdUp=cvdCtx.indexOf('RISING')>-1||cvdCtx.indexOf('Buyers dominant')>-1;
+    cvdDivergence=(priceUp&&cvdDown)||(!priceUp&&cvdUp);
+  }
+
+  // Score each regime
+  var s={TRENDING:0,BREAKOUT:0,RANGING:0,OVEREXTENDED:0};
+  if(bullStack||bearStack)      s.TRENDING+=3;
+  if(hasBOS&&bosVolValid)       s.TRENDING+=2;
+  if(oiRising)                  s.TRENDING+=1;
+  if(atrRatio>1.1&&atrRatio<1.5)s.TRENDING+=1;
+
+  if(hasBOS&&bosVolValid&&atrRatio>1.5)s.BREAKOUT+=4;
+  if(atrRatio>1.5)  s.BREAKOUT+=2;
+  if(hasBOS)        s.BREAKOUT+=1;
+
+  if(!hasBOS)               s.RANGING+=3;
+  if(atrRatio<0.9)          s.RANGING+=2;
+  if(!bullStack&&!bearStack) s.RANGING+=2;
+
+  if(fundingExtreme)                  s.OVEREXTENDED+=3;
+  if(cvdDivergence)                   s.OVEREXTENDED+=2;
+  if(!oiRising&&hasBOS&&!bosVolValid) s.OVEREXTENDED+=1;
+
+  var best='RANGING',bestScore=0;
+  for(var r in s){if(s[r]>bestScore){bestScore=s[r];best=r;}}
+
+  var strategies={
+    TRENDING:     'ICT trend entries only — no counter-trend trades',
+    BREAKOUT:     'Breakout entries at level or first retest — no fading',
+    RANGING:      'Fade range extremes only — ignore BOS signals',
+    OVEREXTENDED: 'Reversal setups only — max 65% confidence'
+  };
+  var colors={
+    TRENDING:'var(--cy)',BREAKOUT:'var(--am)',
+    RANGING:'var(--mu)',OVEREXTENDED:'var(--re)'
+  };
+  return{
+    name:best,strategy:strategies[best],color:colors[best],scores:s,
+    atrRatio:atrRatio.toFixed(2),hasBOS:hasBOS,bosVol:bosVolValid,
+    emaStack:bullStack?'BULL':bearStack?'BEAR':'NONE'
+  };
+}
+
+function buildRegimeContext(){
+  var r=detectMarketRegime();
+  if(!r)return'';
+  return 'Detected regime: '+r.name
+    +'\nStrategy constraint: '+r.strategy
+    +'\nSupporting data: EMA stack='+r.emaStack+' | ATR ratio='+r.atrRatio+'x | BOS='+(r.hasBOS?(r.bosVol?'valid (high vol)':'weak (low vol)'):'none')
+    +'\nRegime scores: '+Object.keys(r.scores).map(function(k){return k+'='+r.scores[k];}).join(', ')
+    +'\nIMPORTANT: Strategy constraint above OVERRIDES default ICT rules. Trades that violate it must be NO TRADE.';
+}
+
+// ═══════════════════════════════════════════
 // AI SYSTEM PROMPT
 // ═══════════════════════════════════════════
 function buildSys(){
@@ -1824,6 +1949,7 @@ function buildSys(){
     +(cvdCtx?'\n\n━━ 11. CVD TREND ━━'+cvdCtx.slice(cvdCtx.indexOf('\n')):'')
     +(typeof corrCtx!=='undefined'&&corrCtx?'\n\n━━ 12. MULTI-PAIR CORRELATION ━━'+corrCtx.slice(corrCtx.indexOf('\n')):'')
     +(crossCtx?'\n\n━━ 13. CROSS-BROKER COMPARISON ━━'+crossCtx.slice(crossCtx.indexOf('\n')):'')
+    +(regimeCtx?'\n\n━━ 14. MARKET REGIME ━━\n'+regimeCtx:'')
     +confCtx
     +'\n\n━━ 10. RULES ━━'
     +'\n1. Entry at KEY LEVEL only (S&D zone, FVG, OB, post-liquidity-sweep) — NOT current price'
@@ -2900,9 +3026,9 @@ function runTradeMonitor(){
 
     var slDist=Math.abs(cp-sl)/sl*100;
 
-    // ── SL hit — fires once; journals as BE if breakeven alert already fired ──
+    // ── SL hit — only after entry is hit; fires once; journals as BE if BE alert already fired ──
     var slHit=isLong?cp<=sl:cp>=sl;
-    if(slHit&&!window._slAlerted){
+    if(window._entryAlerted&&slHit&&!window._slAlerted){
       window._slAlerted=true;
       if(window._beAlerted){
         triggerAlert('⚑ STOPPED AT BREAKEVEN',coin+' '+(isLong?'LONG':'SHORT')+' closed at entry. Auto-logged as BE.','var(--am)');
@@ -3117,7 +3243,12 @@ function runAI(){
       if(corrCtx)parts.push('Multi-pair correlation scanned');
       if(qctx)parts.push('Additional: '+qctx);
       if(crossCtx)parts.push('Cross-broker comparison: '+( multiMode?'Weex+Binance+HL compared':''));
-      parts.push('Use ALL '+(multiMode?'14':'13')+' data sources in system prompt. Do NOT exceed pre-calculated confluence by more than 10 points.');
+      // Fix 4 — compute market regime now that all context vars are set
+      window._lastCandles=candles;
+      window._currentRegime=detectMarketRegime();
+      regimeCtx=buildRegimeContext();
+      if(window._currentRegime)parts.push('Market regime: '+window._currentRegime.name+' — '+window._currentRegime.strategy);
+      parts.push('Use ALL '+(multiMode?'15':'14')+' data sources in system prompt. Do NOT exceed pre-calculated confluence by more than 10 points.');
       callAI(parts.join('. '));
     }).catch(function(){
       chartCtx=''; footprintCtx='';
@@ -3276,6 +3407,7 @@ function drawSig(sig){
     h+='<div style="padding:6px 14px;font-size:10px;color:'+frColor+';border-top:1px solid var(--b1);background:rgba(255,255,255,.02)">💰 Funding: '+frVal+'% | '+( sentimentCtx.includes('RISING OI')?'OI↑':sentimentCtx.includes('FALLING OI')?'OI↓':'OI—')+'</div>';
   }
   if(cvdCtx){var cvdDir=cvdCtx.includes('RISING')?'CVD↑ Buyers dominant':'CVD↓ Sellers dominant';h+='<div style="padding:6px 14px;font-size:10px;color:var(--cy);border-top:1px solid var(--b1);background:rgba(0,212,255,.03)">📊 '+cvdDir+'</div>';}
+  if(window._currentRegime){var rg=window._currentRegime;h+='<div style="padding:6px 14px;font-size:10px;color:'+rg.color+';border-top:1px solid var(--b1);background:rgba(255,255,255,.02)">🔀 Regime: <b>'+rg.name+'</b> — '+rg.strategy+'</div>';}
   if(crossCtx){
     var agree=crossCtx.includes('ALL BROKERS AGREE');
     var disagree=crossCtx.includes('BROKERS DISAGREE');
@@ -3994,6 +4126,82 @@ function renderCalendar(events){
   }).join('');
 }
 
+// ═══════════════════════════════════════════
+// PART 6 BROWSER — SSE live prices + server events
+// ═══════════════════════════════════════════
+
+function getSessionId(){
+  try{
+    var id=localStorage.getItem('henry_session');
+    if(!id){id='sess_'+Date.now()+'_'+Math.random().toString(36).slice(2);localStorage.setItem('henry_session',id);}
+    return id;
+  }catch(e){return'sess_anon';}
+}
+
+// Opens an SSE connection to the server's live price stream.
+// Replaces 10s polling for weex/binance/hyperliquid — MASSIVE/GOLD still polls.
+var liveStream=null;
+function startLivePrice(broker,symbol,timeframe){
+  if(broker==='massive'||symbol==='GOLD'){
+    if(liveStream){liveStream.close();liveStream=null;}
+    return; // Polygon has no SSE — relies on 10s polling setInterval
+  }
+  if(liveStream){liveStream.close();liveStream=null;}
+  liveStream=new EventSource('/api/live/'+encodeURIComponent(broker)+'/'+encodeURIComponent(symbol)+'?tf='+encodeURIComponent(timeframe));
+  liveStream.onmessage=function(e){
+    try{
+      var d=JSON.parse(e.data);
+      if(d.connected)return;
+      if(d.price){
+        livePrice=d.price.toString();
+        var v=parseFloat(d.price);
+        var disp=v>=1000?v.toFixed(2):v>=10?v.toFixed(4):v.toFixed(6);
+        if(document.activeElement!==document.getElementById('priceinput')){
+          document.getElementById('priceinput').value=disp;
+          document.getElementById('pricesrc').textContent='● LIVE';
+          document.getElementById('pricesrc').style.color='var(--gr)';
+        }
+      }
+      if(d.bar&&tvSeries&&chartShown){
+        try{tvSeries.update(d.bar);}catch(ex){}
+      }
+    }catch(ex){}
+  };
+  liveStream.onerror=function(){
+    if(liveStream){liveStream.close();liveStream=null;}
+    setTimeout(function(){startLivePrice(activeBroker,coin,tf);},5000);
+  };
+}
+
+// SSE connection for server→browser scan events (signals, alerts, outcomes).
+function connectSSE(){
+  var sid=getSessionId();
+  var es=new EventSource('/api/events?sessionId='+encodeURIComponent(sid));
+  es.onmessage=function(e){
+    try{
+      var d=JSON.parse(e.data);
+      if(d.connected)return;
+      if(d.type==='signal'){drawSig(d.signal);}
+      if(d.type==='trigger'){
+        triggerAlert('⚡ AUTO: '+d.trigger.type.toUpperCase()+' DETECTED',
+          d.coin.replace('USDT','')+'  — '+d.trigger.desc,'var(--cy)',true);
+      }
+      if(d.type==='outcome'){
+        if(d.outcome==='TP')logTrade('TP');
+        else if(d.outcome==='SL')logTrade('SL');
+        else if(d.outcome==='BE')logTrade('BE');
+      }
+      if(d.type==='expired')clrPend();
+      if(d.type==='alert'&&d.alertType==='entry'){
+        var pl=document.getElementById('plbl');
+        if(pl)pl.textContent='IN TRADE — entry filled';
+      }
+      if(d.type==='status')setAutoStatus(d.msg);
+    }catch(ex){}
+  };
+  es.onerror=function(){setTimeout(connectSSE,5000);};
+}
+
 function init(){
   // Restore broker preference
   try{var savedBroker=localStorage.getItem('activeBroker');if(savedBroker&&['weex','binance','hyperliquid'].includes(savedBroker))setBroker(savedBroker);}catch(e){}
@@ -4006,47 +4214,13 @@ function init(){
   loadCalendar();
   setInterval(fetchDXY,300000);
   setTimeout(buildHeatmap,2000);
-  // Live price refresh every 10 seconds
-  setInterval(function(){fetchPrice(coin);},10000);
-  // Live chart — update current candle every 10s using ticker price
-  setInterval(function(){
-    if(!chartShown||!tvChart||!tvSeries)return;
-    var fsym=FUTURES_SYM[coin]||('cmt_'+coin.toLowerCase());
-    // Fetch latest ticker for real-time close price
-    if(activeBroker==='hyperliquid'){fetchPriceHL(coin);return;}
-    var liveUrl=activeBroker==='binance'?BINANCE_BASE+'/fapi/v1/ticker/price?symbol='+(BINANCE_SYM[coin]||coin):FUTURES_BASE+'/capi/v2/market/ticker?symbol='+fsym;
-    fetch(liveUrl)
-      .then(function(r){return r.json();})
-      .then(function(d){
-        var closePrice=d&&d.last?parseFloat(d.last):null;
-        if(!closePrice||closePrice<=0)return;
-        // Also update price input
-        if(document.activeElement!==document.getElementById('priceinput')){
-          livePrice=closePrice.toString();
-          var disp=closePrice>=1000?closePrice.toFixed(2):closePrice>=10?closePrice.toFixed(4):closePrice.toFixed(6);
-          document.getElementById('priceinput').value=disp;
-          document.getElementById('pricesrc').textContent='● LIVE';
-          document.getElementById('pricesrc').style.color='var(--gr)';
-        }
-        // Fetch last 3 candles to get current bar's O/H/L
-        var refreshUrl=activeBroker==='binance'?BINANCE_BASE+'/fapi/v1/klines?symbol='+(BINANCE_SYM[coin]||coin)+'&interval='+tf+'&limit=3':FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity='+tf+'&limit=3';
-        return fetch(refreshUrl)
-          .then(function(r){return r.json();})
-          .then(function(data){
-            if(!Array.isArray(data)||!data.length)return;
-            // Sort oldest → newest (Weex returns newest first)
-            var sorted=data.slice().sort(function(a,b){return parseInt(a[0])-parseInt(b[0]);});
-            var last=sorted[sorted.length-1];
-            try{
-              var barTime=Math.floor(parseInt(last[0])/1000);
-              var barOpen=parseFloat(last[1]);
-              var barHigh=Math.max(parseFloat(last[2]),closePrice);
-              var barLow=Math.min(parseFloat(last[3]),closePrice);
-              tvSeries.update({time:barTime,open:barOpen,high:barHigh,low:barLow,close:closePrice});
-            }catch(e){}
-          });
-      }).catch(function(){});
-  },10000);
+  // MASSIVE/GOLD: poll every 10s (Polygon has no WebSocket/SSE feed).
+  // weex / binance / hyperliquid: SSE stream handles live price + chart bar.
+  setInterval(function(){if(activeBroker==='massive'||coin==='GOLD')fetchPrice(coin);},10000);
+  // Start SSE live price stream for current broker/coin
+  startLivePrice(activeBroker,coin,tf);
+  // Connect SSE for server-side scan events (signals, alerts, outcomes)
+  connectSSE();
   // Wait for LightweightCharts CDN to load, then init chart
   var attempts=0;
   var waitForChart=setInterval(function(){
