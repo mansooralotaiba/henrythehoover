@@ -3149,6 +3149,9 @@ function setAutoStatus(msg){
 }
 
 function getPairsToScan(){
+  // Gold uses Polygon (no WebSocket/SSE) — exclude from auto-scan to prevent
+  // phantom signals after a manual gold trade is closed.
+  if(activeBroker==='massive'||coin==='GOLD')return [];
   // Focused mode only — always scan current selected pair
   return [{sym:coin,lbl:coin.replace('USDT','')}];
 }
@@ -3315,7 +3318,9 @@ function runTradeMonitor(){
     var slDist=Math.abs(cp-sl)/sl*100;
 
     // ── SL hit — only after entry is hit; fires once; journals as BE if BE alert already fired ──
-    var slHit=isLong?cp<=sl:cp>=sl;
+    // When BE alert has fired (user should have moved SL to entry), treat entry price as effective SL.
+    var effectiveSL=window._beAlerted?e:sl;
+    var slHit=isLong?cp<=effectiveSL:cp>=effectiveSL;
     if(window._entryAlerted&&slHit&&!window._slAlerted){
       window._slAlerted=true;
       if(window._beAlerted){
@@ -3707,7 +3712,7 @@ function checkEntryConfirmation(sig){
       confirmedSig._confirmed=true;
       var watchDiv=document.getElementById('entry-watch-status');if(watchDiv)watchDiv.remove();
       _drawSigCard(confirmedSig);
-      triggerAlert('ENTRY CONFIRMED',coin+' '+confirmedSig.direction+' — '+confirmed+' on '+(pattern1m?'1m':'5m')+'. Refined: '+fp(refinedEntry),'var(--gr)',false);
+      triggerAlert('ENTRY CONFIRMED',coin+' '+confirmedSig.direction+' — '+confirmed+' on '+(pattern1m?'1m':'5m')+'. Refined: '+fp(refinedEntry),'var(--gr)',true);
     }
   }).catch(function(){});
 }
