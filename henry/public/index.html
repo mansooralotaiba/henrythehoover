@@ -1542,6 +1542,94 @@ function analyseCandles(candles){
     return body<range*0.1?'doji':wt>body*2?'upper-wick':wb>body*2?'lower-wick':bull?'bull':'bear';
   }).join(',');
 
+  // ── UPGRADE: Engulfing + Inside bar + Pin bar detection ──
+  var patterns=[];
+  var patternScore=0;
+  for(var pi=1;pi<candles.length;pi++){
+    var prev2=candles[pi-1],curr=candles[pi];
+    var prevBull=prev2.c>prev2.o,currBull=curr.c>curr.o;
+    var prevBody=Math.abs(prev2.c-prev2.o),currBody=Math.abs(curr.c-curr.o);
+    // Bullish engulfing: previous bearish, current bullish, current body engulfs previous
+    if(!prevBull&&currBull&&curr.c>prev2.o&&curr.o<prev2.c&&currBody>prevBody*1.5){
+      patterns.push({type:'BULL_ENGULF',idx:pi,vol:curr.v,strength:currBody/prevBody});
+    }
+    // Bearish engulfing: previous bullish, current bearish, current body engulfs previous
+    if(prevBull&&!currBull&&curr.c<prev2.o&&curr.o>prev2.c&&currBody>prevBody*1.5){
+      patterns.push({type:'BEAR_ENGULF',idx:pi,vol:curr.v,strength:currBody/prevBody});
+    }
+    // Inside bar: current high < previous high AND current low > previous low
+    if(curr.h<prev2.h&&curr.l>prev2.l){
+      patterns.push({type:'INSIDE_BAR',idx:pi,vol:curr.v,compression:1-(curr.h-curr.l)/(prev2.h-prev2.l)});
+    }
+    // Pin bar: wick > 3x body, small body at one end
+    var currRange=curr.h-curr.l||0.001;
+    var currUp=curr.h-Math.max(curr.c,curr.o);
+    var currDown=Math.min(curr.c,curr.o)-curr.l;
+    if(currUp>currBody*3&&currBody<currRange*0.25){patterns.push({type:'BEAR_PIN',idx:pi,vol:curr.v,strength:currUp/currRange});}
+    if(currDown>currBody*3&&currBody<currRange*0.25){patterns.push({type:'BULL_PIN',idx:pi,vol:curr.v,strength:currDown/currRange});}
+  }
+  // Keep only recent patterns (last 5 candles)
+  patterns=patterns.filter(function(p){return p.idx>=candles.length-5;});
+  // Score patterns for confluence
+  patterns.forEach(function(p){
+    if(p.type==='BULL_ENGULF'&&p.vol>avgVol)patternScore+=2;
+    else if(p.type==='BEAR_ENGULF'&&p.vol>avgVol)patternScore-=2;
+    else if(p.type==='BULL_PIN')patternScore+=1;
+    else if(p.type==='BEAR_PIN')patternScore-=1;
+  });
+
+  // ── EMA stack age (how many consecutive candles EMAs have been stacked bull/bear) ──
+  var emaStackAge=0;
+  for(var ei=candles.length-1;ei>=Math.max(0,candles.length-50);ei--){
+    var ec=candles[ei];
+    if(!ec)break;
+    var ecCloses=closes.slice(0,ei+1);
+    if(ecCloses.length<9)break;
+    var ecEma9=calcEMA(ecCloses,9),ecEma21=calcEMA(ecCloses,21);
+    if(emaBull&&ecEma9>ecEma21)emaStackAge++;
+    else if(emaBear&&ecEma9<ecEma21)emaStackAge++;
+    else break;
+  }
+
+  // ── BOS strength (how many times was the level tested) ──
+  var bosStrength=0;
+  if(rH){
+    var rHPrice=rH.price;
+    bosStrength=candles.filter(function(c){return Math.abs(c.h-rHPrice)/rHPrice<0.001||Math.abs(c.l-rHPrice)/rHPrice<0.001;}).length;
+  } else if(rL){
+    var rLPrice=rL.price;
+    bosStrength=candles.filter(function(c){return Math.abs(c.l-rLPrice)/rLPrice<0.001||Math.abs(c.h-rLPrice)/rLPrice<0.001;}).length;
+  }
+
+  // ── Volume Profile (simplified) ──
+  var volProfile={poc:null,vah:null,val:null};
+  if(candles.length>=20){
+    var pSlice=candles.slice(-50);
+    var pMin=Math.min.apply(null,pSlice.map(function(c){return c.l;}));
+    var pMax=Math.max.apply(null,pSlice.map(function(c){return c.h;}));
+    var bucketSize=(pMax-pMin)/20||1;
+    var buckets={};
+    pSlice.forEach(function(c){
+      var bkt=Math.round(((c.h+c.l)/2-pMin)/bucketSize);
+      buckets[bkt]=(buckets[bkt]||0)+c.v;
+    });
+    var bucketArr=Object.keys(buckets).map(function(k){return{price:pMin+parseInt(k)*bucketSize,vol:buckets[k]};});
+    bucketArr.sort(function(a,b){return b.vol-a.vol;});
+    var totalVP=bucketArr.reduce(function(s,b){return s+b.vol;},0);
+    var pocBucket=bucketArr[0];
+    volProfile.poc=pocBucket?parseFloat((pocBucket.price).toFixed(4)):null;
+    var vaVol=0,vaIdx=0,vaBuckets=[];
+    bucketArr.sort(function(a,b){return b.vol-a.vol;});
+    while(vaVol<totalVP*0.7&&vaIdx<bucketArr.length){
+      vaBuckets.push(bucketArr[vaIdx]);vaVol+=bucketArr[vaIdx].vol;vaIdx++;
+    }
+    if(vaBuckets.length){
+      var vaPrices=vaBuckets.map(function(b){return b.price;});
+      volProfile.vah=parseFloat(Math.max.apply(null,vaPrices).toFixed(4));
+      volProfile.val=parseFloat(Math.min.apply(null,vaPrices).toFixed(4));
+    }
+  }
+
   return{
     trend:trend,bos:bos,bosValid:bosValid,priceVsEma:priceVsEma,
     ema9:fp(ema9),ema21:fp(ema21),ema50:ema50?fp(ema50):null,
@@ -1550,7 +1638,10 @@ function analyseCandles(candles){
     fvgs:fvgs.slice(0,3),recent:recent,count:n,
     atrRatio:atrRatio.toFixed(2),trendStrength:trendStrength,trendStrengthScore:trendStrengthScore,
     avgVol:avgVol.toFixed(3),
-    rejBlocks:rejBlocks.slice(0,3),nearestRB:nearestRB
+    rejBlocks:rejBlocks.slice(0,3),nearestRB:nearestRB,
+    patterns:patterns,patternScore:patternScore,
+    emaStackAge:emaStackAge,bosStrength:bosStrength,
+    volProfile:volProfile
   };
 }
 
@@ -1950,6 +2041,10 @@ function buildSys(){
     +(typeof corrCtx!=='undefined'&&corrCtx?'\n\n━━ 12. MULTI-PAIR CORRELATION ━━'+corrCtx.slice(corrCtx.indexOf('\n')):'')
     +(crossCtx?'\n\n━━ 13. CROSS-BROKER COMPARISON ━━'+crossCtx.slice(crossCtx.indexOf('\n')):'')
     +(regimeCtx?'\n\n━━ 14. MARKET REGIME ━━\n'+regimeCtx:'')
+    +(window._dailyWeeklyCtx?'\n\n━━ 15. DAILY/WEEKLY CONTEXT (PDH/PDL) ━━'+window._dailyWeeklyCtx.slice(window._dailyWeeklyCtx.indexOf('\n')):'')
+    +(function(){var jc=window._journalLearningCtx&&window._journalLearningCtx.total?buildJournalLearningContext(window._journalLearningCtx):'';return jc?'\n\n━━ 16. YOUR TRADING HISTORY (PERSONAL PATTERNS) ━━'+jc:'';})()
+
+    +(window._topArticleContent?'\n\n━━ 17. TOP STORY FULL CONTENT ━━'+window._topArticleContent:'')
     +confCtx
     +'\n\n━━ 10. RULES ━━'
     +'\n1. Entry at KEY LEVEL only (S&D zone, FVG, OB, post-liquidity-sweep) — NOT current price'
@@ -1975,6 +2070,154 @@ function buildSys(){
 // AI RUN — fetches candles first
 // ═══════════════════════════════════════════
 
+// ═══════════════════════════════════════════
+// DAILY/WEEKLY CONTEXT
+// ═══════════════════════════════════════════
+function fetchDailyWeeklyContext(symbol){
+  // Fetch daily candles for PDH/PDL and weekly open
+  var bsym=BINANCE_SYM[symbol]||symbol;
+  var fsym=FUTURES_SYM[symbol]||('cmt_'+symbol.toLowerCase());
+  var dailyProm,weeklyProm;
+  if(activeBroker==='binance'){
+    dailyProm=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=1d&limit=10')
+      .then(function(r){return r.json();})
+      .then(function(d){if(!Array.isArray(d))return [];return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});})
+      .catch(function(){return [];});
+    weeklyProm=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=1w&limit=2')
+      .then(function(r){return r.json();})
+      .then(function(d){if(!Array.isArray(d))return [];return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});})
+      .catch(function(){return [];});
+  } else {
+    dailyProm=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=1d&limit=10')
+      .then(function(r){return r.json();})
+      .then(function(d){if(!Array.isArray(d))return [];return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});})
+      .catch(function(){return [];});
+    weeklyProm=Promise.resolve([]);
+  }
+  return Promise.all([dailyProm,weeklyProm]).then(function(results){
+    var daily=results[0]||[];
+    if(daily.length<2)return '';
+    var n=daily.length;
+    var today=daily[n-1];
+    var yesterday=daily[n-2];
+    var cp=livePrice?parseFloat(livePrice):today.c;
+
+    // Previous Day High/Low (PDH/PDL)
+    var pdh=yesterday.h;
+    var pdl=yesterday.l;
+
+    // Daily range midpoint (premium/discount)
+    var dayMid=(today.h+today.l)/2;
+    var dayOpen=today.o;
+    var inPremium=cp>dayMid;
+    var dayPos=((cp-today.l)/(today.h-today.l||1)*100).toFixed(0);
+
+    // Weekly open (Monday open)
+    var weeklyOpen=daily.length>=6?daily[n-6].o:daily[0].o;
+    var aboveWeeklyOpen=cp>weeklyOpen;
+
+    // Daily range size vs ATR
+    var recentATRD=daily.slice(-5).reduce(function(s,c){return s+(c.h-c.l);},0)/5||1;
+    var todayRange=today.h-today.l;
+    var rangeExpansion=(todayRange/recentATRD).toFixed(2);
+
+    var lines=[];
+    lines.push('DAILY/WEEKLY CONTEXT:');
+    lines.push('Previous Day High (PDH): $'+fp(pdh)+' — KEY resistance, expect sweep before reversal');
+    lines.push('Previous Day Low (PDL): $'+fp(pdl)+' — KEY support, expect sweep before reversal');
+    lines.push('Weekly open: $'+fp(weeklyOpen)+' — Price is '+(aboveWeeklyOpen?'ABOVE (bullish weekly bias)':'BELOW (bearish weekly bias)'));
+    lines.push('Daily position: '+dayPos+'% of today range ('+(inPremium?'PREMIUM — favour shorts':'DISCOUNT — favour longs')+')');
+    lines.push('Daily midpoint: $'+fp(dayMid)+' — '+(inPremium?'Price in upper half, ideal for shorts':'Price in lower half, ideal for longs'));
+    lines.push('Day range expansion: '+rangeExpansion+'x avg ('+(parseFloat(rangeExpansion)>1.5?'HIGH — extended move':'NORMAL')+')');
+    lines.push('RULE: Only take LONGs in discount zone (below daily mid). Only take SHORTs in premium zone (above daily mid). PDH/PDL are primary liquidity targets.');
+
+    // Store for confluence scoring
+    window._dwContext={pdh:pdh,pdl:pdl,weeklyOpen:weeklyOpen,dayMid:dayMid,inPremium:inPremium,aboveWeeklyOpen:aboveWeeklyOpen,cp:cp};
+    window._dailyWeeklyCtx='\n'+lines.join('\n');
+    return window._dailyWeeklyCtx;
+  }).catch(function(){return '';});
+}
+
+// ═══════════════════════════════════════════
+// TOP ARTICLE CONTENT
+// ═══════════════════════════════════════════
+var fullArticleCtx='';
+function fetchTopArticleContent(){
+  if(!newsData||!newsData.length)return Promise.resolve('');
+  var topStory=newsData.find(function(n){return n.i==='high';})||newsData[0];
+  if(!topStory||!topStory.link)return Promise.resolve('');
+  var proxyUrl='https://api.allorigins.win/get?url='+encodeURIComponent(topStory.link)+'&t='+Date.now();
+  return fetch(proxyUrl)
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d.contents)return '';
+      var text=d.contents.replace(/<script[^>]*>[\s\S]*?<\/script>/gi,'')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi,'')
+        .replace(/<[^>]+>/g,' ')
+        .replace(/\s+/g,' ')
+        .trim()
+        .slice(0,3000);
+      if(text.length<100)return '';
+      fullArticleCtx='\nTOP STORY FULL CONTENT ('+(topStory.src||'')+'): '+topStory.t+'\n'+text+'...';
+      window._topArticleContent=fullArticleCtx;
+      return fullArticleCtx;
+    }).catch(function(){return '';});
+}
+
+// ═══════════════════════════════════════════
+// JOURNAL LEARNING CONTEXT
+// ═══════════════════════════════════════════
+function computeJournalLearning(){
+  if(!jrn||!jrn.length)return null;
+  var closed=jrn.filter(function(t){return t.outcome==='TP'||t.outcome==='SL'||t.outcome==='BE';});
+  if(!closed.length)return null;
+  var tp=closed.filter(function(t){return t.outcome==='TP';}).length;
+  var sl=closed.filter(function(t){return t.outcome==='SL';}).length;
+  var be=closed.filter(function(t){return t.outcome==='BE';}).length;
+  var winRate=closed.length>0?Math.round((tp+be*0.5)/closed.length*100):0;
+  var netR=closed.reduce(function(s,t){return s+(t.rrG||0);},0);
+
+  // Best session
+  var sessTrades={};
+  closed.forEach(function(t){
+    var s=t.sess||'Unknown';
+    if(!sessTrades[s])sessTrades[s]={tp:0,sl:0,be:0};
+    sessTrades[s][t.outcome.toLowerCase()]=(sessTrades[s][t.outcome.toLowerCase()]||0)+1;
+  });
+  var bestSession='Unknown';
+  var bestWR=0;
+  Object.keys(sessTrades).forEach(function(s){
+    var sd=sessTrades[s];
+    var tot=(sd.tp||0)+(sd.sl||0)+(sd.be||0);
+    var wr=tot>0?((sd.tp||0)+(sd.be||0)*0.5)/tot*100:0;
+    if(wr>bestWR){bestWR=wr;bestSession=s;}
+  });
+
+  // Long/short win rates
+  var longs=closed.filter(function(t){return t.dir==='LONG';});
+  var shorts=closed.filter(function(t){return t.dir==='SHORT';});
+  var longWr=longs.length>0?Math.round(longs.filter(function(t){return t.outcome==='TP';}).length/longs.length*100):null;
+  var shortWr=shorts.length>0?Math.round(shorts.filter(function(t){return t.outcome==='TP';}).length/shorts.length*100):null;
+
+  var summary='Win rate: '+winRate+'% ('+tp+' TP / '+sl+' SL / '+be+' BE) | Net R: '+(netR>=0?'+':'')+netR.toFixed(1)+'R | Best session: '+bestSession+(longWr!==null?' | LONG WR: '+longWr+'%':'')+(shortWr!==null?' | SHORT WR: '+shortWr+'%':'');
+  var result={summary:summary,winRate:winRate,netR:netR,bestSession:bestSession,longWr:longWr,shortWr:shortWr,total:closed.length};
+  window._journalLearningCtx=result;
+  return result;
+}
+
+function buildJournalLearningContext(insights){
+  if(!insights||!insights.total)return '';
+  var lines=[];
+  lines.push('YOUR TRADING HISTORY ('+insights.total+' closed trades):');
+  lines.push(insights.summary);
+  if(insights.longWr!==null&&insights.shortWr!==null){
+    if(insights.longWr>insights.shortWr+15)lines.push('PATTERN: You perform significantly better on LONG trades — consider favouring longs.');
+    else if(insights.shortWr>insights.longWr+15)lines.push('PATTERN: You perform significantly better on SHORT trades — consider favouring shorts.');
+  }
+  if(insights.bestSession&&insights.bestSession!=='Unknown')lines.push('BEST SESSION: '+insights.bestSession+' — weight signals in this session higher.');
+  if(insights.netR<-5)lines.push('WARNING: Net R is negative ('+insights.netR.toFixed(1)+'R) — consider being more selective and waiting for higher-confluence setups only.');
+  return '\n'+lines.join('\n');
+}
 
 // ═══════════════════════════════════════════
 // SHARE SIGNAL
@@ -2322,23 +2565,18 @@ function calculateConfluence(direction,kz,h4A,h1A,btcInfo,chartA){
   var reasons=[];
   var blockers=[];
 
-  // EMA stack alignment
-  if(chartA){
-    var bullStack=chartA.trend.includes('UPTREND');
-    var bearStack=chartA.trend.includes('DOWNTREND');
-    if(direction==='LONG'&&bullStack){score+=10;reasons.push('+10 EMAs stacked bullish');}
-    else if(direction==='SHORT'&&bearStack){score+=10;reasons.push('+10 EMAs stacked bearish');}
-    else if(direction!=='NO TRADE'){score-=5;blockers.push('-5 EMAs not aligned with direction');}
-  }
-
-  // BOS confirmed + volume validation
+  // BOS — weight by volume strength AND how many times level was tested
   if(chartA){
     if(direction==='LONG'&&chartA.bos.includes('BULLISH BOS')){
-      if(chartA.bosValid){score+=15;reasons.push('+15 Bullish BOS with volume spike — valid breakout');}
-      else{score+=5;reasons.push('+5 Bullish BOS but LOW volume — potential fake');}
+      var bosBase=chartA.bosValid?15:5;
+      var bosBonus=chartA.bosStrength>3?5:chartA.bosStrength>1?2:0;
+      score+=bosBase+bosBonus;
+      reasons.push('+'+(bosBase+bosBonus)+' Bullish BOS'+(chartA.bosValid?' (high volume)':' (low volume)')+(bosBonus?' level tested '+chartA.bosStrength+'x':''));
     } else if(direction==='SHORT'&&chartA.bos.includes('BEARISH BOS')){
-      if(chartA.bosValid){score+=15;reasons.push('+15 Bearish BOS with volume spike — valid breakout');}
-      else{score+=5;reasons.push('+5 Bearish BOS but LOW volume — potential fake');}
+      var bosBase=chartA.bosValid?15:5;
+      var bosBonus=chartA.bosStrength>3?5:chartA.bosStrength>1?2:0;
+      score+=bosBase+bosBonus;
+      reasons.push('+'+(bosBase+bosBonus)+' Bearish BOS'+(chartA.bosValid?' (high volume)':' (low volume)')+(bosBonus?' level tested '+chartA.bosStrength+'x':''));
     }
   }
   // ATR trend strength
@@ -2346,13 +2584,63 @@ function calculateConfluence(direction,kz,h4A,h1A,btcInfo,chartA){
     if(chartA.trendStrengthScore==='strong'){score+=10;reasons.push('+10 ATR expanding — strong trend momentum');}
     else if(chartA.trendStrengthScore==='weak'){score-=15;blockers.push('-15 ATR contracting — consolidation, false breakout risk');}
   }
+
+  // EMA stack — weight by age (longer = stronger)
+  if(chartA){
+    var emaBull2=chartA.trend.includes('UPTREND'),emaBear2=chartA.trend.includes('DOWNTREND');
+    var emaAge=chartA.emaStackAge||0;
+    var emaBonus=emaAge>20?15:emaAge>10?12:emaAge>5?10:emaAge>2?7:5;
+    if(direction==='LONG'&&emaBull2){score+=emaBonus;reasons.push('+'+emaBonus+' EMA stack bullish (aligned '+emaAge+' candles)');}
+    else if(direction==='SHORT'&&emaBear2){score+=emaBonus;reasons.push('+'+emaBonus+' EMA stack bearish (aligned '+emaAge+' candles)');}
+    else if((direction==='LONG'&&emaBear2)||(direction==='SHORT'&&emaBull2)){score-=5;blockers.push('-5 EMA stack opposes direction');}
+  }
+
+  // Engulfing patterns — strong weight
+  if(chartA&&chartA.patterns&&chartA.patterns.length){
+    chartA.patterns.forEach(function(p){
+      if(direction==='LONG'&&p.type==='BULL_ENGULF'){
+        var engStr=p.strength>2?12:8;
+        score+=engStr;reasons.push('+'+engStr+' Bullish engulfing pattern (strength '+p.strength.toFixed(1)+'x)');
+      } else if(direction==='SHORT'&&p.type==='BEAR_ENGULF'){
+        var engStr=p.strength>2?12:8;
+        score+=engStr;reasons.push('+'+engStr+' Bearish engulfing pattern (strength '+p.strength.toFixed(1)+'x)');
+      } else if(direction==='LONG'&&(p.type==='BULL_PIN'||p.type==='BULL_RB_PAT')){score+=6;reasons.push('+6 Bullish pin bar');}
+      else if(direction==='SHORT'&&(p.type==='BEAR_PIN'||p.type==='BEAR_RB_PAT')){score+=6;reasons.push('+6 Bearish pin bar');}
+      else if(p.type==='INSIDE_BAR'){score+=3;reasons.push('+3 Inside bar compression before potential move');}
+    });
+  }
+
   // Rejection block alignment
   if(chartA&&chartA.nearestRB){
     var rb=chartA.nearestRB;
-    if(direction==='LONG'&&rb.type==='BULL_RB'){score+=10;reasons.push('+10 Bullish rejection block supports LONG');}
-    else if(direction==='SHORT'&&rb.type==='BEAR_RB'){score+=10;reasons.push('+10 Bearish rejection block supports SHORT');}
+    var rbStr=rb.strength>0.8?10:8;
+    if(direction==='LONG'&&rb.type==='BULL_RB'){score+=rbStr;reasons.push('+'+rbStr+' Bullish rejection block (wick strength '+Math.round(rb.strength*100)+'%)');}
+    else if(direction==='SHORT'&&rb.type==='BEAR_RB'){score+=rbStr;reasons.push('+'+rbStr+' Bearish rejection block (wick strength '+Math.round(rb.strength*100)+'%)');}
     else if(direction==='LONG'&&rb.type==='BEAR_RB'){score-=5;blockers.push('-5 Nearest RB is bearish — opposes LONG');}
     else if(direction==='SHORT'&&rb.type==='BULL_RB'){score-=5;blockers.push('-5 Nearest RB is bullish — opposes SHORT');}
+  }
+
+  // Volume Profile alignment
+  if(chartA&&chartA.volProfile&&chartA.volProfile.poc){
+    var poc=chartA.volProfile.poc,vah=chartA.volProfile.vah,val=chartA.volProfile.val;
+    var cp4=livePrice?parseFloat(livePrice):0;
+    if(cp4&&vah&&val){
+      if(direction==='LONG'&&cp4<val){score+=8;reasons.push('+8 Price below value area (discount) — LONG in value');}
+      else if(direction==='SHORT'&&cp4>vah){score+=8;reasons.push('+8 Price above value area (premium) — SHORT in value');}
+      else if(direction==='LONG'&&cp4>vah){score-=8;blockers.push('-8 LONGing in premium zone — counter to value');}
+      else if(direction==='SHORT'&&cp4<val){score-=8;blockers.push('-8 SHORTing in discount zone — counter to value');}
+    }
+  }
+
+  // Daily/weekly context (PDH/PDL, premium/discount)
+  if(window._dwContext){
+    var dw=window._dwContext;
+    if(direction==='LONG'&&!dw.inPremium){score+=8;reasons.push('+8 Price in discount zone — ideal for longs');}
+    else if(direction==='SHORT'&&dw.inPremium){score+=8;reasons.push('+8 Price in premium zone — ideal for shorts');}
+    else if(direction==='LONG'&&dw.inPremium){score-=8;blockers.push('-8 LONGing in daily premium zone');}
+    else if(direction==='SHORT'&&!dw.inPremium){score-=8;blockers.push('-8 SHORTing in daily discount zone');}
+    if(direction==='LONG'&&dw.aboveWeeklyOpen){score+=5;reasons.push('+5 Above weekly open — bullish weekly bias');}
+    else if(direction==='SHORT'&&!dw.aboveWeeklyOpen){score+=5;reasons.push('+5 Below weekly open — bearish weekly bias');}
   }
 
   // Higher TF agreement
@@ -3174,6 +3462,10 @@ function runAI(){
     var btn=document.getElementById('aibtn'),area=document.getElementById('sigarea');
     btn.disabled=true;btn.textContent='LOADING...';
     area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>FETCHING LIVE CANDLES FROM WEEX...</div>';
+    // Prefetch daily/weekly, article, and journal context in parallel (non-blocking)
+    fetchDailyWeeklyContext(coin).catch(function(){});
+    fetchTopArticleContent().catch(function(){});
+    try{computeJournalLearning();}catch(e){}
     // Fetch ALL context in parallel: candles, trades, MTF, BTC, sentiment, correlation
     var brokerLabel=activeBroker==='binance'?'Binance':activeBroker==='hyperliquid'?'Hyperliquid':'Weex';
     area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>FETCHING FROM '+(multiMode?'ALL BROKERS':''+brokerLabel)+'...</div>';
@@ -3241,6 +3533,9 @@ function runAI(){
       if(sentimentCtx)parts.push('Sentiment: funding+OI+LS loaded');
       if(cvdCtx)parts.push('CVD trend analysed');
       if(corrCtx)parts.push('Multi-pair correlation scanned');
+      if(window._dailyWeeklyCtx)parts.push('Daily/Weekly: PDH/PDL/weekly open loaded');
+      if(window._topArticleContent)parts.push('Full article content loaded for top story');
+      if(window._journalLearningCtx&&window._journalLearningCtx.total)parts.push('Journal: '+jrn.length+' trades analysed for personal patterns');
       if(qctx)parts.push('Additional: '+qctx);
       if(crossCtx)parts.push('Cross-broker comparison: '+( multiMode?'Weex+Binance+HL compared':''));
       // Fix 4 — compute market regime now that all context vars are set
@@ -3317,6 +3612,141 @@ function callAI(msg){
 }
 
 // ═══════════════════════════════════════════
+// ENTRY CONFIRMATION WATCHER
+// ═══════════════════════════════════════════
+var _entryWatchInterval=null;
+var _entryWatchTimeout=null;
+var _entryWatchActive=false;
+
+function stopEntryWatch(){
+  if(_entryWatchInterval){clearInterval(_entryWatchInterval);_entryWatchInterval=null;}
+  if(_entryWatchTimeout){clearTimeout(_entryWatchTimeout);_entryWatchTimeout=null;}
+  _entryWatchActive=false;
+}
+
+function cancelEntryWatch(){
+  var sig=window._entryWatchSig;
+  stopEntryWatch();
+  var wd=document.getElementById('entry-watch-status');if(wd)wd.remove();
+  if(sig){
+    var s=JSON.parse(JSON.stringify(sig));
+    window._entryWatchSig=null;
+    s._confirmed=true;
+    _drawSigCard(s);
+    triggerAlert('ORIGINAL ENTRY USED',sig.pair+' '+sig.direction+' @ '+fp(parseFloat(sig.entry))+' — no 1m/5m confirmation.','var(--am)',true);
+  }
+}
+
+function detectConfirmationPattern(candles,isLong){
+  if(!candles||candles.length<3)return null;
+  var n=candles.length;
+  var last=candles[n-1],prev=candles[n-2],prev2=candles[n-3]||prev;
+  var lastBull=last.c>last.o;
+  var prevBull=prev.c>prev.o;
+  var lastBody=Math.abs(last.c-last.o);
+  var prevBody=Math.abs(prev.c-prev.o);
+  var lastRange=last.h-last.l||0.001;
+  var lastUp=last.h-Math.max(last.c,last.o);
+  var lastDown=Math.min(last.c,last.o)-last.l;
+  var avgVol2=candles.slice(-5).reduce(function(s,c){return s+c.v;},0)/5||1;
+  if(isLong){
+    if(lastBull&&!prevBull&&last.c>prev.o&&last.o<prev.c&&lastBody>prevBody)return 'Bullish engulfing';
+    if(lastDown>lastBody*2.5&&lastUp<lastBody&&lastDown>lastRange*0.5)return 'Hammer/pin bar';
+    if(last.c>prev.h&&last.v>avgVol2*1.2)return 'Micro bullish BOS';
+    if(lastBody<lastRange*0.1&&lastDown>lastRange*0.4&&last.v>avgVol2)return 'Bullish doji reversal';
+  } else {
+    if(!lastBull&&prevBull&&last.c<prev.o&&last.o>prev.c&&lastBody>prevBody)return 'Bearish engulfing';
+    if(lastUp>lastBody*2.5&&lastDown<lastBody&&lastUp>lastRange*0.5)return 'Shooting star/pin bar';
+    if(last.c<prev.l&&last.v>avgVol2*1.2)return 'Micro bearish BOS';
+    if(lastBody<lastRange*0.1&&lastUp>lastRange*0.4&&last.v>avgVol2)return 'Bearish doji reversal';
+  }
+  return null;
+}
+
+function checkEntryConfirmation(sig){
+  if(!_entryWatchActive||!window._entryWatchSig)return;
+  var isLong=sig.direction==='LONG';
+  var e=parseFloat(sig.entry);
+  var zonePct=0.003;
+  var zoneTop=e*(1+zonePct);
+  var zoneBot=e*(1-zonePct);
+  var cp=livePrice?parseFloat(livePrice):0;
+  var updateEl=document.getElementById('entry-watch-update');
+  var inZone=cp>=zoneBot&&cp<=zoneTop;
+  if(updateEl)updateEl.textContent='Price: '+fp(cp)+' | '+(inZone?'IN ZONE — watching for pattern':'Waiting for price to reach zone ('+fp(zoneBot)+'-'+fp(zoneTop)+')');
+  if(!inZone)return;
+
+  // Use henry proxies for 1m candles
+  var bsym=BINANCE_SYM[coin]||coin;
+  var fsym=FUTURES_SYM[coin]||('cmt_'+coin.toLowerCase());
+  var p1m,p5m;
+  if(activeBroker==='binance'){
+    p1m=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=1m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+    p5m=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=5m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+  } else {
+    p1m=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=1m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+    p5m=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=5m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+  }
+  Promise.all([p1m,p5m]).then(function(results){
+    var c1m=results[0]||[],c5m=results[1]||[];
+    var pattern1m=detectConfirmationPattern(c1m,isLong);
+    var pattern5m=detectConfirmationPattern(c5m,isLong);
+    var confirmed=pattern1m||pattern5m;
+    if(updateEl)updateEl.textContent=(pattern1m?'1m: '+pattern1m:'1m: no pattern')+' | '+(pattern5m?'5m: '+pattern5m:'5m: no pattern');
+    if(confirmed&&window._entryWatchSig){
+      var confirmedSig=JSON.parse(JSON.stringify(window._entryWatchSig));
+      stopEntryWatch();
+      window._entryWatchSig=null;
+      var refinedEntry=cp;
+      var originalEntry=parseFloat(confirmedSig.entry);
+      confirmedSig.entry=refinedEntry.toFixed(coin.includes('XAU')||refinedEntry>1000?2:4);
+      var e2=refinedEntry,sl2=parseFloat(confirmedSig.sl),tp2=parseFloat(confirmedSig.tp);
+      if(isLong&&sl2<e2&&tp2>e2)confirmedSig.rr=parseFloat(((tp2-e2)/(e2-sl2)).toFixed(2));
+      else if(!isLong&&sl2>e2&&tp2<e2)confirmedSig.rr=parseFloat(((e2-tp2)/(sl2-e2)).toFixed(2));
+      confirmedSig.entry_reason=((confirmedSig.entry_reason||'').split(' | CONFIRMED:')[0])+' | CONFIRMED: '+confirmed+' on '+(pattern1m?'1m':'5m')+' @ '+fp(cp)+' (refined from '+fp(originalEntry)+')';
+      confirmedSig._confirmed=true;
+      var watchDiv=document.getElementById('entry-watch-status');if(watchDiv)watchDiv.remove();
+      _drawSigCard(confirmedSig);
+      triggerAlert('ENTRY CONFIRMED',coin+' '+confirmedSig.direction+' — '+confirmed+' on '+(pattern1m?'1m':'5m')+'. Refined: '+fp(refinedEntry),'var(--gr)',false);
+    }
+  }).catch(function(){});
+}
+
+function startEntryWatch(sig){
+  if(!sig||sig.direction==='NO TRADE')return;
+  _entryWatchActive=true;
+  window._entryWatchSig=sig;
+  var isLong=sig.direction==='LONG';
+  var e=parseFloat(sig.entry);
+  var zonePct=0.003;
+  var zoneTop=e*(1+zonePct);
+  var zoneBot=e*(1-zonePct);
+  var area=document.getElementById('sigarea');
+  var waitDiv=document.createElement('div');
+  waitDiv.id='entry-watch-status';
+  waitDiv.style.cssText='padding:10px 14px;font-size:10px;color:var(--am);border-top:1px solid var(--b1);background:rgba(255,184,48,.05);line-height:1.8';
+  waitDiv.innerHTML='<b>WAITING FOR ENTRY CONFIRMATION</b><br>'
+    +'Signal: '+sig.direction+' '+coin+' @ '+fp(e)+'<br>'
+    +'Watching 1m/5m for '+(isLong?'bullish':'bearish')+' confirmation inside zone<br>'
+    +'Zone: '+fp(zoneBot)+' — '+fp(zoneTop)+'<br>'
+    +'<span id="entry-watch-update" style="color:var(--mu)">Fetching 1m candles...</span><br>'
+    +'<button onclick="cancelEntryWatch()" style="margin-top:6px;padding:4px 10px;background:rgba(255,68,102,.1);border:1px solid rgba(255,68,102,.3);color:var(--re);font-family:var(--mn);font-size:10px;cursor:pointer;border-radius:2px">CANCEL — USE ORIGINAL ENTRY</button>';
+  if(area)area.insertAdjacentElement('afterbegin',waitDiv);
+  if(_entryWatchInterval)clearInterval(_entryWatchInterval);
+  _entryWatchInterval=setInterval(function(){checkEntryConfirmation(sig);},30000);
+  // 2hr expiry
+  _entryWatchTimeout=setTimeout(function(){
+    if(_entryWatchActive){
+      stopEntryWatch();
+      window._entryWatchSig=null;
+      var wd=document.getElementById('entry-watch-status');if(wd)wd.remove();
+      triggerAlert('ENTRY WATCH EXPIRED',coin+' '+sig.direction+' entry watch expired after 2 hours.','var(--re)',true);
+    }
+  },7200000);
+  checkEntryConfirmation(sig);
+}
+
+// ═══════════════════════════════════════════
 // SIGNAL CARD
 // ═══════════════════════════════════════════
 
@@ -3333,6 +3763,18 @@ function getExpiryTime(candles){
 }
 
 function drawSig(sig){
+  pend=sig;
+  if(sig.direction==='LONG'||sig.direction==='SHORT'){
+    if(!sig._confirmed){
+      startEntryWatch(sig);
+      document.getElementById('plbl').textContent='AWAITING ENTRY CONFIRMATION...';
+      return;
+    }
+  }
+  _drawSigCard(sig);
+}
+
+function _drawSigCard(sig){
   // ── CLIENT-SIDE RR VALIDATION + AUTO-RETRY ──
   if(sig.entry&&sig.sl&&sig.tp){
     var e=parseFloat(sig.entry),sl=parseFloat(sig.sl),tp=parseFloat(sig.tp);
@@ -3779,6 +4221,8 @@ function logTrade(oc){
   }
 }
 function clrPend(outcome){
+  stopEntryWatch();
+  var _ew=document.getElementById('entry-watch-status');if(_ew)_ew.remove();
   // Optional outcome string: 'TP','SL','BE','DISCARD' — first three log to history.
   if(outcome&&outcome!=='DISCARD'){
     try{logSignalOutcome(outcome,outcome==='TP'&&pend&&pend.rr?parseFloat(pend.rr):outcome==='SL'?-1:0);}catch(e){}
@@ -3992,13 +4436,26 @@ function fetchDXY(){
 function updateDXYBias(){
   var el=document.getElementById('dxy-bias');if(!el)return;
   var bias='';
-  if(dxyData.dxyChg!==0&&dxyData.xauChg!==0){
-    if(dxyData.dxyChg<0&&dxyData.xauChg>0){bias='🟢 GOLD BULLISH — DXY falling, gold rising';el.style.color='var(--gr)';}
-    else if(dxyData.dxyChg>0&&dxyData.xauChg<0){bias='🔴 GOLD BEARISH — DXY rising, gold falling';el.style.color='var(--re)';}
-    else if(dxyData.dxyChg>0&&dxyData.xauChg>0){bias='🟢🟢 GOLD VERY BULLISH — rising despite strong dollar';el.style.color='var(--gr)';}
-    else if(dxyData.dxyChg<0&&dxyData.xauChg<0){bias='⚠ GOLD WEAK — not following DXY weakness';el.style.color='var(--am)';}
+  var dChg=parseFloat(dxyData.dxyChg)||0;
+  var xChg=parseFloat(dxyData.xauChg)||0;
+  // Show correlation if we have both prices, even if change is near 0
+  if(dxyData.dxy&&dxyData.xau){
+    if(dChg<-0.01&&xChg>0.01){bias='GOLD BULLISH — DXY falling, gold rising';el.style.color='var(--gr)';}
+    else if(dChg>0.01&&xChg<-0.01){bias='GOLD BEARISH — DXY rising, gold falling';el.style.color='var(--re)';}
+    else if(dChg>0.01&&xChg>0.01){bias='GOLD VERY BULLISH — rising despite strong dollar';el.style.color='var(--gr)';}
+    else if(dChg<-0.01&&xChg<-0.01){bias='GOLD WEAK — not following DXY weakness';el.style.color='var(--am)';}
+    else if(Math.abs(dChg)<=0.01&&Math.abs(xChg)<=0.01){
+      bias='NEUTRAL — DXY flat, gold flat. Watch for breakout direction.';
+      el.style.color='var(--mu)';
+    } else if(Math.abs(dChg)<=0.01){
+      bias=(xChg>0?'GOLD BID':'GOLD OFFERED')+' — DXY flat, gold '+(xChg>0?'rising':'falling')+' independently';
+      el.style.color=xChg>0?'var(--gr)':'var(--re)';
+    } else {
+      bias='WATCH GOLD — DXY '+(dChg<0?'weakening':'strengthening')+', gold not moving yet';
+      el.style.color='var(--am)';
+    }
   }
-  el.textContent=bias||'Awaiting data...';
+  el.textContent=bias||(dxyData.dxy?'Calculating...':'Loading...');
 }
 
 // ═══════════════════════════════════════════
