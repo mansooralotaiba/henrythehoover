@@ -1311,6 +1311,374 @@ function detectTrigger(candles) {
 // phone push has the complete signal even if no browser is open.
 // ════════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════════
+// CONTEXT SOURCES FOR SERVER-SIDE AI
+// Server has no CORS limits — can fetch RSS, calendar APIs, and multi-broker
+// data directly. Each helper returns a context string ready to inject into the
+// system prompt, or '' if the data couldn't be fetched (graceful degradation).
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── 1. NEWS CONTEXT — RSS feeds, sentiment-tagged ──
+const NEWS_FEEDS_SERVER = [
+  { name: 'CoinTelegraph', url: 'https://cointelegraph.com/rss',                cat: 'CRYPTO' },
+  { name: 'CoinDesk',      url: 'https://feeds.feedburner.com/CoinDesk',         cat: 'CRYPTO' },
+  { name: 'Kitco',         url: 'https://www.kitco.com/rss/kitconews.xml',       cat: 'XAU' },
+  { name: 'CryptoSlate',   url: 'https://cryptoslate.com/feed/',                 cat: 'CRYPTO' },
+  { name: 'Decrypt',       url: 'https://decrypt.co/feed',                       cat: 'CRYPTO' },
+  { name: 'Reuters',       url: 'https://feeds.reuters.com/reuters/businessNews',cat: 'MACRO' },
+];
+let _newsCache = { ts: 0, items: [] }; // 5-min cache shared across all scans
+
+function newsImpact(t) {
+  const u = t.toUpperCase();
+  if (/BREAKING|FOMC|CPI|NFP|RATE DECISION|ALL.TIME|RECORD/.test(u)) return 'high';
+  if (/SURGES|CRASHES|SPIKE|RALLY|DUMP|MASSIVE/.test(u)) return 'high';
+  if (/RISES|FALLS|GAINS|DROPS|GROWS|HITS/.test(u)) return 'med';
+  return 'low';
+}
+function newsSentiment(t) {
+  const u = t.toUpperCase();
+  if (/BULL|SURGE|RALLY|RECORD|HIGH|GAIN|INFLOW|ACCUMUL|WIN|GROWTH|BID/.test(u)) return 'bull';
+  if (/BEAR|CRASH|DUMP|SELL.OFF|DECLINE|RISK|FEAR|DROP|LOSS|WARN/.test(u)) return 'bear';
+  return 'neut';
+}
+function parseRSSItems(xml, source, cat) {
+  const out = [];
+  // Simple regex parse — same approach as browser's parseRSS
+  const re = /<item[\s\S]*?<\/item>|<entry[\s\S]*?<\/entry>/gi;
+  const items = xml.match(re) || [];
+  for (const item of items.slice(0, 8)) {
+    const titleMatch = item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
+    const dateMatch  = item.match(/<(?:pubDate|published|updated)[^>]*>(.*?)<\//i);
+    if (!titleMatch) continue;
+    const title = titleMatch[1].replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
+    if (!title) continue;
+    const t = dateMatch ? new Date(dateMatch[1]).getTime() : Date.now();
+    out.push({ t, title, source, cat, imp: newsImpact(title), sent: newsSentiment(title) });
+  }
+  return out;
+}
+
+async function fetchNewsContext() {
+  const now = Date.now();
+  // 5-min cache to avoid hammering RSS providers on every scan tick
+  if (now - _newsCache.ts < 5 * 60 * 1000 && _newsCache.items.length) {
+    // use cached
+  } else {
+    const all = [];
+    await Promise.all(NEWS_FEEDS_SERVER.map(async f => {
+      try {
+        const r = await fetch(f.url, { headers: { 'user-agent': 'HenryHoover/1.0' } });
+        if (!r.ok) return;
+        const xml = await r.text();
+        const items = parseRSSItems(xml, f.name, f.cat);
+        all.push(...items);
+      } catch {}
+    }));
+    all.sort((a, b) => b.t - a.t);
+    _newsCache = { ts: now, items: all.slice(0, 25) };
+  }
+  if (!_newsCache.items.length) return '';
+  const lines = ['NEWS HEADLINES (most recent, with sentiment + impact):'];
+  for (const n of _newsCache.items.slice(0, 8)) {
+    const imp = n.imp === 'high' ? '[HIGH]' : n.imp === 'med' ? '[MED]' : '[LOW]';
+    const sent = n.sent === 'bull' ? 'bullish' : n.sent === 'bear' ? 'bearish' : 'neutral';
+    lines.push(`${imp} ${sent} ${n.cat}: ${n.title.slice(0, 110)}`);
+  }
+  return '\n' + lines.join('\n');
+}
+
+// ── 2. ECONOMIC CALENDAR CONTEXT — high/medium impact next 4h ──
+const CALENDAR_EVENTS_SERVER = [
+  { time: 'Mon 08:30', zone: 'USD', name: 'ISM Manufacturing PMI',           imp: 'high' },
+  { time: 'Tue 10:00', zone: 'USD', name: 'JOLTS Job Openings',              imp: 'high' },
+  { time: 'Wed 14:30', zone: 'USD', name: 'ADP Employment Change',           imp: 'high' },
+  { time: 'Wed 14:30', zone: 'USD', name: 'US CPI m/m',                      imp: 'high' },
+  { time: 'Wed 20:00', zone: 'USD', name: 'FOMC Statement / Rate Decision',  imp: 'high' },
+  { time: 'Thu 14:30', zone: 'USD', name: 'Initial Jobless Claims',          imp: 'med'  },
+  { time: 'Thu 14:30', zone: 'USD', name: 'US PPI m/m',                      imp: 'med'  },
+  { time: 'Fri 14:30', zone: 'USD', name: 'Non-Farm Payrolls',               imp: 'high' },
+  { time: 'Fri 14:30', zone: 'USD', name: 'Unemployment Rate',               imp: 'high' },
+  { time: 'Tue 09:30', zone: 'GBP', name: 'UK CPI y/y',                      imp: 'high' },
+  { time: 'Wed 09:00', zone: 'EUR', name: 'Eurozone CPI Flash',              imp: 'high' },
+  { time: 'Thu 13:45', zone: 'EUR', name: 'ECB Rate Decision',               imp: 'high' },
+  { time: 'Fri 09:30', zone: 'GBP', name: 'UK GDP m/m',                      imp: 'high' },
+];
+let _calendarCache = { ts: 0, items: [] };
+
+async function fetchCalendarContext() {
+  const now = Date.now();
+  if (now - _calendarCache.ts < 60 * 60 * 1000 && _calendarCache.items.length) {
+    // 1-hour cache — calendar rarely changes within a day
+  } else {
+    let live = [];
+    try {
+      const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', {
+        headers: { 'user-agent': 'HenryHoover/1.0' },
+      });
+      if (r.ok) {
+        const raw = await r.json();
+        if (Array.isArray(raw)) {
+          live = raw
+            .filter(e => e.impact === 'High' || e.impact === 'Medium')
+            .map(e => ({
+              dt: new Date(e.date).getTime(),
+              zone: e.country, name: e.title,
+              imp: e.impact === 'High' ? 'high' : 'med',
+              forecast: e.forecast, prev: e.previous, actual: e.actual,
+            }));
+        }
+      }
+    } catch {}
+    if (!live.length) {
+      // Fallback: build static events with current-week dates (UTC)
+      const dnow = new Date();
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      live = CALENDAR_EVENTS_SERVER.map(e => {
+        const parts = e.time.split(' ');
+        if (parts.length < 2) return null;
+        const dayIdx = days.indexOf(parts[0]);
+        if (dayIdx < 0) return null;
+        const hm = parts[1].split(':');
+        const dt = new Date(dnow);
+        let diff = dayIdx - dnow.getUTCDay();
+        if (diff < 0) diff += 7;
+        dt.setUTCDate(dnow.getUTCDate() + diff);
+        dt.setUTCHours(parseInt(hm[0]), parseInt(hm[1]), 0, 0);
+        return { dt: dt.getTime(), zone: e.zone, name: e.name, imp: e.imp };
+      }).filter(Boolean);
+    }
+    _calendarCache = { ts: now, items: live };
+  }
+  // Filter to next 4 hours / past 1 hour
+  const events = _calendarCache.items.filter(e => {
+    const d = e.dt - Date.now();
+    return d > -3600000 && d < 14400000;
+  }).slice(0, 6);
+  if (!events.length) {
+    return '\nECONOMIC CALENDAR: No high-impact events in next 4 hours. Safe trading window.';
+  }
+  const lines = ['ECONOMIC CALENDAR (next 4 hours):'];
+  for (const e of events) {
+    const d = e.dt - Date.now();
+    let when;
+    if (d < 0) when = 'JUST RELEASED';
+    else {
+      const h = Math.floor(d / 3600000);
+      const m = Math.floor((d % 3600000) / 60000);
+      when = (h > 0 ? h + 'h ' : '') + m + 'min';
+    }
+    const imp = e.imp === 'high' ? '[HIGH IMPACT]' : '[MED IMPACT]';
+    let line = `${imp} ${when} — ${e.zone || ''} ${e.name || ''}`;
+    if (e.forecast) line += ` | Fcst: ${e.forecast}${e.prev ? ' Prev: ' + e.prev : ''}`;
+    if (e.actual) line += ` | Actual: ${e.actual}`;
+    lines.push(line);
+  }
+  // Warn on imminent high-impact
+  const nextHigh = events.find(e => e.imp === 'high' && e.dt > Date.now());
+  if (nextHigh && (nextHigh.dt - Date.now()) < 7200000) {
+    const mins = Math.floor((nextHigh.dt - Date.now()) / 60000);
+    lines.push(`WARNING: HIGH IMPACT event in ${mins}min — ${nextHigh.name}. Confidence should be MAX 45% or NO TRADE.`);
+  }
+  return '\n' + lines.join('\n');
+}
+
+// ── 3. LIQUIDITY HEATMAP CONTEXT — swing levels, equal highs/lows, round numbers ──
+function buildLiquidityContextServer(candles, tf) {
+  if (!candles || candles.length < 20) return '';
+  const cp = candles[candles.length - 1].c;
+  const highs = candles.map(c => c.h), lows = candles.map(c => c.l);
+  const pMax = Math.max(...highs), pMin = Math.min(...lows);
+  const pR = (pMax - pMin) || 1;
+  const levels = [];
+  // Swing highs/lows (5-bar pivots)
+  for (let i = 2; i < candles.length - 2; i++) {
+    if (candles[i].h > candles[i-1].h && candles[i].h > candles[i-2].h && candles[i].h > candles[i+1].h && candles[i].h > candles[i+2].h)
+      levels.push({ price: candles[i].h, label: 'SH (swing high)', strength: 1 });
+    if (candles[i].l < candles[i-1].l && candles[i].l < candles[i-2].l && candles[i].l < candles[i+1].l && candles[i].l < candles[i+2].l)
+      levels.push({ price: candles[i].l, label: 'SL (swing low)',  strength: 1 });
+  }
+  // Equal highs (rest liquidity)
+  const sortedH = candles.slice().sort((a, b) => b.h - a.h);
+  for (let i = 0; i < Math.min(sortedH.length - 1, 20); i++) {
+    if (Math.abs(sortedH[i].h - sortedH[i+1].h) < pR * 0.002)
+      levels.push({ price: (sortedH[i].h + sortedH[i+1].h) / 2, label: 'EQH', strength: 2 });
+  }
+  const sortedL = candles.slice().sort((a, b) => a.l - b.l);
+  for (let i = 0; i < Math.min(sortedL.length - 1, 20); i++) {
+    if (Math.abs(sortedL[i].l - sortedL[i+1].l) < pR * 0.002)
+      levels.push({ price: (sortedL[i].l + sortedL[i+1].l) / 2, label: 'EQL', strength: 2 });
+  }
+  // Dedup nearby levels (keep stronger)
+  levels.sort((a, b) => a.price - b.price);
+  const dedup = [];
+  for (const l of levels) {
+    if (!dedup.length || Math.abs(l.price - dedup[dedup.length - 1].price) > pR * 0.004) dedup.push(l);
+    else if (l.strength > dedup[dedup.length - 1].strength) dedup[dedup.length - 1] = l;
+  }
+  const above = dedup.filter(l => l.price > cp).sort((a, b) => a.price - b.price).slice(0, 4);
+  const below = dedup.filter(l => l.price < cp).sort((a, b) => b.price - a.price).slice(0, 4);
+  if (!above.length && !below.length) return '';
+  const fmt = (p) => p >= 1000 ? p.toFixed(2) : p >= 10 ? p.toFixed(4) : p.toFixed(6);
+  const lines = [`LIQUIDITY HEATMAP (${tf}):`];
+  if (above.length) lines.push('Buy-side pools above price: ' + above.map(l => `${l.label}@${fmt(l.price)}${l.strength > 1 ? ' (x' + l.strength + ')' : ''}`).join(', '));
+  if (below.length) lines.push('Sell-side pools below price: ' + below.map(l => `${l.label}@${fmt(l.price)}${l.strength > 1 ? ' (x' + l.strength + ')' : ''}`).join(', '));
+  lines.push(`Nearest above: ${above.length ? fmt(above[0].price) : 'none'} | Nearest below: ${below.length ? fmt(below[0].price) : 'none'}`);
+  lines.push('Note: price tends to sweep nearest pool before reversing — factor into entry + SL placement.');
+  return '\n' + lines.join('\n');
+}
+
+// ── 4. ORDER FLOW / FOOTPRINT CONTEXT — recent trades from Binance ──
+async function fetchTradesServer(coin, broker) {
+  try {
+    if (broker === 'hyperliquid') {
+      const sym = coin.replace('USDT', '');
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'recentTrades', coin: sym }),
+      });
+      const d = await r.json();
+      return Array.isArray(d) ? d.map(t => ({
+        price: parseFloat(t.px), size: parseFloat(t.sz),
+        isBuyerMaker: t.side === 'A', // A=ask hit (buyer aggressive); we want maker-buyer
+      })).slice(0, 1000) : [];
+    }
+    // Default: Binance aggTrades — works for most USDT-perp symbols
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/aggTrades?symbol=${coin}&limit=1000`);
+    if (!r.ok) return [];
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return [];
+    return arr.map(t => ({
+      price: parseFloat(t.p),
+      size: parseFloat(t.q),
+      isBuyerMaker: !!t.m, // m=true → maker is buyer → trade was sell aggression
+    }));
+  } catch { return []; }
+}
+
+function buildFootprintContextServer(trades, candles) {
+  if (!trades || trades.length < 50 || !candles || !candles.length) return '';
+  const cp = candles[candles.length - 1].c;
+  let totalBuy = 0, totalSell = 0;
+  for (const t of trades) {
+    if (t.isBuyerMaker) totalSell += t.size; else totalBuy += t.size;
+  }
+  const totalVol = totalBuy + totalSell;
+  if (!totalVol) return '';
+  const delta = totalBuy - totalSell;
+  const deltaDir = delta > 0 ? 'BULLISH' : 'BEARISH';
+  const deltaPct = Math.abs(delta / totalVol * 100).toFixed(1);
+  // Recent momentum: last 100 trades
+  let recentBuy = 0, recentSell = 0;
+  for (const t of trades.slice(0, 100)) {
+    if (t.isBuyerMaker) recentSell += t.size; else recentBuy += t.size;
+  }
+  const recentDelta = recentBuy - recentSell;
+  const momentum = recentDelta > 0 ? `Recent momentum BULLISH (+${recentDelta.toFixed(3)})` : `Recent momentum BEARISH (${recentDelta.toFixed(3)})`;
+  // POC via 0.1% buckets
+  const bucketSize = cp * 0.001;
+  const buckets = new Map();
+  for (const t of trades) {
+    const bkt = Math.round(t.price / bucketSize) * bucketSize;
+    const key = bkt.toFixed(bkt >= 100 ? 1 : bkt >= 10 ? 2 : 4);
+    let b = buckets.get(key);
+    if (!b) { b = { price: bkt, buy: 0, sell: 0, total: 0 }; buckets.set(key, b); }
+    b.total += t.size;
+    if (t.isBuyerMaker) b.sell += t.size; else b.buy += t.size;
+  }
+  const bucketArr = Array.from(buckets.values()).sort((a, b) => b.total - a.total);
+  const poc = bucketArr[0];
+  // Imbalances
+  const imbalances = bucketArr.filter(b => b.total >= totalVol * 0.005)
+    .filter(b => {
+      const r = b.buy > b.sell ? b.buy / (b.sell || 0.001) : b.sell / (b.buy || 0.001);
+      return r >= 3;
+    }).slice(0, 4);
+  // Absorption
+  let absorption = '';
+  const lastOpen = candles[candles.length - 1].o;
+  if (delta < 0 && cp >= lastOpen) {
+    absorption = `BULLISH ABSORPTION — heavy selling (delta ${delta.toFixed(3)}) but price held = buyers absorbing`;
+  } else if (delta > 0 && cp <= lastOpen) {
+    absorption = `BEARISH ABSORPTION — heavy buying (delta +${delta.toFixed(3)}) but price held/fell = sellers absorbing`;
+  }
+  const fmt = (p) => p >= 1000 ? p.toFixed(2) : p >= 10 ? p.toFixed(4) : p.toFixed(6);
+  const lines = [`ORDER FLOW / FOOTPRINT (${trades.length} recent trades):`];
+  lines.push(`Buy vol: ${totalBuy.toFixed(3)} | Sell vol: ${totalSell.toFixed(3)}`);
+  lines.push(`Net delta: ${delta >= 0 ? '+' : ''}${delta.toFixed(3)} (${deltaDir}, ${deltaPct}% imbalance)`);
+  lines.push(momentum);
+  if (poc) lines.push(`Point of Control: $${fmt(poc.price)} (vol: ${poc.total.toFixed(3)})`);
+  if (imbalances.length) {
+    lines.push('Volume imbalances (institutional zones):');
+    for (const b of imbalances) {
+      const dom = b.buy > b.sell ? 'BUY' : 'SELL';
+      const rat = b.buy > b.sell ? (b.buy / (b.sell || 0.001)).toFixed(1) : (b.sell / (b.buy || 0.001)).toFixed(1);
+      lines.push(`  ${dom} imbalance @ $${fmt(b.price)} (${rat}:1 ratio)`);
+    }
+  }
+  if (absorption) lines.push(absorption);
+  return '\n' + lines.join('\n');
+}
+
+// ── 4b. CVD CONTEXT — same-trades 5-window momentum ──
+function buildCVDContextServer(trades) {
+  if (!trades || trades.length < 50) return '';
+  const chunkSize = Math.floor(trades.length / 5);
+  const chunkDeltas = [];
+  for (let i = 0; i < 5; i++) {
+    let buy = 0, sell = 0;
+    const slice = trades.slice(i * chunkSize, (i + 1) * chunkSize);
+    for (const t of slice) {
+      if (t.isBuyerMaker) sell += t.size; else buy += t.size;
+    }
+    chunkDeltas.push(buy - sell);
+  }
+  // Note: trades come ordered from newest to oldest in Binance aggTrades, so reverse for chronological
+  chunkDeltas.reverse();
+  const trend = chunkDeltas.reduce((a, b) => a + b, 0);
+  const earlyDelta = chunkDeltas[0] + chunkDeltas[1];
+  const lateDelta = chunkDeltas[3] + chunkDeltas[4];
+  let bias = 'neutral';
+  if (lateDelta > 0 && earlyDelta < 0)        bias = 'potential bullish reversal — late buyers absorbing earlier sellers';
+  else if (lateDelta < 0 && earlyDelta > 0)   bias = 'weakening rally — distribution into strength';
+  else if (trend > 0 && lateDelta > earlyDelta) bias = 'strong bullish momentum — accelerating buy pressure';
+  else if (trend < 0 && lateDelta < earlyDelta) bias = 'strong bearish momentum — accelerating sell pressure';
+  return `\nCVD TREND (5-window delta): cumulative ${trend >= 0 ? '+' : ''}${trend.toFixed(3)} — ${bias}.`;
+}
+
+// ── 5. CROSS-BROKER CONTEXT — fetch candles from all 3 brokers, compare ──
+async function buildCrossBrokerContextServer(coin, tf, primaryBroker) {
+  const brokers = ['weex', 'binance', 'hyperliquid'];
+  const sets = await Promise.all(brokers.map(b => fetchCandlesServer(coin, tf, 30, b).catch(() => [])));
+  const data = brokers.map((b, i) => {
+    const c = sets[i];
+    if (!c || c.length < 5) return { broker: b, valid: false };
+    const last = c[c.length - 1].c;
+    const first = c[Math.max(0, c.length - 10)].c;
+    const dir = last > first ? 'bullish' : last < first ? 'bearish' : 'flat';
+    const slice = c.slice(-15);
+    const ema = slice.reduce((s, k) => s + k.c, 0) / slice.length;
+    const stack = last > ema ? 'above-mean' : 'below-mean';
+    return { broker: b, valid: true, last, dir, stack };
+  });
+  const valid = data.filter(d => d.valid);
+  if (valid.length < 2) return '';
+  const allBullish = valid.every(d => d.dir === 'bullish' && d.stack === 'above-mean');
+  const allBearish = valid.every(d => d.dir === 'bearish' && d.stack === 'below-mean');
+  const allAgree   = allBullish || allBearish;
+  const lines = [`CROSS-BROKER CHECK (${valid.length} brokers):`];
+  for (const d of valid) {
+    lines.push(`  ${d.broker}: last ${d.last.toFixed(4)}, recent ${d.dir}, ${d.stack}`);
+  }
+  if (allAgree) {
+    lines.push(`AGREEMENT: all ${valid.length} brokers ${allBullish ? 'BULLISH' : 'BEARISH'} — high-conviction signal.`);
+  } else {
+    lines.push('DIVERGENCE: brokers disagree — reduce confidence by 10pts or NO TRADE.');
+  }
+  return '\n' + lines.join('\n');
+}
+
 async function fetchFundingRateServer(coin) {
   // Binance gives funding for almost every USDT-perp; use it regardless of broker.
   try {
@@ -1455,6 +1823,19 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
   return [
     `You are Henry, an institutional futures trading AI. You are analysing ${coin} on ${tf} timeframe (${broker} broker) AUTONOMOUSLY (no human will retry — your output goes to a phone push and Discord embed directly).`,
     '',
+    'You have access to these data sources — REFERENCE THEM in your reasoning field:',
+    '1. Trigger detection (BOS/sweep) — what fired the scan',
+    '2. Multi-timeframe (1H, 4H) — HTF bias and structure',
+    '3. BTC correlation — risk-on vs risk-off backdrop',
+    '4. Funding rate — positioning, fade extremes',
+    '5. Open interest — directional conviction',
+    '6. Liquidity heatmap — swing levels, equal highs/lows, sweep targets',
+    '7. Order flow / footprint — buy/sell delta, POC, imbalances, absorption',
+    '8. CVD trend — cumulative volume delta momentum across 5 windows',
+    '9. Cross-broker check — agreement across Weex/Binance/Hyperliquid',
+    '10. News headlines — sentiment + impact tagged',
+    '11. Economic calendar — high-impact events in next 4 hours',
+    '',
     'CONTEXT FROM SERVER-SIDE SCAN:',
     contextStr,
     '',
@@ -1550,21 +1931,38 @@ async function runServerAI(userId, sub, trigger, baseCandles) {
   const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
 
   // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
-  const [mtfH1, mtfH4, btcCandles, funding, oi] = await Promise.all([
+  const [
+    mtfH1, mtfH4, btcCandles, funding, oi,
+    trades, newsCtx, calCtx, crossBrokerCtx,
+  ] = await Promise.all([
     fetchCandlesServer(coin, '1h', 50, broker).catch(() => []),
     fetchCandlesServer(coin, '4h', 30, broker).catch(() => []),
     coin !== 'BTCUSDT' ? fetchCandlesServer('BTCUSDT', tf, 30, broker).catch(() => []) : Promise.resolve([]),
     fetchFundingRateServer(coin).catch(() => null),
     fetchOpenInterestServer(coin).catch(() => null),
+    fetchTradesServer(coin, broker).catch(() => []),
+    fetchNewsContext().catch(() => ''),
+    fetchCalendarContext().catch(() => ''),
+    buildCrossBrokerContextServer(coin, tf, broker).catch(() => ''),
   ]);
 
-  const contextStr = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger });
+  // Derived contexts from data we already fetched (synchronous, no extra fetches)
+  const liquidityCtx = buildLiquidityContextServer(baseCandles, tf);
+  const footprintCtx = buildFootprintContextServer(trades, baseCandles);
+  const cvdCtx       = buildCVDContextServer(trades);
+
+  // Combine everything into one context block
+  const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger });
+  const contextStr = [baseCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
+    .filter(s => s && s.length).join('\n');
+
   const systemPrompt = buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose);
   const userMessage = `Analyse ${coin} on ${tf}. Auto trigger fired: ${trigger.type.toUpperCase()} — ${trigger.desc}. Output the signal JSON.`;
 
   let signal = null;
   try {
-    const text = await callAnthropicServer(systemPrompt, userMessage, 800);
+    // 1200 max tokens — context is now ~2-3x larger with news/calendar/footprint/etc.
+    const text = await callAnthropicServer(systemPrompt, userMessage, 1200);
     signal = parseSignalJSONServer(text);
   } catch (e) {
     console.error('[runServerAI call]', e.message);
