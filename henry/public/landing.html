@@ -155,5 +155,33 @@
   </div>
 </footer>
 
+<script>
+// Handle Supabase implicit-flow tokens in the hash (password reset / magic link).
+// Supabase lands here when /auth/callback isn't whitelisted as a redirect URL yet.
+(async function(){
+  if(!location.hash||!location.hash.includes('access_token'))return;
+  var params=new URLSearchParams(location.hash.slice(1));
+  var access_token=params.get('access_token');
+  var refresh_token=params.get('refresh_token');
+  var type=params.get('type');
+  var errDesc=params.get('error_description');
+  if(errDesc){location.replace('/login?error='+encodeURIComponent(errDesc));return;}
+  if(!access_token||!refresh_token){return;}
+  try{
+    var r=await fetch('/auth/session',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({access_token,refresh_token})
+    });
+    if(r.ok){
+      location.replace(type==='recovery'?'/reset-password':'/terminal');
+    } else {
+      location.replace('/login?error=session_failed');
+    }
+  }catch(e){
+    location.replace('/login?error='+encodeURIComponent(e.message));
+  }
+})();
+</script>
 </body>
 </html>
