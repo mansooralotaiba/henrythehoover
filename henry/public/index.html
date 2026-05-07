@@ -387,6 +387,14 @@ body.massive-mode #extrapairs{display:none!important}
       </button>
     </div>
 
+    <!-- Pair checklist (custom watchlist) -->
+    <div style="width:100%;margin-top:4px">
+      <div style="font-size:9px;color:var(--mu);letter-spacing:.1em;margin-bottom:5px">SCAN PAIRS:
+        <span style="color:var(--di);margin-left:6px">(none = current pair only)</span>
+      </div>
+      <div id="watchlist-picks" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+    </div>
+
   </div>
 
   <!-- Price bar -->
@@ -739,7 +747,21 @@ function serverScanStart(){
   fetch('/api/scan/start',{
     method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({coin:coin,tf:liqTF,broker:activeBroker,cooldownMs:autoCooldownMs})
+    body:JSON.stringify({
+      coin:coin,
+      tf:liqTF,
+      broker:activeBroker,
+      cooldownMs:autoCooldownMs,
+      watchlist:autoWatchlist||[]
+    })
+  }).catch(function(){});
+}
+function serverScanUpdateWatchlist(){
+  if(!IS_ADMIN)return;
+  fetch('/api/scan/update-watchlist',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({watchlist:autoWatchlist||[]})
   }).catch(function(){});
 }
 function serverScanStop(){
@@ -3185,6 +3207,8 @@ function toggleAutoScan(){
     btn.style.borderColor='var(--gr)';btn.style.color='var(--gr)';btn.style.background='rgba(0,229,160,.1)';
     btn.textContent='⚡ AUTO ON';
     panel.style.display='flex';
+    buildWatchlistUI();
+    updateScanStatus();
     startAutoScan();
     // Kick off Discord status updates with whatever interval the dropdown shows
     var sel=document.getElementById('status-interval');
@@ -3221,8 +3245,75 @@ function setAutoStatus(msg){
   if(el)el.textContent=msg;
 }
 
+// ── Watchlist pair selector ───────────────────────────────────────────
+var ALL_WATCHLIST_PAIRS=[
+  {sym:'BTCUSDT',lbl:'BTC'},{sym:'ETHUSDT',lbl:'ETH'},{sym:'SOLUSDT',lbl:'SOL'},
+  {sym:'XRPUSDT',lbl:'XRP'},{sym:'DOGEUSDT',lbl:'DOGE'},{sym:'AVAXUSDT',lbl:'AVAX'},
+  {sym:'AAVEUSDT',lbl:'AAVE'},{sym:'1000PEPEUSDT',lbl:'PEPE'},
+  {sym:'XAUTUSDT',lbl:'XAUT'},{sym:'XAGUSDT',lbl:'XAG'},
+  {sym:'XTIUSDT',lbl:'XTI'},{sym:'XBRUSDT',lbl:'XBR'},
+  {sym:'BNBUSDT',lbl:'BNB'},{sym:'ADAUSDT',lbl:'ADA'},{sym:'DOTUSDT',lbl:'DOT'},
+  {sym:'LINKUSDT',lbl:'LINK'},{sym:'SUIUSDT',lbl:'SUI'},{sym:'ARBUSDT',lbl:'ARB'},
+  {sym:'OPUSDT',lbl:'OP'},{sym:'NEARUSDT',lbl:'NEAR'},{sym:'INJUSDT',lbl:'INJ'}
+];
+
+function buildWatchlistUI(){
+  var el=document.getElementById('watchlist-picks');
+  if(!el)return;
+  // Build with DOM API so labels can't be XSS'd via the symbol list (defensive — list is hardcoded but cheap insurance)
+  el.innerHTML='';
+  ALL_WATCHLIST_PAIRS.forEach(function(p){
+    var checked=autoWatchlist.indexOf(p.sym)!==-1;
+    var isMetal=/^(XAUT|XAG|XTI|XBR)/.test(p.sym);
+    var activeColor=isMetal?'var(--am)':'var(--cy)';
+    var activeBg=isMetal?'rgba(255,184,48,.08)':'rgba(0,212,255,.07)';
+    var activeBorder=isMetal?'rgba(255,184,48,.4)':'rgba(0,212,255,.4)';
+    var lbl=document.createElement('label');
+    lbl.style.cssText='display:flex;align-items:center;gap:3px;cursor:pointer;padding:3px 7px;border:1px solid '+(checked?activeBorder:'var(--di)')+';border-radius:2px;background:'+(checked?activeBg:'transparent');
+    lbl.setAttribute('data-sym',p.sym);
+    var cb=document.createElement('input');
+    cb.type='checkbox';cb.checked=checked;
+    cb.setAttribute('data-sym',p.sym);
+    cb.style.cssText='margin:0;accent-color:'+activeColor;
+    cb.addEventListener('change',function(){toggleWatchPair(p.sym,cb);});
+    var txt=document.createElement('span');
+    txt.style.cssText='font-size:9px;color:'+(checked?activeColor:'var(--mu)');
+    txt.textContent=p.lbl;
+    lbl.appendChild(cb);lbl.appendChild(txt);
+    el.appendChild(lbl);
+  });
+}
+
+function toggleWatchPair(sym,cb){
+  if(cb.checked){
+    if(autoWatchlist.indexOf(sym)===-1)autoWatchlist.push(sym);
+  } else {
+    autoWatchlist=autoWatchlist.filter(function(s){return s!==sym;});
+  }
+  try{localStorage.setItem('autoWatchlist',JSON.stringify(autoWatchlist));}catch(e){}
+  buildWatchlistUI(); // re-render so colors update
+  // If scan is active, sync the change to the server immediately
+  if(autoMode){
+    serverScanUpdateWatchlist();
+    updateScanStatus();
+  }
+}
+
+function updateScanStatus(){
+  var pairs=autoWatchlist.length
+    ? autoWatchlist.map(function(s){return s.replace('USDT','').replace('1000','');})
+    : [coin.replace('USDT','')];
+  var label=pairs.slice(0,5).join(', ')+(pairs.length>5?'...':'');
+  setAutoStatus('Scanning: '+label+' ('+pairs.length+' pair'+(pairs.length===1?'':'s')+')');
+}
+
 function getPairsToScan(){
-  // Focused mode only — always scan current selected pair
+  // Use custom watchlist if set, otherwise scan the currently selected pair
+  if(autoWatchlist&&autoWatchlist.length){
+    return autoWatchlist.map(function(sym){
+      return {sym:sym,lbl:sym.replace('USDT','').replace('1000','')};
+    });
+  }
   return [{sym:coin,lbl:coin.replace('USDT','')}];
 }
 
@@ -3246,7 +3337,10 @@ function runAutoScan(){
   // (ocrow is hidden during watch so the check above won't catch it)
   if(_entryWatchActive)return;
   autoScanning=true;
-  setAutoStatus('Scanning '+coin.replace('USDT','')+' on '+liqTF+'...');
+  var _scanLabel=pairs.length>1
+    ?pairs.slice(0,5).map(function(p){return p.lbl;}).join(', ')+(pairs.length>5?'...':'')
+    :pairs[0].lbl;
+  setAutoStatus('Scanning '+_scanLabel+' on '+liqTF+' ('+pairs.length+' pair'+(pairs.length===1?'':'s')+')');
   // Scan all pairs in parallel (lightweight — only 20 candles each)
   Promise.all(pairs.map(function(p){
     return fetchCandles(p.sym,liqTF,20).then(function(candles){

@@ -1024,16 +1024,26 @@ const scanSubscriptions = new Map(); // userId → { active, coin, tf, broker, i
 const SCAN_INTERVAL_MS = 30000;
 
 app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
-  const { coin, tf, broker, cooldownMs } = req.body || {};
+  const { coin, tf, broker, cooldownMs, watchlist } = req.body || {};
   if (!coin || !tf) return res.status(400).json({ error: 'missing_coin_or_tf' });
   scanSubscriptions.set(req.user.id, {
     active: true, coin, tf, broker: broker || 'weex',
     cooldownMs: cooldownMs || 180000, cooldownUntil: 0,
-    pendSignal: null, signalTimestamp: null,
+    watchlist: Array.isArray(watchlist) ? watchlist : [],
+    pendSignal: null, signalId: null, signalTimestamp: null,
     isAdmin: !!req.profile.is_admin,
     _entryAlerted: false, _beAlerted: false, _tpAlerted: false, _expiryAlerted: false,
+    _outcomeLogged: false,
   });
   res.json({ ok: true });
+});
+
+// Update watchlist on the fly without restarting the scan
+app.post('/api/scan/update-watchlist', requireAuth, express.json(), (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (!sub) return res.status(404).json({ error: 'no_scan_session' });
+  sub.watchlist = Array.isArray(req.body?.watchlist) ? req.body.watchlist : [];
+  res.json({ ok: true, count: sub.watchlist.length });
 });
 
 app.post('/api/scan/stop', requireAuth, (req, res) => {
@@ -1267,16 +1277,43 @@ function detectTrigger(candles) {
 async function runServerScan(userId, sub) {
   if (Date.now() < sub.cooldownUntil) return;
   if (sub.pendSignal) return runServerTradeMonitor(userId, sub);
-  const candles = await fetchCandlesServer(sub.coin, sub.tf, 30, sub.broker);
-  const trigger = detectTrigger(candles);
-  if (!trigger) return;
+
+  // Determine pairs to scan: custom watchlist if set, else fall back to current coin
+  const pairsToScan = (sub.watchlist && sub.watchlist.length)
+    ? sub.watchlist.map(s => ({ sym: s, lbl: s.replace('USDT', '').replace('1000', '') }))
+    : [{ sym: sub.coin, lbl: sub.coin.replace('USDT', '') }];
+
+  // Scan all pairs in parallel — lightweight (30 candles each).
+  // Errors per-pair are isolated; one broken symbol doesn't kill the whole scan.
+  const results = await Promise.all(pairsToScan.map(async p => {
+    try {
+      const candles = await fetchCandlesServer(p.sym, sub.tf, 30, sub.broker);
+      const trigger = candles && candles.length >= 11 ? detectTrigger(candles) : null;
+      return { pair: p, trigger };
+    } catch {
+      return { pair: p, trigger: null };
+    }
+  }));
+
+  // Pick highest-priority trigger across all pairs (BOS > sweep)
+  const priority = ['bos', 'sweep'];
+  const triggered = results
+    .filter(r => r.trigger !== null)
+    .sort((a, b) => priority.indexOf(a.trigger.type) - priority.indexOf(b.trigger.type));
+
+  if (!triggered.length) return;
+  const best = triggered[0];
+
+  // Apply cooldown — only count the scan as "fired" when something actually triggered
   sub.cooldownUntil = Date.now() + sub.cooldownMs;
-  // Server-side trigger: push notification only (no Discord — that posts when AI signal lands)
+
+  // Push notification mentions which pair triggered (so phone alerts make sense
+  // when the user has 5+ pairs in the watchlist).
   await sendPushTo(userId, {
-    title: `⚡ ${trigger.type.toUpperCase()}: ${sub.coin.replace('USDT', '')}`,
-    body: `${trigger.desc}. Open Henry to run AI analysis.`,
+    title: `⚡ ${best.trigger.type.toUpperCase()}: ${best.pair.lbl}`,
+    body: `${best.trigger.desc}. Open Henry to run AI analysis.`,
     icon: '/manifest.json',
-    data: { coin: sub.coin, tf: sub.tf, broker: sub.broker, trigger },
+    data: { coin: best.pair.sym, tf: sub.tf, broker: sub.broker, trigger: best.trigger },
   });
 }
 
