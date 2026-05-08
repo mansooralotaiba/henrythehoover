@@ -2303,7 +2303,8 @@ function buildSys(){
     +'DIRECTION RULES — READ CAREFULLY:\n'
     +'LONG: entry < current_price, SL BELOW entry, TP ABOVE entry. Example: entry='+exLongEntry+', sl='+exLongSL+', tp='+exLongTP+'\n'
     +'SHORT: entry > current_price (or at current for market), SL ABOVE entry, TP BELOW entry. Example: entry='+exShortEntry+', sl='+exShortSL+', tp='+exShortTP+'\n'
-    +'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5\n\n'
+    +'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5\n'
+    +'STRICT RR FLOOR: if you cannot find a setup where RR >= 1.5, return direction "NO TRADE" — do not stretch TP or tighten SL artificially. Sub-1.5R signals are auto-downgraded to NO TRADE on output.\n\n'
     +'BE_NOTE RULES — CRITICAL:\n'
     +'be_note is the price at which the user moves their stop-loss to entry (breakeven), locking in no-loss once price travels toward TP.\n'
     +'For LONG: BE price MUST BE between entry and TP (i.e. ABOVE entry, BELOW TP). Recommended: halfway between entry and TP.\n'
@@ -4178,9 +4179,14 @@ function _drawSigCard(sig){
         sig._needsRetry=true;
       }
     }
-    // Check RR minimum after calculation
+    // Check RR minimum after calculation — sub-1.5R signals are downgraded to NO TRADE.
+    // Mirrors the server's auto-downgrade so the user sees the same behaviour either way.
     if(!sig._needsRetry&&sig.rr&&sig.rr<1.5&&sig.direction!=='NO TRADE'){
-      sig._rrWarn=true;
+      var _origDir=sig.direction;
+      sig._rrDowngraded=true;
+      sig._origDirection=_origDir;
+      sig.reasoning='Auto-downgraded from '+_origDir+': computed RR '+sig.rr+' below 1.5R minimum. '+(sig.reasoning||'');
+      sig.direction='NO TRADE';
     }
     // ── BE NOTE VALIDATION ──
     // For LONG: BE must be ABOVE entry (toward TP). For SHORT: BE must be BELOW entry (toward TP).

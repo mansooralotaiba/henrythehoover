@@ -1907,19 +1907,20 @@ async function fetchDXYContextServer() {
 
 function buildDXYContextString(d) {
   if (!d || !d.dxy) return '';
-  const lines = ['DXY / GOLD MACRO (primary correlation for metals — REPLACES BTC for gold):'];
+  const lines = ['DXY / DOLLAR MACRO (primary correlation for metals & oil — replaces BTC):'];
   lines.push(`DXY Index: ${d.dxy.toFixed(3)} (${d.dxyChange >= 0 ? '+' : ''}${d.dxyChange.toFixed(2)}% today)`);
-  if (d.xau) lines.push(`XAU/USD: $${d.xau.toFixed(2)} (${d.xauChange >= 0 ? '+' : ''}${d.xauChange.toFixed(2)}% today)`);
-  // Correlation interpretation
+  if (d.xau) lines.push(`XAU/USD reference: $${d.xau.toFixed(2)} (${d.xauChange >= 0 ? '+' : ''}${d.xauChange.toFixed(2)}% today)`);
+  lines.push('General rule: dollar strong → metals & commodities weaken (and vice versa). This pair is dollar-denominated and tracks the same correlation.');
+  // Correlation interpretation (uses gold as a proxy for "metals/oil sentiment")
   if (d.dxyChange !== 0 && d.xauChange !== 0) {
     if (d.dxyChange < 0 && d.xauChange > 0) {
-      lines.push('Correlation bias: GOLD BULLISH — DXY weakness supports gold longs. Favour LONG setups on gold.');
+      lines.push('Correlation bias: METALS/OIL BULLISH — DXY weakness supports longs. Favour LONG setups.');
     } else if (d.dxyChange > 0 && d.xauChange < 0) {
-      lines.push('Correlation bias: GOLD BEARISH — DXY strength is a headwind for gold. Favour SHORT or NO TRADE on gold.');
+      lines.push('Correlation bias: METALS/OIL BEARISH — DXY strength is a headwind. Favour SHORT or NO TRADE.');
     } else if (d.dxyChange > 0 && d.xauChange > 0) {
-      lines.push('Correlation bias: GOLD VERY BULLISH — gold rising DESPITE dollar strength = strong safe-haven demand. High conviction LONG bias.');
+      lines.push('Correlation bias: METALS/OIL VERY BULLISH — rising despite dollar strength = strong demand. High-conviction LONG bias.');
     } else if (d.dxyChange < 0 && d.xauChange < 0) {
-      lines.push('Correlation bias: GOLD WEAK — gold NOT following DXY weakness = lack of conviction. Reduce position size or NO TRADE.');
+      lines.push('Correlation bias: METALS/OIL WEAK — not following DXY weakness = lack of conviction. Reduce size or NO TRADE.');
     }
   }
   return '\n' + lines.join('\n');
@@ -2091,6 +2092,7 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     `LONG: entry < current_price, SL BELOW entry, TP ABOVE entry. Example: entry=${exLE}, sl=${exLS}, tp=${exLT}`,
     `SHORT: entry > current_price (or at current for market), SL ABOVE entry, TP BELOW entry. Example: entry=${exSE}, sl=${exSS}, tp=${exST}`,
     'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5.',
+    'STRICT RR FLOOR: if you cannot find a setup where RR >= 1.5, return direction "NO TRADE" — do not stretch TP or tighten SL artificially. A trade that backtests to 1.4R or lower will be auto-downgraded to NO TRADE on the server side anyway.',
     '',
     'BE_NOTE RULES:',
     'be_note is the price at which the user moves SL to entry (breakeven).',
@@ -2180,10 +2182,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
 
   // Macro reference depends on the asset class:
-  //   • Gold (XAUUSD, GOLD) → DXY (inverse correlation, the right macro driver)
-  //   • Crypto (BTC, ETH, etc.) → BTC correlation (risk-on/risk-off backdrop)
-  // Gold's primary correlation is the dollar, NOT bitcoin — so we skip BTC for it.
-  const isGoldPair = coin === 'GOLD' || coin === 'XAUUSD';
+  //   • Gold spot, gold-tokens, silver, oil (XAU*/XAG*/XTI*/XBR*/GOLD) → DXY
+  //     (these track the dollar / commodities, not crypto risk-appetite)
+  //   • Crypto (BTC, ETH, SOL, etc.) → BTC correlation (risk-on/risk-off)
+  const isMetalOrOilPair = coin === 'GOLD' || coin === 'XAUUSD' || /^(XAU|XAG|XTI|XBR)/.test(coin);
   const btcBroker = (broker === 'massive') ? 'binance' : broker;
 
   // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
@@ -2194,7 +2196,7 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
     fetchCandlesServer(coin, '1h', 50, broker).catch(() => []),
     fetchCandlesServer(coin, '4h', 30, broker).catch(() => []),
     // BTC correlation only for non-gold + non-BTC pairs
-    (!isGoldPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
+    (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
     fetchFundingRateServer(coin).catch(() => null),
     fetchOpenInterestServer(coin).catch(() => null),
     fetchTradesServer(coin, broker).catch(() => []),
@@ -2202,7 +2204,7 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
     fetchCalendarContext().catch(() => ''),
     buildCrossBrokerContextServer(coin, tf, broker).catch(() => ''),
     // DXY context for gold pairs only — replaces BTC correlation
-    isGoldPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
+    isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
   ]);
 
   // Derived contexts from data we already fetched (synchronous, no extra fetches)
@@ -2213,7 +2215,7 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   // Combine everything into one context block
   // For gold: DXY context replaces the BTC correlation block (which is empty for gold anyway)
   const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger });
-  const dxyCtx = isGoldPair ? buildDXYContextString(dxyData) : '';
+  const dxyCtx = isMetalOrOilPair ? buildDXYContextString(dxyData) : '';
   const contextStr = [baseCtx, dxyCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
     .filter(s => s && s.length).join('\n');
 
@@ -2245,6 +2247,20 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) {
     console.error('[runServerAI] invalid levels after retry, aborting');
     return null;
+  }
+
+  // ── Hard floor on RR: any signal with computed RR < 1.5 is downgraded to NO TRADE ──
+  // Reason: poor RR setups skew the journal stats negative even when the AI thinks it's
+  // a valid pattern. Better to skip than enter a marginal trade autonomously.
+  if (signal.direction !== 'NO TRADE' && signal.entry && signal.sl && signal.tp) {
+    const e = parseFloat(signal.entry), sl = parseFloat(signal.sl), tp = parseFloat(signal.tp);
+    const rr = signal.direction === 'LONG' ? (tp - e) / (e - sl) : (e - tp) / (sl - e);
+    if (isFinite(rr) && rr < 1.5) {
+      console.log('[runServerAI]', coin, 'RR', rr.toFixed(2), '< 1.5 → downgrading to NO TRADE');
+      const origDir = signal.direction;
+      signal.direction = 'NO TRADE';
+      signal.reasoning = `Auto-downgraded from ${origDir}: computed RR ${rr.toFixed(2)} below 1.5R minimum. ` + (signal.reasoning || '');
+    }
   }
 
   // NO TRADE — just push a notification, don't activate the monitor
