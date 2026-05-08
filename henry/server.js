@@ -903,28 +903,85 @@ app.patch('/api/signals/:id/outcome', requireAuth, express.json(), async (req, r
 });
 
 // ── Shared outcome logger — used by browser PATCH endpoint AND server-side monitor.
-//    Always updates the row; only fires the journal Discord post on the FIRST transition
-//    from null → set so re-classifications don't double-post.
-async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr) {
-  if (!signalId) return;
-  const { data: existing } = await supaAdmin
-    .from('signals')
-    .select('*')
-    .eq('id', signalId)
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (!existing) return;
-  const wasUnset = existing.outcome == null;
-  const { error } = await supaAdmin
-    .from('signals')
-    .update({ outcome, outcome_rr: outcomeRr ?? null, outcome_at: new Date().toISOString() })
-    .eq('id', signalId)
-    .eq('user_id', userId);
-  if (error) { console.error('[outcome update]', error.message); return; }
-  // Only post to journal Discord on the first outcome assignment, not re-classifications.
+//    Resilient: if the DB row is missing OR signalId is null (saveServerSignal might
+//    have failed earlier, or browser synced before _lastSignalId resolved), still
+//    post the Discord journal using `fallbackSignal` so the user is never silently
+//    dropped. Idempotency guarded by ps._outcomeLogged at the call site.
+async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr, fallbackSignal, fallbackBroker, fallbackTf) {
+  let existing = null;
+  if (signalId) {
+    try {
+      const { data } = await supaAdmin
+        .from('signals')
+        .select('*')
+        .eq('id', signalId)
+        .eq('user_id', userId)
+        .maybeSingle();
+      existing = data;
+    } catch (e) { console.error('[outcome fetch]', e.message); }
+  }
+
+  const wasUnset = !existing || existing.outcome == null;
+  let signalForJournal = null;
+
+  if (existing) {
+    // Normal path — update DB
+    const { error } = await supaAdmin
+      .from('signals')
+      .update({ outcome, outcome_rr: outcomeRr ?? null, outcome_at: new Date().toISOString() })
+      .eq('id', signalId)
+      .eq('user_id', userId);
+    if (error) console.error('[outcome update]', error.message);
+    signalForJournal = { ...existing, outcome, outcome_rr: outcomeRr ?? null };
+  } else if (!signalId && fallbackSignal) {
+    // Legitimately new signal that was never persisted — insert a row now so
+    // /api/signals/history and the browser jrn[] sync see it. (Common cause:
+    // saveServerSignal failed earlier, OR browser race set ps.signalId=null.)
+    console.warn('[outcome] no signalId — inserting backfill row for', fallbackSignal.pair);
+    try {
+      const { data: inserted, error: insErr } = await supaAdmin.from('signals').insert({
+        user_id: userId,
+        pair: fallbackSignal.pair,
+        direction: fallbackSignal.direction,
+        entry: fallbackSignal.entry || null,
+        sl: fallbackSignal.sl || null,
+        tp: fallbackSignal.tp || null,
+        rr: fallbackSignal.rr || null,
+        confidence: fallbackSignal.confidence || null,
+        session_name: fallbackSignal.session || null,
+        broker: fallbackBroker || null,
+        timeframe: fallbackTf || null,
+        entry_reason: fallbackSignal.entry_reason || null,
+        reasoning: fallbackSignal.reasoning || null,
+        be_note: fallbackSignal.be_note || null,
+        key_risk: fallbackSignal.key_risk || null,
+        invalidation: fallbackSignal.invalidation || null,
+        expiry_candles: fallbackSignal.expiry_candles || null,
+        outcome,
+        outcome_rr: outcomeRr ?? null,
+        outcome_at: new Date().toISOString(),
+      }).select('*').single();
+      if (insErr) console.error('[outcome backfill insert]', insErr.message);
+      signalForJournal = inserted || { ...fallbackSignal, outcome, outcome_rr: outcomeRr ?? null, broker: fallbackBroker, timeframe: fallbackTf };
+    } catch (e) {
+      console.error('[outcome backfill]', e.message);
+      signalForJournal = { ...fallbackSignal, outcome, outcome_rr: outcomeRr ?? null, broker: fallbackBroker, timeframe: fallbackTf };
+    }
+  } else if (signalId && !existing && fallbackSignal) {
+    // Orphan: signalId was claimed but DB row gone (deleted, or insert silently failed).
+    // Don't insert (would risk duplicate on race). Just post journal from in-memory data.
+    console.error('[outcome] orphan signalId', signalId, '— posting journal without DB row');
+    signalForJournal = { ...fallbackSignal, outcome, outcome_rr: outcomeRr ?? null, broker: fallbackBroker, timeframe: fallbackTf };
+  } else {
+    // No DB row AND no fallback — nothing to journal
+    console.warn('[outcome] no signalId, no fallback — skipping journal for', outcome);
+    return;
+  }
+
+  // Post journal on first outcome assignment OR when we just backfilled
   if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE')) {
     const stats = await getUserStats(userId).catch(() => null);
-    postJournalToDiscord({ ...existing, outcome, outcome_rr: outcomeRr ?? null }, outcome, outcomeRr, stats)
+    postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
       .catch(e => console.error('[journal post]', e.message));
   }
 }
@@ -950,7 +1007,14 @@ async function getUserStats(userId) {
 
 // ── Journal Discord posting ──
 async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
-  if (!process.env.DISCORD_JOURNAL_WEBHOOK || !signal) return;
+  if (!process.env.DISCORD_JOURNAL_WEBHOOK) {
+    console.warn('[journal] DISCORD_JOURNAL_WEBHOOK env var not set — skipping post');
+    return;
+  }
+  if (!signal) {
+    console.warn('[journal] no signal data passed — skipping post');
+    return;
+  }
   const isWin = outcome === 'TP';
   const isBE  = outcome === 'BE';
   const outcomeEmoji = isWin ? '🟢' : isBE ? '🟡' : '🔴';
@@ -987,11 +1051,17 @@ async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
     timestamp: new Date().toISOString(),
   };
   try {
-    await fetch(process.env.DISCORD_JOURNAL_WEBHOOK, {
+    const r = await fetch(process.env.DISCORD_JOURNAL_WEBHOOK, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ embeds: [embed], username: 'Henry Journal' }),
     });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.error('[journal webhook]', r.status, t.slice(0, 200));
+    } else {
+      console.log('[journal] posted', outcome, signal.pair, signal.direction);
+    }
   } catch (e) {
     console.error('[journal webhook]', e.message);
   }
@@ -1298,14 +1368,16 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps) {
     const tpHit = isLong ? price >= tpP : price <= tpP;
     if (tpHit) {
       ps._tpAlerted = true;
+      console.log('[monitor]', coin, 'TP hit at', price, 'signalId=' + ps.signalId);
       await notifyUser(userId, isAdmin, {
         title: `🎯 TP REACHED: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
         body: `Take profit hit @ ${price.toFixed(2)}. Logged.`,
         color: 'gr',
       });
-      if (ps.signalId && !ps._outcomeLogged) {
+      if (!ps._outcomeLogged) {
         ps._outcomeLogged = true;
-        await logSignalOutcomeAndJournal(userId, ps.signalId, 'TP', parseFloat(pendSignal.rr) || 2)
+        // Pass in-memory signal as fallback so journal still posts if DB row is missing
+        await logSignalOutcomeAndJournal(userId, ps.signalId, 'TP', parseFloat(pendSignal.rr) || 2, pendSignal, broker, tf)
           .catch(e => console.error('[server TP outcome]', e.message));
       }
       clearPairState(ps);
@@ -1317,9 +1389,10 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps) {
   const slHit = isLong ? price <= slP : price >= slP;
   if (slHit) {
     const wasBE = ps._beAlerted;
-    if (ps.signalId && !ps._outcomeLogged) {
+    console.log('[monitor]', coin, wasBE ? 'BE-stop' : 'SL', 'hit at', price, 'signalId=' + ps.signalId);
+    if (!ps._outcomeLogged) {
       ps._outcomeLogged = true;
-      await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1)
+      await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1, pendSignal, broker, tf)
         .catch(e => console.error('[server SL outcome]', e.message));
     }
     await notifyUser(userId, isAdmin, {
@@ -1973,9 +2046,10 @@ async function saveServerSignal(userId, signal, trigger, broker, tf) {
       invalidation: signal.invalidation || null,
       expiry_candles: signal.expiry_candles || null,
     }).select('id').single();
-    if (error) { console.error('[saveServerSignal]', error.message); return null; }
+    if (error) { console.error('[saveServerSignal]', signal.pair, error.message); return null; }
+    console.log('[saveServerSignal] saved', signal.pair, signal.direction, 'id=' + data.id);
     return data.id;
-  } catch (e) { console.error('[saveServerSignal]', e.message); return null; }
+  } catch (e) { console.error('[saveServerSignal]', signal.pair, e.message); return null; }
 }
 
 async function postServerSignalToDiscord(signal, trigger, broker, tf) {
