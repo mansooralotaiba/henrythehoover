@@ -831,8 +831,32 @@ function stopPairMonitor(){
 function refreshPairMonitor(){
   fetch('/api/scan/all-pairs',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){if(d)renderPairMonitor(d);})
+    .then(function(d){
+      if(!d)return;
+      renderPairMonitor(d);
+      // Auto-render the focused pair's signal if server generated one and we haven't drawn it yet
+      autoSyncFocusedPairSignal(d);
+    })
     .catch(function(){});
+}
+
+// If server generated a signal for the currently-focused pair, render it in the
+// main signal card so the user sees it without clicking a mini-card.
+function autoSyncFocusedPairSignal(allPairs){
+  if(!allPairs||!allPairs.pairs)return;
+  var p=allPairs.pairs.find(function(x){return x.coin===coin;});
+  if(!p||!p.hasSignal||!p.signal)return;
+  // Already rendered the same signal? Skip.
+  if(window._lastSignalId===p.signalId&&pend)return;
+  // Don't override if browser already has its own pend with a different signalId
+  // (means user is actively analysing something else)
+  if(pend&&window._lastSignalId&&window._lastSignalId!==p.signalId)return;
+  window._lastSignalId=p.signalId;
+  var sig=Object.assign({},p.signal,{_confirmed:true,_fromServer:true});
+  if(p.entryAlerted)window._entryAlerted=true;
+  if(p.beAlerted)window._beAlerted=true;
+  if(p.tpAlerted)window._tpAlerted=true;
+  drawSig(sig);
 }
 
 function renderPairMonitor(data){
@@ -3335,6 +3359,8 @@ function toggleAutoScan(){
     startAutoScan();
     // Start polling per-pair status grid
     startPairMonitor();
+    // Pull server-detected outcomes into local journal panel
+    startJournalSync();
     // Kick off Discord status updates with whatever interval the dropdown shows
     var sel=document.getElementById('status-interval');
     var mins=sel?parseInt(sel.value,10):15;
@@ -3345,6 +3371,7 @@ function toggleAutoScan(){
     panel.style.display='none';
     stopAutoScan();
     stopPairMonitor();
+    stopJournalSync();
     // Stop Discord status updates when auto-scan turns off
     changeStatusInterval(0);
   }
@@ -3445,6 +3472,19 @@ function getPairsToScan(){
 
 function runAutoScan(){
   if(autoScanning)return;
+  // Always run the trade monitor for the focused pair if it's in trade.
+  if(pend&&document.getElementById('ocrow').style.display!=='none'){
+    runTradeMonitor();
+    return;
+  }
+  // ─── In watchlist mode, the SERVER is the sole signal generator. ───
+  // Browser scanning here would create duplicate signals (one from browser auto,
+  // one from server auto) — the user explicitly reported this. Server polls
+  // /api/scan/all-pairs handle the UI updates per pair.
+  if(autoWatchlist&&autoWatchlist.length){
+    setAutoStatus('Server scanning '+autoWatchlist.length+' pairs (browser is viewer)');
+    return;
+  }
   var pairs=getPairsToScan();
   if(!pairs.length)return;
   // Check cooldown
@@ -3452,11 +3492,6 @@ function runAutoScan(){
   if(now-autoLastFire<autoCooldownMs){
     var remaining=Math.ceil((autoCooldownMs-(now-autoLastFire))/1000);
     setAutoStatus('Cooldown: '+remaining+'s remaining');
-    return;
-  }
-  // Check if there's an active open trade — monitor instead of new signal
-  if(pend&&document.getElementById('ocrow').style.display!=='none'){
-    runTradeMonitor();
     return;
   }
   // Entry confirmation watcher is active — hold off on scanning for new signals
@@ -4551,7 +4586,9 @@ function restoreBrok(){
 function logTrade(oc){
   if(!pend)return;
   var rr=parseFloat(pend.rr)||2,rrG=oc==='TP'?rr:oc==='SL'?-1:0;
-  var e={id:Date.now(),time:new Date().toUTCString(),pair:pend.pair||coin,dir:pend.direction,entry:pend.entry,sl:pend.sl,tp:pend.tp,rr:rr,outcome:oc,rrG:rrG,conf:pend.confidence,sess:pend.session};
+  // Tag with serverSignalId so periodic /api/signals/history sync can dedup
+  // server-detected outcomes against browser-logged ones.
+  var e={id:Date.now(),serverSignalId:window._lastSignalId||null,time:new Date().toUTCString(),pair:pend.pair||coin,dir:pend.direction,entry:pend.entry,sl:pend.sl,tp:pend.tp,rr:rr,outcome:oc,rrG:rrG,conf:pend.confidence,sess:pend.session};
   jrn.unshift(e);
   st[oc.toLowerCase()]=(st[oc.toLowerCase()]||0)+1;
   st.rr=+((parseFloat(st.rr)||0)+rrG).toFixed(2);
@@ -5038,6 +5075,64 @@ function init(){
   // Sync server-generated signals: if the server's auto-AI fired while no browser
   // was open, render the signal card so the user sees it on next page load.
   syncServerSignal();
+}
+
+// Pull server-detected outcomes into local jrn[] so the journal panel updates
+// when the SERVER (not browser) detects TP/SL/BE. Dedups by serverSignalId.
+var _journalSyncPoll=null;
+
+function startJournalSync(){
+  if(!IS_ADMIN)return;
+  syncJournalFromServer();
+  if(_journalSyncPoll)clearInterval(_journalSyncPoll);
+  // Sync every 30s — light query, dedup is cheap
+  _journalSyncPoll=setInterval(syncJournalFromServer,30000);
+}
+function stopJournalSync(){
+  if(_journalSyncPoll){clearInterval(_journalSyncPoll);_journalSyncPoll=null;}
+}
+
+function syncJournalFromServer(){
+  fetch('/api/signals/history?limit=50',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){
+      if(!d||!Array.isArray(d.signals))return;
+      // Build set of server IDs already represented in local jrn
+      var existing=new Set(jrn.filter(function(t){return t.serverSignalId;}).map(function(t){return t.serverSignalId;}));
+      var added=0;
+      d.signals.forEach(function(s){
+        if(!s.outcome)return; // only logged outcomes
+        if(existing.has(s.id))return;
+        // Only add real outcomes (TP/SL/BE), skip 'OPEN' or unset
+        if(s.outcome!=='TP'&&s.outcome!=='SL'&&s.outcome!=='BE')return;
+        var rr=parseFloat(s.rr)||2;
+        var rrG=s.outcome==='TP'?(parseFloat(s.outcome_rr)||rr):s.outcome==='SL'?-1:0;
+        jrn.unshift({
+          id:'srv_'+s.id,
+          serverSignalId:s.id,
+          time:s.outcome_at||s.created_at||new Date().toUTCString(),
+          pair:s.pair,
+          dir:s.direction,
+          entry:s.entry,
+          sl:s.sl,
+          tp:s.tp,
+          rr:rr,
+          outcome:s.outcome,
+          rrG:rrG,
+          conf:s.confidence,
+          sess:s.session_name
+        });
+        // Update aggregate stats
+        var oc=s.outcome.toLowerCase();
+        st[oc]=(st[oc]||0)+1;
+        st.rr=+((parseFloat(st.rr)||0)+rrG).toFixed(2);
+        added++;
+      });
+      if(added){
+        save();drawJ();drawSt();
+      }
+    })
+    .catch(function(){});
 }
 
 function syncServerSignal(){
