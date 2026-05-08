@@ -1102,6 +1102,27 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
 const scanSubscriptions = new Map(); // userId → { active, coin, tf, broker, isAdmin, ... }
 const SCAN_INTERVAL_MS = 30000;
 
+// ── Smart broker routing ───────────────────────────────────────────────────
+// Each pair gets routed to the right exchange. Crypto USDT-perps use the user's
+// selected broker (Weex/Binance/Hyperliquid). GOLD spot only exists on Polygon
+// ('massive'), so it's hard-routed regardless of user's broker choice.
+function brokerForPair(coin, defaultBroker) {
+  if (coin === 'GOLD' || coin === 'XAUUSD') return 'massive';
+  return defaultBroker;
+}
+
+// ── Dead-zone cooldown ─────────────────────────────────────────────────────
+// Between NY close (22:00 UTC) and London open (08:00 UTC) markets are slow.
+// Override the user's cooldown to a 1-hour minimum so we don't burn AI calls
+// scanning every 3 minutes during a dead window. Keeps user's setting in
+// active sessions.
+function effectiveCooldownMs(sub) {
+  const hour = new Date().getUTCHours();
+  const inDeadZone = hour >= 22 || hour < 8;
+  if (inDeadZone) return Math.max(sub.cooldownMs || 0, 60 * 60 * 1000);
+  return sub.cooldownMs;
+}
+
 // ── Per-pair state helpers ─────────────────────────────────────────────────
 // Each scan subscription tracks state PER PAIR so multiple pairs can be in
 // monitoring concurrently. Pairs with no active signal keep scanning while
@@ -1327,8 +1348,10 @@ async function notifyUser(userId, isAdmin, { title, body, color, data }) {
   await postAlertToDiscord(title, body, color || 'cy', isAdmin);
 }
 
-async function runServerTradeMonitorForPair(userId, sub, coin, ps) {
-  const { tf, broker, isAdmin } = sub;
+async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverride) {
+  const { tf, isAdmin } = sub;
+  // Route to the pair's appropriate broker (GOLD → massive, others → user choice)
+  const broker = brokerOverride || brokerForPair(coin, sub.broker);
   const { pendSignal } = ps;
   const price = await getCurrentPriceServer(coin, broker);
   if (!price) return;
@@ -1385,11 +1408,20 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps) {
     }
   }
 
-  // SL — clears the trade so next scan resumes for this pair
+  // SL hit — original stop-loss breached
   const slHit = isLong ? price <= slP : price >= slP;
-  if (slHit) {
-    const wasBE = ps._beAlerted;
-    console.log('[monitor]', coin, wasBE ? 'BE-stop' : 'SL', 'hit at', price, 'signalId=' + ps.signalId);
+  // BE-stop hit — fires when:
+  //   • BE alert already fired (user should have moved SL to entry)
+  //   • Price returned to entry (LONG: cp <= e; SHORT: cp >= e)
+  //   • Price hasn't yet reached original SL (otherwise slHit handles it)
+  // This catches the case where price spikes to BE level, user moves SL to entry,
+  // price comes back to entry → effective SL hit at breakeven, no need to wait
+  // for the original (further-away) SL.
+  const beStopHit = ps._beAlerted && (isLong ? (price <= e && price > slP) : (price >= e && price < slP));
+  if (slHit || beStopHit) {
+    const wasBE = ps._beAlerted; // true if BE-stop OR (slHit while _beAlerted is set)
+    const reason = beStopHit ? 'BE-stop' : (wasBE ? 'SL-after-BE' : 'SL');
+    console.log('[monitor]', coin, reason, 'hit at', price, 'signalId=' + ps.signalId);
     if (!ps._outcomeLogged) {
       ps._outcomeLogged = true;
       await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1, pendSignal, broker, tf)
@@ -2089,9 +2121,16 @@ async function postServerSignalToDiscord(signal, trigger, broker, tf) {
 }
 
 // Main entry — runs the full AI flow on the server when a trigger fires for a pair.
-async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles) {
-  const { tf, broker, isAdmin } = sub;
+async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, brokerOverride) {
+  const { tf, isAdmin } = sub;
+  // Route to the pair's appropriate broker (GOLD → massive, etc.)
+  const broker = brokerOverride || brokerForPair(coin, sub.broker);
   const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
+
+  // BTC correlation fetch needs a broker that actually has BTC. If we're scanning
+  // GOLD on 'massive' (Polygon), Polygon doesn't list BTC — fall back to Binance
+  // for the correlation fetch so the AI still gets risk-on/risk-off context.
+  const btcBroker = (broker === 'massive') ? 'binance' : broker;
 
   // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
   const [
@@ -2100,7 +2139,7 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles) {
   ] = await Promise.all([
     fetchCandlesServer(coin, '1h', 50, broker).catch(() => []),
     fetchCandlesServer(coin, '4h', 30, broker).catch(() => []),
-    coin !== 'BTCUSDT' ? fetchCandlesServer('BTCUSDT', tf, 30, broker).catch(() => []) : Promise.resolve([]),
+    coin !== 'BTCUSDT' ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
     fetchFundingRateServer(coin).catch(() => null),
     fetchOpenInterestServer(coin).catch(() => null),
     fetchTradesServer(coin, broker).catch(() => []),
@@ -2207,11 +2246,13 @@ async function runServerScan(userId, sub) {
 
 async function processPair(userId, sub, coin) {
   const ps = getPairState(sub, coin);
+  // Each pair routes to its appropriate broker (e.g. GOLD → 'massive'/Polygon)
+  const broker = brokerForPair(coin, sub.broker);
 
   // 1) If pair has an active signal → monitor it (entry/BE/TP/SL/expiry)
   if (ps.pendSignal) {
     try {
-      await runServerTradeMonitorForPair(userId, sub, coin, ps);
+      await runServerTradeMonitorForPair(userId, sub, coin, ps, broker);
     } catch (e) { console.error('[monitor]', coin, e.message); }
     return;
   }
@@ -2223,10 +2264,10 @@ async function processPair(userId, sub, coin) {
   }
   ps.lastStatus = 'scanning';
 
-  // Fetch candles + detect trigger
+  // Fetch candles + detect trigger (using the pair's appropriate broker)
   let candles, trigger;
   try {
-    candles = await fetchCandlesServer(coin, sub.tf, 30, sub.broker);
+    candles = await fetchCandlesServer(coin, sub.tf, 30, broker);
     trigger = (candles && candles.length >= 11) ? detectTrigger(candles) : null;
   } catch (e) {
     console.error('[scan]', coin, e.message);
@@ -2235,14 +2276,14 @@ async function processPair(userId, sub, coin) {
   if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
   if (!trigger) return;
 
-  // Apply per-pair cooldown
-  ps.cooldownUntil = Date.now() + sub.cooldownMs;
+  // Apply per-pair cooldown — extended automatically during 22:00-08:00 UTC dead zone
+  ps.cooldownUntil = Date.now() + effectiveCooldownMs(sub);
   ps.lastTrigger = trigger;
 
   // Run full AI analysis for this pair
   let aiSignal = null;
   try {
-    aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles);
+    aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker);
   } catch (e) { console.error('[runServerAIForPair]', coin, e.message); }
 
   // Fallback: AI failed → still push a trigger alert
@@ -2252,7 +2293,7 @@ async function processPair(userId, sub, coin) {
       title: `⚡ ${trigger.type.toUpperCase()}: ${coin.replace('USDT', '').replace('1000', '')}`,
       body: `${trigger.desc}. Open Henry to run AI analysis.`,
       icon: '/manifest.json',
-      data: { coin, tf: sub.tf, broker: sub.broker, trigger },
+      data: { coin, tf: sub.tf, broker, trigger },
     });
   }
 }

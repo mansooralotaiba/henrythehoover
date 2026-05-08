@@ -871,6 +871,17 @@ function renderPairMonitor(data){
     box.style.cssText='border:1px solid var(--b1);border-radius:3px;padding:8px 10px;background:var(--bg2);cursor:pointer;font-size:10px;line-height:1.5;transition:border-color 0.15s';
     box.title='Click to view '+p.coin;
     box.addEventListener('click',function(){
+      // GOLD requires the 'massive' broker (Polygon) — switching the broker
+      // also handles coin selection internally.
+      if(p.coin==='GOLD'){
+        setBroker('massive');
+        return;
+      }
+      // Coming back from massive → restore the user's last non-massive broker
+      if(activeBroker==='massive'){
+        var saved=localStorage.getItem('activeBroker');
+        setBroker(saved&&saved!=='massive'?saved:'weex');
+      }
       var btn=document.getElementById('cb-'+p.coin);
       if(btn)pickCoin(btn,p.coin);
       else switchToCoin(p.coin);
@@ -970,11 +981,15 @@ drawLogo(document.getElementById('henrylogo'),34);
 // ═══════════════════════════════════════════
 // CLOCK + SESSIONS
 // ═══════════════════════════════════════════
+// Market sessions in UTC minutes-of-day. Aligned to actual exchange hours
+// (no DST shifts — assumes UTC fixed). Asia is the broad window before London;
+// LDN/NY OVERLAP is the high-activity window where both are open simultaneously.
 var SESS=[
-  {id:'s0',l:'ASIA',s:0,e:300},
-  {id:'s1',l:'LONDON',s:480,e:660},
-  {id:'s2',l:'NEW YORK',s:720,e:900},
-  {id:'s3',l:'LON CLOSE',s:900,e:1020}
+  {id:'s0',l:'ASIA',s:0,e:480},                // 00:00-08:00 UTC (Tokyo/Sydney)
+  {id:'s1',l:'LONDON',s:480,e:720},            // 08:00-12:00 UTC (LDN open → pre-overlap)
+  {id:'s2',l:'LDN/NY OVERLAP',s:720,e:1020},   // 12:00-17:00 UTC (peak liquidity)
+  {id:'s3',l:'NEW YORK',s:1020,e:1320}         // 17:00-22:00 UTC (NY → close)
+  // 22:00-00:00 UTC falls through to 'OFF HOURS' (NY close → Asia open dead zone)
 ];
 function p2(n){return('0'+n).slice(-2);}
 function utcM(){var d=new Date();return d.getUTCHours()*60+d.getUTCMinutes();}
@@ -3325,16 +3340,7 @@ function buildCrossBrokerContext(candleSets,tradeSets){
 // ═══════════════════════════════════════════
 // AUTO-SCAN ENGINE
 // ═══════════════════════════════════════════
-var ALL_WATCHLIST_PAIRS=[
-  {sym:'BTCUSDT',lbl:'BTC'},{sym:'ETHUSDT',lbl:'ETH'},{sym:'SOLUSDT',lbl:'SOL'},
-  {sym:'XRPUSDT',lbl:'XRP'},{sym:'DOGEUSDT',lbl:'DOGE'},{sym:'AVAXUSDT',lbl:'AVAX'},
-  {sym:'AAVEUSDT',lbl:'AAVE'},{sym:'1000PEPEUSDT',lbl:'PEPE'},
-  {sym:'XAUTUSDT',lbl:'XAUT'},{sym:'XAGUSDT',lbl:'XAG'},
-  {sym:'XTIUSDT',lbl:'XTI'},{sym:'XBRUSDT',lbl:'XBR'},
-  {sym:'BNBUSDT',lbl:'BNB'},{sym:'ADAUSDT',lbl:'ADA'},{sym:'DOTUSDT',lbl:'DOT'},
-  {sym:'LINKUSDT',lbl:'LINK'},{sym:'SUIUSDT',lbl:'SUI'},{sym:'ARBUSDT',lbl:'ARB'},
-  {sym:'OPUSDT',lbl:'OP'},{sym:'NEARUSDT',lbl:'NEAR'},{sym:'INJUSDT',lbl:'INJ'}
-];
+// (ALL_WATCHLIST_PAIRS is declared further down with the full list incl. GOLD.)
 
 // setScanMode removed — focused mode only
 
@@ -3399,10 +3405,14 @@ function setAutoStatus(msg){
 }
 
 // ── Watchlist pair selector ───────────────────────────────────────────
+// `sym` is what gets sent to the server. Server's brokerForPair() routes GOLD
+// to the 'massive' broker (Polygon) automatically — every other pair uses the
+// user's selected broker.
 var ALL_WATCHLIST_PAIRS=[
   {sym:'BTCUSDT',lbl:'BTC'},{sym:'ETHUSDT',lbl:'ETH'},{sym:'SOLUSDT',lbl:'SOL'},
   {sym:'XRPUSDT',lbl:'XRP'},{sym:'DOGEUSDT',lbl:'DOGE'},{sym:'AVAXUSDT',lbl:'AVAX'},
   {sym:'AAVEUSDT',lbl:'AAVE'},{sym:'1000PEPEUSDT',lbl:'PEPE'},
+  {sym:'GOLD',lbl:'GOLD'},
   {sym:'XAUTUSDT',lbl:'XAUT'},{sym:'XAGUSDT',lbl:'XAG'},
   {sym:'XTIUSDT',lbl:'XTI'},{sym:'XBRUSDT',lbl:'XBR'},
   {sym:'BNBUSDT',lbl:'BNB'},{sym:'ADAUSDT',lbl:'ADA'},{sym:'DOTUSDT',lbl:'DOT'},
@@ -3417,7 +3427,7 @@ function buildWatchlistUI(){
   el.innerHTML='';
   ALL_WATCHLIST_PAIRS.forEach(function(p){
     var checked=autoWatchlist.indexOf(p.sym)!==-1;
-    var isMetal=/^(XAUT|XAG|XTI|XBR)/.test(p.sym);
+    var isMetal=/^(GOLD|XAU|XAG|XTI|XBR)/.test(p.sym);
     var activeColor=isMetal?'var(--am)':'var(--cy)';
     var activeBg=isMetal?'rgba(255,184,48,.08)':'rgba(0,212,255,.07)';
     var activeBorder=isMetal?'rgba(255,184,48,.4)':'rgba(0,212,255,.4)';
@@ -3487,11 +3497,15 @@ function runAutoScan(){
   }
   var pairs=getPairsToScan();
   if(!pairs.length)return;
-  // Check cooldown
+  // Dead-zone cooldown override: between NY close (22:00 UTC) and London open
+  // (08:00 UTC) markets are slow — use 1-hour minimum cooldown automatically.
+  var nowH=new Date().getUTCHours();
+  var inDeadZone=nowH>=22||nowH<8;
+  var effCooldown=inDeadZone?Math.max(autoCooldownMs,3600000):autoCooldownMs;
   var now=Date.now();
-  if(now-autoLastFire<autoCooldownMs){
-    var remaining=Math.ceil((autoCooldownMs-(now-autoLastFire))/1000);
-    setAutoStatus('Cooldown: '+remaining+'s remaining');
+  if(now-autoLastFire<effCooldown){
+    var remaining=Math.ceil((effCooldown-(now-autoLastFire))/1000);
+    setAutoStatus(inDeadZone?'Dead zone (NY closed / pre-LDN) — '+Math.ceil(remaining/60)+'min cooldown':'Cooldown: '+remaining+'s remaining');
     return;
   }
   // Entry confirmation watcher is active — hold off on scanning for new signals
