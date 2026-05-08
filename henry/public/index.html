@@ -306,6 +306,11 @@ body.massive-mode #extrapairs{display:none!important}
       style="border-color:var(--di);color:var(--mu);margin-left:6px">
       ⚡ AUTO
     </button>
+    <a href="/performance" class="tft admin-only" target="_blank"
+      style="border-color:var(--di);color:var(--mu);margin-left:6px;text-decoration:none;display:inline-flex;align-items:center"
+      title="Open performance dashboard">
+      📊 STATS
+    </a>
   </div>
   <div id="chartdiv"></div>
 
@@ -901,6 +906,7 @@ function renderPairMonitor(data){
     var badgeColor='var(--mu)',badgeBg='rgba(255,255,255,0.04)',badgeBorder='var(--b1)',badgeText='IDLE';
     if(p.hasSignal&&p.entryAlerted){badgeColor='var(--gr)';badgeBg='rgba(0,229,160,0.08)';badgeBorder='rgba(0,229,160,0.3)';badgeText='IN TRADE';}
     else if(p.hasSignal){badgeColor='var(--am)';badgeBg='rgba(255,184,48,0.08)';badgeBorder='rgba(255,184,48,0.3)';badgeText='WAITING';}
+    else if(p.pauseRemaining>0){badgeColor='var(--re)';badgeBg='rgba(255,68,102,0.08)';badgeBorder='rgba(255,68,102,0.3)';badgeText='PAUSED '+Math.ceil(p.pauseRemaining/60000)+'min';}
     else if(p.cooldownRemaining>0){badgeColor='var(--mu)';badgeBg='rgba(255,255,255,0.04)';badgeBorder='var(--b1)';badgeText='COOLDOWN '+Math.ceil(p.cooldownRemaining/1000)+'s';}
     else{badgeColor='var(--cy)';badgeBg='rgba(0,212,255,0.06)';badgeBorder='rgba(0,212,255,0.25)';badgeText='SCANNING';}
     badge.style.color=badgeColor;badge.style.background=badgeBg;badge.style.border='1px solid '+badgeBorder;
@@ -951,8 +957,32 @@ function renderPairMonitor(data){
     if(!p.hasSignal&&p.lastTrigger){
       var trig=document.createElement('div');
       trig.style.cssText='color:var(--mu);font-size:9px;margin-top:2px;font-style:italic';
-      trig.textContent='Last: '+p.lastTrigger.type+' — '+p.lastTrigger.desc.slice(0,40);
+      var trigText='Last: '+p.lastTrigger.type+' — '+p.lastTrigger.desc.slice(0,40);
+      if(p.lastPreScore!=null)trigText+=' [score '+p.lastPreScore+']';
+      trig.textContent=trigText;
       box.appendChild(trig);
+    }
+
+    // Circuit breaker pause reason
+    if(p.pauseRemaining>0&&p.pauseReason){
+      var pause=document.createElement('div');
+      pause.style.cssText='color:var(--re);font-size:9px;margin-top:2px;font-weight:bold';
+      pause.textContent='⛔ '+p.pauseReason;
+      box.appendChild(pause);
+    }
+
+    // Pair stats footer (last 500 trades)
+    if(p.stats&&p.stats.total>0){
+      var statsBar=document.createElement('div');
+      var winColor=p.stats.winRate>=60?'var(--gr)':p.stats.winRate>=40?'var(--am)':'var(--re)';
+      var rColor=p.stats.totalR>=0?'var(--gr)':'var(--re)';
+      statsBar.style.cssText='margin-top:5px;padding-top:4px;border-top:1px solid var(--b1);display:flex;justify-content:space-between;font-size:9px;color:var(--mu)';
+      var winSpan=document.createElement('span');
+      winSpan.innerHTML='<span style="color:'+winColor+'">'+p.stats.winRate+'%</span> ('+p.stats.tp+'W/'+p.stats.sl+'L'+(p.stats.be?'/'+p.stats.be+'BE':'')+')';
+      var rSpan=document.createElement('span');
+      rSpan.innerHTML='<span style="color:'+rColor+'">'+(p.stats.totalR>=0?'+':'')+p.stats.totalR+'R</span>';
+      statsBar.appendChild(winSpan);statsBar.appendChild(rSpan);
+      box.appendChild(statsBar);
     }
 
     grid.appendChild(box);

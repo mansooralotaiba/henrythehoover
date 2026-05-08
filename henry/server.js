@@ -293,6 +293,7 @@ app.get('/subscribe',      (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'su
 app.get('/subscribe/success', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'subscribe-success.html')));
 app.get('/reset-password', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reset-password.html')));
 app.get('/account',        requireSession, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
+app.get('/performance',    requireAuth,    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'performance.html')));
 
 // Set a new password — requires valid session set by /auth/callback (recovery flow)
 app.post('/api/auth/update-password', requireSession, express.json(), async (req, res) => {
@@ -983,6 +984,11 @@ async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr, 
     const stats = await getUserStats(userId).catch(() => null);
     postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
       .catch(e => console.error('[journal post]', e.message));
+    // Record into circuit breaker history (only on first outcome) so losing
+    // streaks pause future scans automatically.
+    if (signalForJournal && signalForJournal.pair) {
+      recordOutcomeForCircuitBreaker(userId, signalForJournal.pair, outcome);
+    }
   }
 }
 
@@ -1095,12 +1101,260 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
   res.json({ tp, sl, be, totalRr: +totalRr.toFixed(2), winRate, total: data.length });
 });
 
+// Performance dashboard data — aggregated breakdowns across all signals.
+// Used by /performance.html. Returns rich grouped data (by pair, trigger,
+// session, hour) plus cumulative R timeline + best/worst trades.
+app.get('/api/performance/dashboard', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supaAdmin
+      .from('signals')
+      .select('pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, broker, timeframe, rr, confidence')
+      .eq('user_id', req.user.id)
+      .not('outcome', 'is', null)
+      .order('outcome_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    const rows = data || [];
+
+    // ── Helper: aggregate a row group into { tp, sl, be, total, winRate, totalR, expectancy } ──
+    function agg(group) {
+      const tp = group.filter(s => s.outcome === 'TP').length;
+      const sl = group.filter(s => s.outcome === 'SL').length;
+      const be = group.filter(s => s.outcome === 'BE').length;
+      const total = tp + sl + be;
+      const totalR = group.reduce((s, x) => s + (parseFloat(x.outcome_rr) || 0), 0);
+      const winRate = total ? +(((tp + be * 0.5) / total) * 100).toFixed(1) : 0;
+      const expectancy = total ? +(totalR / total).toFixed(2) : 0;
+      return { tp, sl, be, total, totalR: +totalR.toFixed(2), winRate, expectancy };
+    }
+
+    // ── Group helpers ──
+    function groupBy(arr, keyFn) {
+      const out = {};
+      for (const r of arr) {
+        const k = keyFn(r);
+        if (k == null) continue;
+        if (!out[k]) out[k] = [];
+        out[k].push(r);
+      }
+      return out;
+    }
+
+    const byPairRaw = groupBy(rows, r => r.pair);
+    const byPair = {};
+    for (const [k, v] of Object.entries(byPairRaw)) byPair[k] = agg(v);
+
+    const byTriggerRaw = groupBy(rows, r => r.trigger_type || 'manual');
+    const byTrigger = {};
+    for (const [k, v] of Object.entries(byTriggerRaw)) byTrigger[k] = agg(v);
+
+    const bySessionRaw = groupBy(rows, r => r.session_name || 'unknown');
+    const bySession = {};
+    for (const [k, v] of Object.entries(bySessionRaw)) bySession[k] = agg(v);
+
+    const byBrokerRaw = groupBy(rows, r => r.broker || 'unknown');
+    const byBroker = {};
+    for (const [k, v] of Object.entries(byBrokerRaw)) byBroker[k] = agg(v);
+
+    // By hour of day (UTC) — based on outcome_at
+    const byHourRaw = groupBy(rows, r => {
+      if (!r.outcome_at) return null;
+      return String(new Date(r.outcome_at).getUTCHours()).padStart(2, '0');
+    });
+    const byHour = {};
+    for (let h = 0; h < 24; h++) {
+      const key = String(h).padStart(2, '0');
+      byHour[key] = byHourRaw[key] ? agg(byHourRaw[key]) : { tp: 0, sl: 0, be: 0, total: 0, totalR: 0, winRate: 0, expectancy: 0 };
+    }
+
+    // Cumulative R over time
+    let cum = 0;
+    const cumRR = rows.map(r => {
+      cum += parseFloat(r.outcome_rr) || 0;
+      return { ts: r.outcome_at || r.created_at, cumR: +cum.toFixed(2), pair: r.pair, outcome: r.outcome };
+    });
+
+    // Best/worst 10 by outcome_rr
+    const sortedByR = rows.slice().sort((a, b) => (parseFloat(b.outcome_rr) || 0) - (parseFloat(a.outcome_rr) || 0));
+    const best10 = sortedByR.slice(0, 10);
+    const worst10 = sortedByR.slice(-10).reverse();
+
+    res.json({
+      total: agg(rows),
+      byPair,
+      byTrigger,
+      bySession,
+      byBroker,
+      byHour,
+      cumRR,
+      best10,
+      worst10,
+    });
+  } catch (err) {
+    console.error('[performance dashboard]', err.message);
+    res.status(500).json({ error: 'dashboard_failed' });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // PART 4A/B/F — SERVER-SIDE SCAN LOOP + TRADE MONITOR
 // ════════════════════════════════════════════════════════════════════════════
 
 const scanSubscriptions = new Map(); // userId → { active, coin, tf, broker, isAdmin, ... }
 const SCAN_INTERVAL_MS = 30000;
+
+// ── Pre-AI confluence pre-filter ───────────────────────────────────────────
+// Cheap (≤1 extra fetch: 1H candles + funding rate cache) score from data we
+// either already have or can grab quickly. If score < threshold, skip the
+// expensive AI call. Cuts Anthropic spend ~40% on noisy chop without dropping
+// good setups (high-quality triggers easily clear the bar).
+async function preAiConfluenceScore(coin, tf, broker, baseCandles, trigger) {
+  const reasons = [];
+  let score = 0;
+
+  // 1) Kill zone (0-20)
+  const m = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+  let kzScore = 0, kzName = 'OFF';
+  if (m >= 420 && m < 600)       { kzScore = 20; kzName = 'LDN-OPEN'; }
+  else if (m >= 720 && m < 900)  { kzScore = 20; kzName = 'NY-OPEN';  }
+  else if (m >= 900 && m < 1020) { kzScore = 12; kzName = 'LDN-CLOSE';}
+  else if (m >= 0   && m < 300)  { kzScore =  5; kzName = 'ASIA';     }
+  score += kzScore;
+  reasons.push(`KZ=${kzName}+${kzScore}`);
+
+  // 2) Trigger strength (0-20) — bigger reward for vol-confirmed triggers
+  const last = baseCandles[baseCandles.length - 1];
+  const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
+  const volSpike = histAvgVol > 0 && last.v > histAvgVol * 1.5;
+  let tScore = 0;
+  if (trigger.type === 'bos')   tScore = volSpike ? 20 : 12;
+  else if (trigger.type === 'sweep') tScore = volSpike ? 15 : 8;
+  else                          tScore = 8;
+  score += tScore;
+  reasons.push(`Trig=${trigger.type}${volSpike ? '✓vol' : ''}+${tScore}`);
+
+  // 3) Trigger direction inferred from desc (BOS up=bull, BOS down=bear, sweep high=bear, sweep low=bull)
+  let trigDir = null;
+  if (trigger.type === 'bos')        trigDir = /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  else if (trigger.type === 'sweep') trigDir = /high/i.test(trigger.desc) ? 'bear' : 'bull';
+
+  // 4) HTF alignment (-15 to +20) — fetch 10 1H candles, check direction
+  let htfScore = 5;
+  if (trigDir) {
+    try {
+      const h1 = await fetchCandlesServer(coin, '1h', 10, broker);
+      if (h1 && h1.length >= 5) {
+        const htfDir = h1[h1.length - 1].c > h1[0].c ? 'bull' : 'bear';
+        if (trigDir === htfDir) { htfScore = 20; reasons.push('HTF-aligned+20'); }
+        else                    { htfScore = -15; reasons.push('HTF-conflict-15'); }
+      }
+    } catch {}
+  }
+  score += htfScore;
+
+  // 5) Funding bias support (-5 to +15) — extreme funding = good fade signal
+  let fScore = 3;
+  try {
+    const funding = await fetchFundingRateServer(coin);
+    if (funding != null && !Number.isNaN(funding) && trigDir) {
+      // Positive funding → crowded longs → bear bias is good fade
+      // Negative funding → crowded shorts → bull bias is good fade
+      const fadeDir = funding > 0.005 ? 'bear' : funding < -0.005 ? 'bull' : null;
+      if (fadeDir && fadeDir === trigDir) {
+        fScore = Math.abs(funding) > 0.01 ? 15 : 8;
+        reasons.push(`Fund-fade+${fScore}`);
+      } else if (fadeDir && fadeDir !== trigDir) {
+        fScore = -5;
+        reasons.push('Fund-against-5');
+      }
+    }
+  } catch {}
+  score += fScore;
+
+  // 6) Recent volume momentum (0-10)
+  if (baseCandles.length >= 10) {
+    const last3 = baseCandles.slice(-3).reduce((s, c) => s + (c.v || 0), 0) / 3;
+    const prev = baseCandles.slice(-23, -3);
+    const prevAvg = prev.reduce((s, c) => s + (c.v || 0), 0) / Math.max(prev.length, 1);
+    if (prevAvg > 0) {
+      const ratio = last3 / prevAvg;
+      const vmScore = ratio > 1.5 ? 10 : ratio > 1 ? 5 : 0;
+      score += vmScore;
+      if (vmScore) reasons.push(`Vol-x${ratio.toFixed(1)}+${vmScore}`);
+    }
+  }
+
+  return { score, reasons: reasons.join(' ') };
+}
+
+const PRE_AI_THRESHOLD = 45; // out of ~85 max — empirically tuned for ~40% rejection
+
+// ── Risk circuit breaker ───────────────────────────────────────────────────
+// Tracks recent SL outcomes per user → pauses scanning when losing streaks form.
+//   • Per-pair: 3 SLs on the same pair within 24h → pause that pair for 6h
+//   • Global: 3 SLs across any pairs within 4h → pause ALL pairs for 2h
+// Backs the auto-scan against the worst-case scenario: bot revenge-trading a
+// chop session into a 5+ loss streak overnight.
+async function loadRecentOutcomes(userId) {
+  // Pull last 24h of recorded outcomes from DB so circuit breaker survives
+  // server restarts / scan re-toggles.
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data } = await supaAdmin
+      .from('signals')
+      .select('pair, outcome, outcome_at')
+      .eq('user_id', userId)
+      .not('outcome', 'is', null)
+      .gte('outcome_at', since)
+      .order('outcome_at', { ascending: true });
+    return (data || []).map(s => ({
+      coin: s.pair,
+      outcome: s.outcome,
+      ts: new Date(s.outcome_at).getTime(),
+    }));
+  } catch (e) {
+    console.error('[circuit breaker load]', e.message);
+    return [];
+  }
+}
+
+function recordOutcomeForCircuitBreaker(userId, coin, outcome) {
+  const sub = scanSubscriptions.get(userId);
+  if (!sub) return;
+  if (!sub.recentOutcomes) sub.recentOutcomes = [];
+  sub.recentOutcomes.push({ coin, outcome, ts: Date.now() });
+  // Trim to last 24h
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  sub.recentOutcomes = sub.recentOutcomes.filter(o => o.ts >= cutoff);
+}
+
+function circuitBreakerStatus(sub, coin) {
+  if (!sub.recentOutcomes || !sub.recentOutcomes.length) return { paused: false };
+  const now = Date.now();
+
+  // Per-pair: 3 SLs on this coin in 24h → pause for 6h from oldest
+  const day24 = now - 24 * 60 * 60 * 1000;
+  const pairSLs = sub.recentOutcomes.filter(o => o.coin === coin && o.outcome === 'SL' && o.ts >= day24);
+  if (pairSLs.length >= 3) {
+    const oldest = pairSLs[pairSLs.length - 3].ts; // 3rd from end (chronological order)
+    const pauseUntil = oldest + 6 * 60 * 60 * 1000;
+    if (pauseUntil > now) {
+      return { paused: true, pauseUntil, scope: 'pair', reason: `${pairSLs.length} SLs in 24h` };
+    }
+  }
+
+  // Global: 3 SLs across any pair in last 4h → pause everything for 2h from oldest
+  const hour4 = now - 4 * 60 * 60 * 1000;
+  const recentSLs = sub.recentOutcomes.filter(o => o.outcome === 'SL' && o.ts >= hour4);
+  if (recentSLs.length >= 3) {
+    const oldest = recentSLs[recentSLs.length - 3].ts;
+    const pauseUntil = oldest + 2 * 60 * 60 * 1000;
+    if (pauseUntil > now) {
+      return { paused: true, pauseUntil, scope: 'global', reason: `${recentSLs.length} SLs across pairs in 4h` };
+    }
+  }
+
+  return { paused: false };
+}
 
 // ── Smart broker routing ───────────────────────────────────────────────────
 // Each pair gets routed to the right exchange. Crypto USDT-perps use the user's
@@ -1159,12 +1413,17 @@ app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
   if (!coin || !tf) return res.status(400).json({ error: 'missing_coin_or_tf' });
   // Preserve existing per-pair state if scan is restarted (e.g. user toggled AUTO off and on)
   const prev = scanSubscriptions.get(req.user.id);
+  // Bootstrap circuit-breaker history from DB so it survives restarts / re-toggles
+  const recentOutcomes = prev?.recentOutcomes && prev.recentOutcomes.length
+    ? prev.recentOutcomes
+    : await loadRecentOutcomes(req.user.id);
   scanSubscriptions.set(req.user.id, {
     active: true, coin, tf, broker: broker || 'weex',
     cooldownMs: cooldownMs || 180000,
     watchlist: Array.isArray(watchlist) ? watchlist : [],
     isAdmin: !!req.profile.is_admin,
     pairs: prev?.pairs || {},
+    recentOutcomes,
   });
   res.json({ ok: true });
 });
@@ -1218,8 +1477,46 @@ app.get('/api/scan/current-signal', requireAuth, (req, res) => {
   });
 });
 
+// ── Per-pair stats cache for mini-card footers ─────────────────────────────
+// 5-minute cache shared across all scan ticks — stats change slowly.
+const _pairStatsCache = new Map(); // userId → { ts, byPair: { coin: {tp,sl,be,total,winRate,totalR} } }
+
+async function getUserPairStats(userId) {
+  const cached = _pairStatsCache.get(userId);
+  if (cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.byPair;
+  try {
+    const { data } = await supaAdmin
+      .from('signals')
+      .select('pair, outcome, outcome_rr')
+      .eq('user_id', userId)
+      .not('outcome', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(500);
+    const byPair = {};
+    for (const s of (data || [])) {
+      if (!byPair[s.pair]) byPair[s.pair] = { tp: 0, sl: 0, be: 0, totalR: 0, total: 0, winRate: 0 };
+      const p = byPair[s.pair];
+      p.total++;
+      if (s.outcome === 'TP') p.tp++;
+      if (s.outcome === 'SL') p.sl++;
+      if (s.outcome === 'BE') p.be++;
+      p.totalR += parseFloat(s.outcome_rr) || 0;
+    }
+    for (const p of Object.values(byPair)) {
+      const closed = p.tp + p.sl + p.be;
+      p.winRate = closed ? Math.round(((p.tp + p.be * 0.5) / closed) * 100) : 0;
+      p.totalR = +p.totalR.toFixed(2);
+    }
+    _pairStatsCache.set(userId, { ts: Date.now(), byPair });
+    return byPair;
+  } catch (e) {
+    console.error('[pair stats]', e.message);
+    return cached ? cached.byPair : {};
+  }
+}
+
 // Returns state for ALL pairs in the watchlist — used by mini-cards UI.
-app.get('/api/scan/all-pairs', requireAuth, (req, res) => {
+app.get('/api/scan/all-pairs', requireAuth, async (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (!sub) return res.json({ active: false, pairs: [] });
   // Pairs to report on: union of watchlist + any pair that has state (e.g. signal active)
@@ -1228,6 +1525,10 @@ app.get('/api/scan/all-pairs', requireAuth, (req, res) => {
     ...(sub.pairs ? Object.keys(sub.pairs) : []),
   ]);
   if (!pairCoins.size && sub.coin) pairCoins.add(sub.coin);
+
+  // Pre-fetch the cached pair stats once for all pairs in this response
+  const stats = await getUserPairStats(req.user.id).catch(() => ({}));
+
   const pairs = [];
   for (const coin of pairCoins) {
     const ps = sub.pairs && sub.pairs[coin];
@@ -1238,12 +1539,17 @@ app.get('/api/scan/all-pairs', requireAuth, (req, res) => {
       signalId:     ps && ps.signalId   ? ps.signalId   : null,
       lastPrice:    ps && ps.lastPrice  != null ? ps.lastPrice : null,
       lastTrigger:  ps && ps.lastTrigger ? ps.lastTrigger : null,
+      lastPreScore: ps ? (ps.lastPreScore != null ? ps.lastPreScore : null) : null,
       cooldownUntil: ps ? ps.cooldownUntil : 0,
       cooldownRemaining: ps ? Math.max(0, ps.cooldownUntil - Date.now()) : 0,
+      pauseUntil: ps && ps.pauseUntil ? ps.pauseUntil : 0,
+      pauseRemaining: ps && ps.pauseUntil ? Math.max(0, ps.pauseUntil - Date.now()) : 0,
+      pauseReason: ps ? (ps.pauseReason || null) : null,
       status: ps ? ps.lastStatus : 'idle',
       entryAlerted: !!(ps && ps._entryAlerted),
       beAlerted:    !!(ps && ps._beAlerted),
       tpAlerted:    !!(ps && ps._tpAlerted),
+      stats: stats[coin] || null, // { tp, sl, be, totalR, total, winRate }
     });
   }
   res.json({
@@ -2325,6 +2631,8 @@ async function processPair(userId, sub, coin) {
   const broker = brokerForPair(coin, sub.broker);
 
   // 1) If pair has an active signal → monitor it (entry/BE/TP/SL/expiry)
+  //    Trade monitor still runs even if circuit breaker is on — once you're IN
+  //    a trade, you need exit alerts regardless.
   if (ps.pendSignal) {
     try {
       await runServerTradeMonitorForPair(userId, sub, coin, ps, broker);
@@ -2332,7 +2640,19 @@ async function processPair(userId, sub, coin) {
     return;
   }
 
-  // 2) Else if past cooldown → scan + (if triggered) run AI
+  // 2) Risk circuit breaker — pause new signal generation if losing streak detected
+  const cb = circuitBreakerStatus(sub, coin);
+  if (cb.paused) {
+    ps.lastStatus = 'paused';
+    ps.pauseUntil = cb.pauseUntil;
+    ps.pauseReason = `${cb.scope === 'global' ? 'GLOBAL' : 'PAIR'}: ${cb.reason}`;
+    return;
+  }
+  // Clear any stale pause flags
+  ps.pauseUntil = 0;
+  ps.pauseReason = null;
+
+  // 3) Else if past cooldown → scan + (if triggered) run AI
   if (Date.now() < ps.cooldownUntil) {
     ps.lastStatus = 'cooldown';
     return;
@@ -2351,11 +2671,24 @@ async function processPair(userId, sub, coin) {
   if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
   if (!trigger) return;
 
+  // 4) PRE-AI CONFLUENCE FILTER — cheap score check before firing the expensive AI
+  const pre = await preAiConfluenceScore(coin, sub.tf, broker, candles, trigger).catch(() => null);
+  ps.lastPreScore = pre ? pre.score : null;
+  if (pre && pre.score < PRE_AI_THRESHOLD) {
+    console.log('[prescore]', coin, 'score=' + pre.score, '<', PRE_AI_THRESHOLD, '— skipping AI [' + pre.reasons + ']');
+    // Apply a SHORT cooldown for low-score triggers so we don't re-evaluate every 30s
+    // on the same candle, but don't burn the full cooldown — let it retry next candle.
+    ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+    ps.lastTrigger = trigger;
+    ps.lastStatus = 'low-score';
+    return;
+  }
+
   // Apply per-pair cooldown — extended automatically during 22:00-08:00 UTC dead zone
   ps.cooldownUntil = Date.now() + effectiveCooldownMs(sub);
   ps.lastTrigger = trigger;
 
-  // Run full AI analysis for this pair
+  // 5) Run full AI analysis for this pair
   let aiSignal = null;
   try {
     aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker);

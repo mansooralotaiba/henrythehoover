@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Performance</title>
+<style>
+  :root{
+    --bg:#08090d;--bg2:#12141b;--bg3:#1a1d28;--fg:#e8eaf0;--mu:#9aa0a6;
+    --b1:rgba(255,255,255,0.06);--b2:rgba(255,255,255,0.12);
+    --cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830;--pu:#9966ff;
+    --mn:'Courier New',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--mn);font-size:12px;line-height:1.6;padding:16px;min-height:100vh}
+  header{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--b1);padding-bottom:14px;margin-bottom:18px;flex-wrap:wrap}
+  h1{font-size:14px;letter-spacing:.18em;color:var(--cy);font-weight:bold}
+  a.back{padding:5px 14px;background:transparent;border:1px solid var(--b2);color:var(--mu);text-decoration:none;border-radius:3px;font-size:10px;letter-spacing:.1em}
+  a.back:hover{color:var(--cy);border-color:var(--cy)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:18px}
+  .card{background:var(--bg2);border:1px solid var(--b1);border-radius:6px;padding:14px}
+  .card h2{font-size:10px;color:var(--mu);letter-spacing:.15em;margin-bottom:10px;font-weight:normal}
+  .stat-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--b1);font-size:11px}
+  .stat-row:last-child{border-bottom:none}
+  .stat-label{color:var(--mu)}
+  .stat-value{font-weight:bold}
+  .v-gr{color:var(--gr)}.v-re{color:var(--re)}.v-am{color:var(--am)}.v-cy{color:var(--cy)}.v-mu{color:var(--mu)}
+  .big-num{font-size:24px;font-weight:bold;letter-spacing:.04em}
+  .big-num-row{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .big-num-label{font-size:10px;color:var(--mu);letter-spacing:.1em}
+  table{width:100%;border-collapse:collapse;font-size:11px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--b1)}
+  th{font-size:9px;color:var(--mu);letter-spacing:.1em;font-weight:normal}
+  tr:hover{background:rgba(255,255,255,0.02)}
+  .bar-cell{position:relative}
+  .bar{position:absolute;left:0;top:0;bottom:0;background:rgba(0,229,160,0.08);z-index:0}
+  .bar.neg{background:rgba(255,68,102,0.08)}
+  .bar-cell .v{position:relative;z-index:1}
+  .chart-wrap{height:180px;padding:8px 4px;background:var(--bg3);border-radius:4px;margin-top:8px}
+  svg{width:100%;height:100%;overflow:visible;font-size:9px}
+  .empty{padding:30px 14px;text-align:center;color:var(--mu);font-size:11px;font-style:italic}
+  .grid-wide{grid-column:1/-1}
+  .pill{display:inline-block;padding:2px 7px;border:1px solid var(--b1);border-radius:2px;font-size:9px;color:var(--mu);letter-spacing:.05em;margin-right:4px}
+  .pill.tp{color:var(--gr);border-color:rgba(0,229,160,0.3);background:rgba(0,229,160,0.05)}
+  .pill.sl{color:var(--re);border-color:rgba(255,68,102,0.3);background:rgba(255,68,102,0.05)}
+  .pill.be{color:var(--am);border-color:rgba(255,184,48,0.3);background:rgba(255,184,48,0.05)}
+</style>
+</head>
+<body>
+<header>
+  <h1>HENRY · PERFORMANCE</h1>
+  <a href="/terminal" class="back">← BACK TO TERMINAL</a>
+  <span id="period" style="margin-left:auto;font-size:10px;color:var(--mu)">Loading…</span>
+</header>
+
+<div id="loader" class="empty">Loading dashboard…</div>
+<div id="dashboard" style="display:none">
+
+  <!-- OVERALL TOTALS -->
+  <div class="card grid-wide">
+    <h2>OVERALL</h2>
+    <div class="big-num-row">
+      <div><div class="big-num-label">TOTAL TRADES</div><div class="big-num" id="ov-total">—</div></div>
+      <div><div class="big-num-label">WIN RATE</div><div class="big-num" id="ov-wr">—</div></div>
+      <div><div class="big-num-label">NET R</div><div class="big-num" id="ov-r">—</div></div>
+      <div><div class="big-num-label">EXPECTANCY / TRADE</div><div class="big-num" id="ov-ex">—</div></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+      <span class="pill tp" id="ov-tp">TP: —</span>
+      <span class="pill sl" id="ov-sl">SL: —</span>
+      <span class="pill be" id="ov-be">BE: —</span>
+    </div>
+  </div>
+
+  <!-- CUMULATIVE R CHART -->
+  <div class="card grid-wide">
+    <h2>CUMULATIVE R OVER TIME</h2>
+    <div class="chart-wrap"><svg id="chart" preserveAspectRatio="none"></svg></div>
+  </div>
+
+  <div class="grid">
+
+    <!-- BY PAIR -->
+    <div class="card">
+      <h2>BY PAIR</h2>
+      <table id="t-pair"><thead><tr><th>Pair</th><th>Total</th><th>Win%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- BY TRIGGER -->
+    <div class="card">
+      <h2>BY TRIGGER TYPE</h2>
+      <table id="t-trigger"><thead><tr><th>Trigger</th><th>Total</th><th>Win%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- BY SESSION -->
+    <div class="card">
+      <h2>BY SESSION</h2>
+      <table id="t-session"><thead><tr><th>Session</th><th>Total</th><th>Win%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- BY BROKER -->
+    <div class="card">
+      <h2>BY BROKER</h2>
+      <table id="t-broker"><thead><tr><th>Broker</th><th>Total</th><th>Win%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+
+  </div>
+
+  <!-- BY HOUR (UTC) -->
+  <div class="card grid-wide">
+    <h2>BY HOUR OF DAY (UTC)</h2>
+    <div class="chart-wrap"><svg id="hour-chart" preserveAspectRatio="none"></svg></div>
+  </div>
+
+  <div class="grid">
+    <!-- BEST 10 -->
+    <div class="card">
+      <h2>BEST 10 TRADES</h2>
+      <table id="t-best"><thead><tr><th>Pair</th><th>Dir</th><th>R</th><th>When</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- WORST 10 -->
+    <div class="card">
+      <h2>WORST 10 TRADES</h2>
+      <table id="t-worst"><thead><tr><th>Pair</th><th>Dir</th><th>R</th><th>When</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function fmt(n){if(n==null)return '—';return (n>=0?'+':'')+n.toFixed(2)+'R';}
+function fmtR(n){if(n==null)return '—';return n.toFixed(2)+'R';}
+function shortDate(s){if(!s)return '—';try{var d=new Date(s);return d.toISOString().slice(5,16).replace('T',' ');}catch(e){return s;}}
+function rColor(n){return n>=0?'v-gr':'v-re';}
+function wrColor(p){return p>=60?'v-gr':p>=40?'v-am':'v-re';}
+
+function renderTable(elId,rows,keyFn,labelFn){
+  var el=document.querySelector('#'+elId+' tbody');
+  el.innerHTML='';
+  // Sort by total desc, then totalR desc
+  var entries=Object.entries(rows).sort(function(a,b){
+    if(b[1].total!==a[1].total)return b[1].total-a[1].total;
+    return b[1].totalR-a[1].totalR;
+  });
+  if(!entries.length){el.innerHTML='<tr><td colspan="4" class="v-mu" style="font-style:italic">No data</td></tr>';return;}
+  var maxR=Math.max.apply(null,entries.map(function(e){return Math.abs(e[1].totalR);}));
+  entries.forEach(function(e){
+    var k=labelFn?labelFn(e[0]):e[0];
+    var v=e[1];
+    var pct=maxR?Math.abs(v.totalR)/maxR*100:0;
+    var tr=document.createElement('tr');
+    tr.innerHTML=
+      '<td>'+k+'</td>'
+     +'<td class="v-mu">'+v.total+'</td>'
+     +'<td class="'+wrColor(v.winRate)+'">'+v.winRate+'%</td>'
+     +'<td class="bar-cell"><div class="bar '+(v.totalR<0?'neg':'')+'" style="width:'+pct+'%"></div><span class="v '+rColor(v.totalR)+'">'+fmt(v.totalR)+'</span></td>';
+    el.appendChild(tr);
+  });
+}
+
+function renderTradesTable(elId,trades){
+  var el=document.querySelector('#'+elId+' tbody');
+  el.innerHTML='';
+  if(!trades.length){el.innerHTML='<tr><td colspan="4" class="v-mu" style="font-style:italic">No trades yet</td></tr>';return;}
+  trades.forEach(function(t){
+    var r=parseFloat(t.outcome_rr)||0;
+    var tr=document.createElement('tr');
+    tr.innerHTML=
+      '<td>'+t.pair+'</td>'
+     +'<td class="'+(t.direction==='LONG'?'v-gr':'v-re')+'">'+(t.direction||'—')+'</td>'
+     +'<td class="'+rColor(r)+'">'+fmt(r)+'</td>'
+     +'<td class="v-mu">'+shortDate(t.outcome_at||t.created_at)+'</td>';
+    el.appendChild(tr);
+  });
+}
+
+function drawCumChart(cumRR){
+  var svg=document.getElementById('chart');
+  svg.innerHTML='';
+  if(!cumRR||!cumRR.length){svg.innerHTML='<text x="50%" y="50%" fill="#5a5f7a" text-anchor="middle">No data yet</text>';return;}
+  var rect=svg.getBoundingClientRect();
+  var W=rect.width||800,H=rect.height||180;
+  var PL=44,PR=8,PT=12,PB=22,cW=W-PL-PR,cH=H-PT-PB;
+  var maxR=Math.max.apply(null,cumRR.map(function(p){return p.cumR;}));
+  var minR=Math.min.apply(null,cumRR.map(function(p){return p.cumR;}));
+  var rng=(maxR-minR)||1;
+  function x(i){return PL+i/(cumRR.length-1||1)*cW;}
+  function y(v){return PT+cH-(v-minR)/rng*cH;}
+  // Zero line
+  if(minR<0&&maxR>0){
+    var zy=y(0);
+    svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+zy+'" y2="'+zy+'" stroke="rgba(255,255,255,0.08)" stroke-dasharray="2,3"/>';
+  }
+  // Y axis labels
+  for(var t=0;t<=4;t++){
+    var v=minR+rng*(t/4);
+    var py=y(v);
+    svg.innerHTML+='<text x="'+(PL-6)+'" y="'+(py+3)+'" fill="#5a5f7a" text-anchor="end">'+v.toFixed(1)+'R</text>';
+    svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+py+'" y2="'+py+'" stroke="rgba(255,255,255,0.04)"/>';
+  }
+  // Path
+  var d=cumRR.map(function(p,i){return (i===0?'M':'L')+x(i)+','+y(p.cumR);}).join(' ');
+  svg.innerHTML+='<path d="'+d+'" stroke="#00d4ff" stroke-width="1.5" fill="none"/>';
+  // Fill underneath last point line
+  var fillD=d+' L'+x(cumRR.length-1)+','+(PT+cH)+' L'+x(0)+','+(PT+cH)+' Z';
+  svg.innerHTML='<path d="'+fillD+'" fill="rgba(0,212,255,0.06)"/>'+svg.innerHTML;
+  // End marker
+  var lastP=cumRR[cumRR.length-1];
+  svg.innerHTML+='<circle cx="'+x(cumRR.length-1)+'" cy="'+y(lastP.cumR)+'" r="3" fill="#00d4ff"/>';
+  svg.innerHTML+='<text x="'+(x(cumRR.length-1)-6)+'" y="'+(y(lastP.cumR)-6)+'" fill="#00d4ff" text-anchor="end">'+lastP.cumR.toFixed(2)+'R</text>';
+}
+
+function drawHourChart(byHour){
+  var svg=document.getElementById('hour-chart');
+  svg.innerHTML='';
+  var rect=svg.getBoundingClientRect();
+  var W=rect.width||800,H=rect.height||180;
+  var PL=44,PR=8,PT=12,PB=24,cW=W-PL-PR,cH=H-PT-PB;
+  var hours=Object.keys(byHour).sort();
+  var totalRs=hours.map(function(h){return byHour[h].totalR||0;});
+  var maxR=Math.max.apply(null,totalRs.concat([0.5]));
+  var minR=Math.min.apply(null,totalRs.concat([0]));
+  var rng=(maxR-minR)||1;
+  var bw=cW/hours.length*0.8;
+  function bx(i){return PL+i/hours.length*cW+(cW/hours.length-bw)/2;}
+  function by(v){return PT+cH-(v-minR)/rng*cH;}
+  var zy=by(0);
+  svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+zy+'" y2="'+zy+'" stroke="rgba(255,255,255,0.1)"/>';
+  hours.forEach(function(h,i){
+    var v=byHour[h].totalR||0;
+    var total=byHour[h].total||0;
+    var color=v>=0?'rgba(0,229,160,0.7)':'rgba(255,68,102,0.7)';
+    var top=Math.min(zy,by(v));
+    var ht=Math.abs(by(v)-zy);
+    if(total){
+      svg.innerHTML+='<rect x="'+bx(i)+'" y="'+top+'" width="'+bw+'" height="'+ht+'" fill="'+color+'"><title>'+h+':00 — '+total+' trades, '+v.toFixed(2)+'R</title></rect>';
+    }
+    if(i%3===0)svg.innerHTML+='<text x="'+(bx(i)+bw/2)+'" y="'+(PT+cH+14)+'" fill="#5a5f7a" text-anchor="middle">'+h+'</text>';
+  });
+  svg.innerHTML+='<text x="'+(PL-6)+'" y="'+(PT+10)+'" fill="#5a5f7a" text-anchor="end">'+maxR.toFixed(1)+'R</text>';
+  if(minR<0)svg.innerHTML+='<text x="'+(PL-6)+'" y="'+(PT+cH-2)+'" fill="#5a5f7a" text-anchor="end">'+minR.toFixed(1)+'R</text>';
+}
+
+function load(){
+  fetch('/api/performance/dashboard',{credentials:'same-origin'})
+    .then(function(r){
+      if(r.status===401||r.status===403){window.location.href='/login';return null;}
+      return r.json();
+    })
+    .then(function(d){
+      if(!d)return;
+      document.getElementById('loader').style.display='none';
+      document.getElementById('dashboard').style.display='block';
+      var t=d.total||{};
+      document.getElementById('ov-total').textContent=t.total||0;
+      var wrEl=document.getElementById('ov-wr');
+      wrEl.textContent=(t.winRate||0)+'%';
+      wrEl.className='big-num '+wrColor(t.winRate||0);
+      var rEl=document.getElementById('ov-r');
+      rEl.textContent=fmt(t.totalR||0);
+      rEl.className='big-num '+rColor(t.totalR||0);
+      var exEl=document.getElementById('ov-ex');
+      exEl.textContent=fmt(t.expectancy||0);
+      exEl.className='big-num '+rColor(t.expectancy||0);
+      document.getElementById('ov-tp').textContent='TP: '+(t.tp||0);
+      document.getElementById('ov-sl').textContent='SL: '+(t.sl||0);
+      document.getElementById('ov-be').textContent='BE: '+(t.be||0);
+      document.getElementById('period').textContent='Last '+(t.total||0)+' closed trades';
+
+      renderTable('t-pair',d.byPair||{},null,function(k){return k.replace('USDT','').replace('1000','');});
+      renderTable('t-trigger',d.byTrigger||{},null,function(k){return k.toUpperCase();});
+      renderTable('t-session',d.bySession||{},null);
+      renderTable('t-broker',d.byBroker||{},null,function(k){return k.toUpperCase();});
+
+      renderTradesTable('t-best',d.best10||[]);
+      renderTradesTable('t-worst',d.worst10||[]);
+
+      drawCumChart(d.cumRR||[]);
+      drawHourChart(d.byHour||{});
+    })
+    .catch(function(e){
+      document.getElementById('loader').textContent='Error loading dashboard: '+e.message;
+    });
+}
+
+load();
+</script>
+</body>
+</html>
