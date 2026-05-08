@@ -1873,6 +1873,58 @@ async function buildCrossBrokerContextServer(coin, tf, primaryBroker) {
   return '\n' + lines.join('\n');
 }
 
+// ── DXY / Gold macro context — used INSTEAD of BTC correlation when scanning gold ──
+// Gold's primary macro driver is the dollar (inverse correlation); BTC is irrelevant.
+let _dxyCache = { ts: 0, data: null };
+
+async function fetchDXYContextServer() {
+  // 5-min cache so multiple gold scans don't hammer Polygon
+  if (Date.now() - _dxyCache.ts < 5 * 60 * 1000 && _dxyCache.data) return _dxyCache.data;
+  try {
+    const tickers = ['C:USDEUR', 'C:USDJPY', 'C:USDGBP', 'C:USDCAD', 'C:USDSEK', 'C:USDCHF', 'C:XAUUSD'].join(',');
+    const data = await polyFetch('/v2/snapshot/locale/global/markets/forex/tickers', { tickers });
+    const today = {}, prev = {};
+    for (const t of (data.tickers || [])) {
+      const code = (t.ticker || '').replace('C:USD', '').replace('C:', '');
+      const cur = t.lastQuote?.a || t.day?.c || t.prevDay?.c;
+      const pre = t.prevDay?.c;
+      if (cur) today[code] = cur;
+      if (pre) prev[code] = pre;
+    }
+    const dxy = calcDxy(today);
+    const dxyPrev = calcDxy(prev);
+    const dxyChange = dxy && dxyPrev ? ((dxy - dxyPrev) / dxyPrev) * 100 : 0;
+    const xau = today['XAUUSD'] || null;
+    const xauPrev = prev['XAUUSD'] || null;
+    const xauChange = xau && xauPrev ? ((xau - xauPrev) / xauPrev) * 100 : 0;
+    _dxyCache = { ts: Date.now(), data: { dxy, dxyChange, xau, xauChange } };
+    return _dxyCache.data;
+  } catch (e) {
+    console.error('[dxy context]', e.message);
+    return null;
+  }
+}
+
+function buildDXYContextString(d) {
+  if (!d || !d.dxy) return '';
+  const lines = ['DXY / GOLD MACRO (primary correlation for metals — REPLACES BTC for gold):'];
+  lines.push(`DXY Index: ${d.dxy.toFixed(3)} (${d.dxyChange >= 0 ? '+' : ''}${d.dxyChange.toFixed(2)}% today)`);
+  if (d.xau) lines.push(`XAU/USD: $${d.xau.toFixed(2)} (${d.xauChange >= 0 ? '+' : ''}${d.xauChange.toFixed(2)}% today)`);
+  // Correlation interpretation
+  if (d.dxyChange !== 0 && d.xauChange !== 0) {
+    if (d.dxyChange < 0 && d.xauChange > 0) {
+      lines.push('Correlation bias: GOLD BULLISH — DXY weakness supports gold longs. Favour LONG setups on gold.');
+    } else if (d.dxyChange > 0 && d.xauChange < 0) {
+      lines.push('Correlation bias: GOLD BEARISH — DXY strength is a headwind for gold. Favour SHORT or NO TRADE on gold.');
+    } else if (d.dxyChange > 0 && d.xauChange > 0) {
+      lines.push('Correlation bias: GOLD VERY BULLISH — gold rising DESPITE dollar strength = strong safe-haven demand. High conviction LONG bias.');
+    } else if (d.dxyChange < 0 && d.xauChange < 0) {
+      lines.push('Correlation bias: GOLD WEAK — gold NOT following DXY weakness = lack of conviction. Reduce position size or NO TRADE.');
+    }
+  }
+  return '\n' + lines.join('\n');
+}
+
 async function fetchFundingRateServer(coin) {
   // Binance gives funding for almost every USDT-perp; use it regardless of broker.
   try {
@@ -2020,7 +2072,7 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     'You have access to these data sources — REFERENCE THEM in your reasoning field:',
     '1. Trigger detection (BOS/sweep) — what fired the scan',
     '2. Multi-timeframe (1H, 4H) — HTF bias and structure',
-    '3. BTC correlation — risk-on vs risk-off backdrop',
+    '3. Macro correlation — BTC for crypto pairs, DXY for gold/metals (gold has INVERSE correlation with DXY — DXY up = gold down). Use whichever is in the context block.',
     '4. Funding rate — positioning, fade extremes',
     '5. Open interest — directional conviction',
     '6. Liquidity heatmap — swing levels, equal highs/lows, sweep targets',
@@ -2127,25 +2179,30 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   const broker = brokerOverride || brokerForPair(coin, sub.broker);
   const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
 
-  // BTC correlation fetch needs a broker that actually has BTC. If we're scanning
-  // GOLD on 'massive' (Polygon), Polygon doesn't list BTC — fall back to Binance
-  // for the correlation fetch so the AI still gets risk-on/risk-off context.
+  // Macro reference depends on the asset class:
+  //   • Gold (XAUUSD, GOLD) → DXY (inverse correlation, the right macro driver)
+  //   • Crypto (BTC, ETH, etc.) → BTC correlation (risk-on/risk-off backdrop)
+  // Gold's primary correlation is the dollar, NOT bitcoin — so we skip BTC for it.
+  const isGoldPair = coin === 'GOLD' || coin === 'XAUUSD';
   const btcBroker = (broker === 'massive') ? 'binance' : broker;
 
   // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
   const [
     mtfH1, mtfH4, btcCandles, funding, oi,
-    trades, newsCtx, calCtx, crossBrokerCtx,
+    trades, newsCtx, calCtx, crossBrokerCtx, dxyData,
   ] = await Promise.all([
     fetchCandlesServer(coin, '1h', 50, broker).catch(() => []),
     fetchCandlesServer(coin, '4h', 30, broker).catch(() => []),
-    coin !== 'BTCUSDT' ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
+    // BTC correlation only for non-gold + non-BTC pairs
+    (!isGoldPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
     fetchFundingRateServer(coin).catch(() => null),
     fetchOpenInterestServer(coin).catch(() => null),
     fetchTradesServer(coin, broker).catch(() => []),
     fetchNewsContext().catch(() => ''),
     fetchCalendarContext().catch(() => ''),
     buildCrossBrokerContextServer(coin, tf, broker).catch(() => ''),
+    // DXY context for gold pairs only — replaces BTC correlation
+    isGoldPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
   ]);
 
   // Derived contexts from data we already fetched (synchronous, no extra fetches)
@@ -2154,8 +2211,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   const cvdCtx       = buildCVDContextServer(trades);
 
   // Combine everything into one context block
+  // For gold: DXY context replaces the BTC correlation block (which is empty for gold anyway)
   const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger });
-  const contextStr = [baseCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
+  const dxyCtx = isGoldPair ? buildDXYContextString(dxyData) : '';
+  const contextStr = [baseCtx, dxyCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
     .filter(s => s && s.length).join('\n');
 
   const systemPrompt = buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose);
