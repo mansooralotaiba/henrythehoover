@@ -918,9 +918,11 @@ function renderPairMonitor(data){
     var badge=document.createElement('span');
     badge.style.cssText='font-size:9px;padding:1px 6px;border-radius:2px;letter-spacing:.05em';
     var badgeColor='var(--mu)',badgeBg='rgba(255,255,255,0.04)',badgeBorder='var(--b1)',badgeText='IDLE';
+    var isVeto=p.status&&p.status.indexOf('veto:')===0;
     if(p.hasSignal&&p.entryAlerted){badgeColor='var(--gr)';badgeBg='rgba(0,229,160,0.08)';badgeBorder='rgba(0,229,160,0.3)';badgeText='IN TRADE';}
     else if(p.hasSignal){badgeColor='var(--am)';badgeBg='rgba(255,184,48,0.08)';badgeBorder='rgba(255,184,48,0.3)';badgeText='WAITING';}
     else if(p.pauseRemaining>0){badgeColor='var(--re)';badgeBg='rgba(255,68,102,0.08)';badgeBorder='rgba(255,68,102,0.3)';badgeText='PAUSED '+Math.ceil(p.pauseRemaining/60000)+'min';}
+    else if(isVeto){badgeColor='var(--re)';badgeBg='rgba(255,68,102,0.08)';badgeBorder='rgba(255,68,102,0.3)';badgeText='VETO '+p.status.slice(5).toUpperCase();}
     else if(p.cooldownRemaining>0){badgeColor='var(--mu)';badgeBg='rgba(255,255,255,0.04)';badgeBorder='var(--b1)';badgeText='COOLDOWN '+Math.ceil(p.cooldownRemaining/1000)+'s';}
     else{badgeColor='var(--cy)';badgeBg='rgba(0,212,255,0.06)';badgeBorder='rgba(0,212,255,0.25)';badgeText='SCANNING';}
     badge.style.color=badgeColor;badge.style.background=badgeBg;badge.style.border='1px solid '+badgeBorder;
@@ -983,6 +985,30 @@ function renderPairMonitor(data){
       pause.style.cssText='color:var(--re);font-size:9px;margin-top:2px;font-weight:bold';
       pause.textContent='⛔ '+p.pauseReason;
       box.appendChild(pause);
+    }
+
+    // Hard-veto reason (ADX, volume, divergence, funding, portfolio heat)
+    if(p.lastVetoReason&&!p.hasSignal){
+      var veto=document.createElement('div');
+      veto.style.cssText='color:var(--re);font-size:9px;margin-top:2px;font-style:italic';
+      veto.textContent='⊘ '+p.lastVetoReason.slice(0,70);
+      box.appendChild(veto);
+    }
+
+    // Indicator readouts (when scanning)
+    if(p.lastIndicators&&!p.hasSignal&&!p.pauseRemaining){
+      var ind=p.lastIndicators;
+      var parts=[];
+      if(ind.adx!=null)parts.push('ADX:'+ind.adx);
+      if(ind.atr14!=null)parts.push('ATR:'+ind.atr14);
+      if(ind.volRatio!=null)parts.push('Vol:'+ind.volRatio+'x');
+      if(ind.divergence)parts.push('DIV:'+ind.divergence.slice(0,4));
+      if(parts.length){
+        var indEl=document.createElement('div');
+        indEl.style.cssText='color:var(--mu);font-size:9px;margin-top:2px;font-family:var(--mn)';
+        indEl.textContent=parts.join(' · ');
+        box.appendChild(indEl);
+      }
     }
 
     // Pair stats footer (last 500 trades)

@@ -1294,6 +1294,235 @@ app.get('/api/performance/dashboard', requireAuth, async (req, res) => {
 const scanSubscriptions = new Map(); // userId → { active, coin, tf, broker, isAdmin, ... }
 const SCAN_INTERVAL_MS = 30000;
 
+// ════════════════════════════════════════════════════════════════════════════
+// TECHNICAL INDICATORS — used by hard vetoes + AI context
+// ════════════════════════════════════════════════════════════════════════════
+
+// True Range Average — measures volatility. Used for stop placement.
+function computeATR(candles, period = 14) {
+  if (!candles || candles.length < period + 1) return null;
+  const trs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c)));
+  }
+  if (trs.length < period) return null;
+  // Wilder's smoothing
+  let atr = trs.slice(0, period).reduce((s, x) => s + x, 0) / period;
+  for (let i = period; i < trs.length; i++) {
+    atr = (atr * (period - 1) + trs[i]) / period;
+  }
+  return atr;
+}
+
+// Average Directional Index — trend strength (0-100). <20 = chop, >25 = trending.
+function computeADX(candles, period = 14) {
+  if (!candles || candles.length < period * 2 + 1) return null;
+  const tr = [], plusDM = [], minusDM = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    tr.push(Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c)));
+    const upMove = c.h - p.h;
+    const downMove = p.l - c.l;
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+  }
+  // Wilder's smoothing
+  function wilder(arr) {
+    if (arr.length < period) return null;
+    let val = arr.slice(0, period).reduce((s, x) => s + x, 0);
+    const out = [val];
+    for (let i = period; i < arr.length; i++) val = val - val / period + arr[i], out.push(val);
+    return out;
+  }
+  const trS = wilder(tr), pS = wilder(plusDM), mS = wilder(minusDM);
+  if (!trS || !pS || !mS) return null;
+  const dx = [];
+  for (let i = 0; i < trS.length; i++) {
+    if (trS[i] === 0) { dx.push(0); continue; }
+    const plusDI = (pS[i] / trS[i]) * 100;
+    const minusDI = (mS[i] / trS[i]) * 100;
+    const sum = plusDI + minusDI;
+    dx.push(sum === 0 ? 0 : (Math.abs(plusDI - minusDI) / sum) * 100);
+  }
+  if (dx.length < period) return null;
+  let adx = dx.slice(0, period).reduce((s, x) => s + x, 0) / period;
+  for (let i = period; i < dx.length; i++) adx = (adx * (period - 1) + dx[i]) / period;
+  return adx;
+}
+
+// Relative Strength Index — momentum. Used for divergence detection.
+function computeRSI(candles, period = 14, endIdx) {
+  if (!candles) return null;
+  const slice = endIdx != null ? candles.slice(0, endIdx + 1) : candles;
+  if (slice.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const ch = slice[i].c - slice[i - 1].c;
+    if (ch > 0) gains += ch; else losses -= ch;
+  }
+  let avgG = gains / period, avgL = losses / period;
+  for (let i = period + 1; i < slice.length; i++) {
+    const ch = slice[i].c - slice[i - 1].c;
+    if (ch > 0) {
+      avgG = (avgG * (period - 1) + ch) / period;
+      avgL = (avgL * (period - 1)) / period;
+    } else {
+      avgG = (avgG * (period - 1)) / period;
+      avgL = (avgL * (period - 1) - ch) / period;
+    }
+  }
+  if (avgL === 0) return 100;
+  const rs = avgG / avgL;
+  return 100 - 100 / (1 + rs);
+}
+
+// Detect bearish/bullish divergence on last `lookback` candles.
+//   • 'bearish' → price made higher high but RSI made lower high → BLOCK LONGS
+//   • 'bullish' → price made lower low  but RSI made higher low  → BLOCK SHORTS
+function detectDivergence(candles, lookback = 30) {
+  if (!candles || candles.length < lookback + 14) return null;
+  const startIdx = candles.length - lookback;
+  // For each candle in the window, compute RSI up-to-that-candle
+  const series = [];
+  for (let i = startIdx; i < candles.length; i++) {
+    const rsi = computeRSI(candles, 14, i);
+    series.push({ i, h: candles[i].h, l: candles[i].l, rsi });
+  }
+  // Find swing pivots (5-bar fractal)
+  function swings(arr, type) {
+    const out = [];
+    for (let i = 2; i < arr.length - 2; i++) {
+      const v = type === 'high' ? arr[i].h : arr[i].l;
+      const cmp = type === 'high'
+        ? (a, b) => a > b
+        : (a, b) => a < b;
+      if (cmp(v, arr[i - 1][type === 'high' ? 'h' : 'l']) && cmp(v, arr[i - 2][type === 'high' ? 'h' : 'l'])
+          && cmp(v, arr[i + 1][type === 'high' ? 'h' : 'l']) && cmp(v, arr[i + 2][type === 'high' ? 'h' : 'l'])) {
+        out.push(arr[i]);
+      }
+    }
+    return out;
+  }
+  const highs = swings(series, 'high').slice(-2);
+  const lows  = swings(series, 'low').slice(-2);
+  if (highs.length === 2) {
+    const [a, b] = highs;
+    if (b.h > a.h && b.rsi != null && a.rsi != null && b.rsi < a.rsi) return 'bearish';
+  }
+  if (lows.length === 2) {
+    const [a, b] = lows;
+    if (b.l < a.l && b.rsi != null && a.rsi != null && b.rsi > a.rsi) return 'bullish';
+  }
+  return null;
+}
+
+// Asset-class ATR multiplier for stop placement (per user's table).
+function atrMultiplierForAsset(coin) {
+  const u = coin.toUpperCase();
+  if (/^(GOLD|XAUUSD)/.test(u))    return { multiplier: 2.0, klass: 'gold spot',   tf: '1d' };
+  if (/^(BTC|ETH)/.test(u))        return { multiplier: 2.0, klass: 'major',       tf: '4h' };
+  if (/^(SOL|AVAX|BNB|LINK|ADA|NEAR|INJ|XAG)/.test(u)) return { multiplier: 2.5, klass: 'mid-cap',     tf: '4h' };
+  if (/^(PEPE|DOGE|SUI|ARB|OP|1000PEPE|XAU(T)?)/.test(u)) return { multiplier: 3.0, klass: 'low-cap',     tf: '4h' };
+  if (/^(XTI|XBR)/.test(u))        return { multiplier: 2.5, klass: 'oil',         tf: '1d' };
+  return { multiplier: 2.5, klass: 'default', tf: '4h' };
+}
+
+// Trigger direction inference from detector output (e.g. "BOS up" → bull)
+function inferTriggerDirection(trigger) {
+  if (!trigger) return null;
+  if (trigger.type === 'bos')   return /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'sweep') return /high/i.test(trigger.desc) ? 'bear' : 'bull';
+  return null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// CORRELATION CLUSTERS — portfolio heat caps
+// ════════════════════════════════════════════════════════════════════════════
+function getClusterFor(coin) {
+  const u = coin.toUpperCase();
+  if (/^BTC/.test(u))                                            return 'btc';
+  if (/^(ETH|BNB|SOL|XRP)/.test(u))                              return 'largeCap';
+  if (/^(AAVE|LINK|UNI)/.test(u))                                return 'defi';
+  if (/^(DOGE|PEPE|1000PEPE)/.test(u))                           return 'meme';
+  if (/^(AVAX|NEAR|SUI|ARB|OP|INJ|ADA|DOT)/.test(u))             return 'layer1';
+  if (/^(GOLD|XAU|XAG|XTI|XBR)/.test(u))                         return 'commodities';
+  return 'other';
+}
+
+// Returns { active: [{coin, cluster}], byCluster: {cluster: [coins]}, total }
+function getActivePortfolio(sub) {
+  const active = [], byCluster = {};
+  if (!sub.pairs) return { active, byCluster, total: 0 };
+  for (const [coin, ps] of Object.entries(sub.pairs)) {
+    if (!ps.pendSignal || ps.pendSignal.direction === 'NO TRADE') continue;
+    // Treat both "waiting entry" and "in trade" as portfolio heat — both have risk
+    const cluster = getClusterFor(coin);
+    active.push({ coin, cluster });
+    if (!byCluster[cluster]) byCluster[cluster] = [];
+    byCluster[cluster].push(coin);
+  }
+  return { active, byCluster, total: active.length };
+}
+
+// Portfolio heat veto rules (correlation-adjusted):
+//   • Max 5 concurrent positions total
+//   • Max 2 per cluster (BTC=1, since BTC moves the whole crypto market)
+//   • Returns { blocked, reason } or { blocked: false }
+function checkPortfolioHeat(sub, coin) {
+  const { active, byCluster, total } = getActivePortfolio(sub);
+  const MAX_TOTAL = 5;
+  if (total >= MAX_TOTAL) {
+    return { blocked: true, code: 'heat-total', reason: `Portfolio heat cap: ${total}/${MAX_TOTAL} positions active across ${Object.keys(byCluster).length} clusters` };
+  }
+  const target = getClusterFor(coin);
+  const targetMax = target === 'btc' ? 1 : 2;
+  const inCluster = (byCluster[target] || []).length;
+  if (inCluster >= targetMax) {
+    return { blocked: true, code: 'heat-cluster', reason: `Cluster ${target} already at cap (${inCluster}/${targetMax}: ${(byCluster[target] || []).join(', ')})` };
+  }
+  return { blocked: false };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// HARD VETOES — these BLOCK the trigger before any AI call
+// ════════════════════════════════════════════════════════════════════════════
+function runHardVetoes(opts) {
+  const { coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding } = opts;
+
+  // Portfolio heat (concurrency caps)
+  const heat = checkPortfolioHeat(sub, coin);
+  if (heat.blocked) return heat;
+
+  // ADX < 20 → chop, no trend, signals fail in ranging markets
+  if (adx != null && adx < 20) {
+    return { blocked: true, code: 'adx', reason: `ADX=${adx.toFixed(1)} < 20 (choppy market — no trend)` };
+  }
+
+  // Volume confirmation — trigger candle must show 2× avg volume
+  if (volRatio != null && volRatio < 2.0) {
+    return { blocked: true, code: 'volume', reason: `Trigger volume only ${volRatio.toFixed(2)}× avg (need ≥2× to confirm)` };
+  }
+
+  // Divergence opposing trigger direction
+  if (divergence === 'bearish' && trigDir === 'bull') {
+    return { blocked: true, code: 'divergence', reason: 'Bearish RSI divergence (price HH, RSI LH) — blocks long-side trigger' };
+  }
+  if (divergence === 'bullish' && trigDir === 'bear') {
+    return { blocked: true, code: 'divergence', reason: 'Bullish RSI divergence (price LL, RSI HL) — blocks short-side trigger' };
+  }
+
+  // Extreme funding + trigger trades WITH crowd → block (crowded position)
+  if (funding != null && Math.abs(funding) > 0.01 && trigDir) {
+    const crowdDir = funding > 0 ? 'bull' : 'bear';
+    if (trigDir === crowdDir) {
+      return { blocked: true, code: 'funding', reason: `Funding ${(funding * 100).toFixed(3)}% extreme + trigger aligns with crowded ${crowdDir} side` };
+    }
+  }
+
+  return { blocked: false };
+}
+
 // ── Pre-AI confluence pre-filter ───────────────────────────────────────────
 // Cheap (≤1 extra fetch: 1H candles + funding rate cache) score from data we
 // either already have or can grab quickly. If score < threshold, skip the
@@ -1378,7 +1607,7 @@ async function preAiConfluenceScore(coin, tf, broker, baseCandles, trigger) {
   return { score, reasons: reasons.join(' ') };
 }
 
-const PRE_AI_THRESHOLD = 45; // out of ~85 max — empirically tuned for ~40% rejection
+const PRE_AI_THRESHOLD = 65; // out of ~85 max — tightened from 45 to filter ~30-40% more noise
 
 // ── Risk circuit breaker ───────────────────────────────────────────────────
 // Tracks recent SL outcomes per user → pauses scanning when losing streaks form.
@@ -1632,6 +1861,13 @@ app.get('/api/scan/all-pairs', requireAuth, async (req, res) => {
       lastPrice:    ps && ps.lastPrice  != null ? ps.lastPrice : null,
       lastTrigger:  ps && ps.lastTrigger ? ps.lastTrigger : null,
       lastPreScore: ps ? (ps.lastPreScore != null ? ps.lastPreScore : null) : null,
+      lastVetoReason: ps ? (ps.lastVetoReason || null) : null,
+      lastIndicators: ps && ps.lastIndicators ? {
+        adx: ps.lastIndicators.adx != null ? +ps.lastIndicators.adx.toFixed(1) : null,
+        atr14: ps.lastIndicators.atr14 != null ? +ps.lastIndicators.atr14.toFixed(4) : null,
+        volRatio: ps.lastIndicators.volRatio != null ? +ps.lastIndicators.volRatio.toFixed(2) : null,
+        divergence: ps.lastIndicators.divergence || null,
+      } : null,
       cooldownUntil: ps ? ps.cooldownUntil : 0,
       cooldownRemaining: ps ? Math.max(0, ps.cooldownUntil - Date.now()) : 0,
       pauseUntil: ps && ps.pauseUntil ? ps.pauseUntil : 0,
@@ -2443,9 +2679,33 @@ function validateAndFixBEServer(sig) {
   return sig;
 }
 
-function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger }) {
+function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators }) {
   const lines = [];
   lines.push(`AUTO TRIGGER: ${trigger.type.toUpperCase()} — ${trigger.desc}`);
+
+  // ── ATR-based stop guidance (asset-class specific) ──
+  if (indicators && indicators.atr14 != null) {
+    const am = atrMultiplierForAsset(coin);
+    const atrStopDist = indicators.atr14 * am.multiplier;
+    const buffer = indicators.atr14 * 1.5;
+    lines.push(
+      `\nVOLATILITY (ATR-based stops — REPLACES fixed/round-number stops):` +
+      `\n  ATR(14) on ${tf} = ${indicators.atr14.toFixed(4)}` +
+      `\n  Asset class: ${am.klass} → multiplier ${am.multiplier}× ATR = ${atrStopDist.toFixed(4)} stop distance from entry` +
+      `\n  STOP PLACEMENT RULE: place SL BEYOND structure (swing low for LONG, swing high for SHORT) + ${buffer.toFixed(4)} (1.5×ATR) buffer.` +
+      `\n  NEVER place SL on a round number — algos hunt those. Offset by at least 0.5×ATR.`
+    );
+  }
+  if (indicators && indicators.adx != null) {
+    const trendQ = indicators.adx >= 25 ? 'strong trend' : indicators.adx >= 20 ? 'mild trend' : 'CHOP (avoid)';
+    lines.push(`TREND STRENGTH: ADX(14) = ${indicators.adx.toFixed(1)} — ${trendQ}`);
+  }
+  if (indicators && indicators.volRatio != null) {
+    lines.push(`TRIGGER VOLUME: ${indicators.volRatio.toFixed(2)}× the 20-bar average — ${indicators.volRatio >= 2 ? 'CONFIRMED' : 'weak'}`);
+  }
+  if (indicators && indicators.divergence) {
+    lines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH)' : 'BULLISH (price LL, RSI HL)'}`);
+  }
 
   if (baseCandles && baseCandles.length >= 5) {
     const recent = baseCandles.slice(-15);
@@ -2455,7 +2715,7 @@ function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCand
     const high = Math.max(...highs), low = Math.min(...lows);
     const lastClose = closes[closes.length - 1];
     const dir = closes[0] < lastClose ? 'rising' : 'falling';
-    lines.push(`\n${tf} STRUCTURE (last 15 candles): range ${low.toFixed(4)} — ${high.toFixed(4)}, last close ${lastClose}, recent ${dir}.`);
+    lines.push(`\n${tf} STRUCTURE (last 15 candles, trigger TF): range ${low.toFixed(4)} — ${high.toFixed(4)}, last close ${lastClose}, recent ${dir}.`);
   }
 
   if (mtfH1 && mtfH1.length >= 10) {
@@ -2538,6 +2798,14 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     `SHORT: entry > current_price (or at current for market), SL ABOVE entry, TP BELOW entry. Example: entry=${exSE}, sl=${exSS}, tp=${exST}`,
     'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5.',
     'STRICT RR FLOOR: if you cannot find a setup where RR >= 1.5, return direction "NO TRADE" — do not stretch TP or tighten SL artificially. A trade that backtests to 1.4R or lower will be auto-downgraded to NO TRADE on the server side anyway.',
+    '',
+    'STOP-LOSS PLACEMENT — ATR-BASED (CRITICAL):',
+    '• Use the ATR value provided in the context block. The asset-class multiplier is also given.',
+    '• Place SL BEYOND the structural invalidation level (swing low for LONG, swing high for SHORT) PLUS a 1.5×ATR buffer.',
+    '• For example, if structure low = 80,100 and ATR = 50, LONG SL should be near 80,100 - (1.5 × 50) = 80,025 — NOT at 80,100 itself.',
+    '• Distance from entry to SL should approximate the asset-class multiplier × ATR (e.g. 2.0×ATR for BTC/ETH, 2.5×ATR for SOL/AVAX/oil, 3.0×ATR for PEPE/DOGE).',
+    '• NEVER place SL exactly on a round number (80,000, 2,300, 100, etc). 80% of retail stops cluster there and get hunted by algos. Offset by at least 0.5×ATR.',
+    '• Tighter stops than 1.5×ATR will fail more often. Wider than 4×ATR will tank your RR.',
     '',
     'BE_NOTE RULES:',
     'be_note is the price at which the user moves SL to entry (breakeven).',
@@ -2667,7 +2935,18 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
 
   // Combine everything into one context block
   // For gold: DXY context replaces the BTC correlation block (which is empty for gold anyway)
-  const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger });
+  // Use cached indicators from processPair if available (computed for the hard vetoes)
+  const indicators = ps && ps.lastIndicators ? ps.lastIndicators : {
+    atr14: computeATR(baseCandles, 14),
+    adx: computeADX(baseCandles, 14),
+    volRatio: (() => {
+      const last = baseCandles[baseCandles.length - 1];
+      const avg = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
+      return avg > 0 ? (last.v || 0) / avg : null;
+    })(),
+    divergence: detectDivergence(baseCandles, 30),
+  };
+  const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators });
   const dxyCtx = isMetalOrOilPair ? buildDXYContextString(dxyData) : '';
   const contextStr = [baseCtx, dxyCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
     .filter(s => s && s.length).join('\n');
@@ -2818,13 +3097,35 @@ async function processPair(userId, sub, coin) {
   if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
   if (!trigger) return;
 
-  // 4) PRE-AI CONFLUENCE FILTER — cheap score check before firing the expensive AI
+  // 4) HARD VETOES — pre-compute indicators, run defensive filters before AI
+  const adx = computeADX(candles, 14);
+  const atr14 = computeATR(candles, 14);
+  const lastCandle = candles[candles.length - 1];
+  const avgVol20 = candles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
+  const volRatio = avgVol20 > 0 ? (lastCandle.v || 0) / avgVol20 : null;
+  const divergence = detectDivergence(candles, 30);
+  const trigDir = inferTriggerDirection(trigger);
+  const funding = await fetchFundingRateServer(coin).catch(() => null);
+
+  // Cache for AI prompt + later use
+  ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding };
+
+  const veto = runHardVetoes({ coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding });
+  if (veto.blocked) {
+    console.log('[veto]', coin, '[' + veto.code + ']', veto.reason);
+    ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+    ps.lastTrigger = trigger;
+    ps.lastStatus = 'veto:' + veto.code;
+    ps.lastVetoReason = veto.reason;
+    return;
+  }
+  ps.lastVetoReason = null;
+
+  // 5) PRE-AI CONFLUENCE FILTER — cheap score check before firing the expensive AI
   const pre = await preAiConfluenceScore(coin, sub.tf, broker, candles, trigger).catch(() => null);
   ps.lastPreScore = pre ? pre.score : null;
   if (pre && pre.score < PRE_AI_THRESHOLD) {
     console.log('[prescore]', coin, 'score=' + pre.score, '<', PRE_AI_THRESHOLD, '— skipping AI [' + pre.reasons + ']');
-    // Apply a SHORT cooldown for low-score triggers so we don't re-evaluate every 30s
-    // on the same candle, but don't burn the full cooldown — let it retry next candle.
     ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
     ps.lastTrigger = trigger;
     ps.lastStatus = 'low-score';
@@ -2835,7 +3136,7 @@ async function processPair(userId, sub, coin) {
   ps.cooldownUntil = Date.now() + effectiveCooldownMs(sub);
   ps.lastTrigger = trigger;
 
-  // 5) Run full AI analysis for this pair
+  // 6) Run full AI analysis for this pair (now with ATR + ADX + class context)
   let aiSignal = null;
   try {
     aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker);
