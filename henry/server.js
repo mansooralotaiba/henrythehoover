@@ -3939,15 +3939,17 @@ async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, bt
 
 // Walk forward through candles AFTER the signal candle to determine outcome.
 // Returns { outcome: 'TP'|'SL'|'BE'|'EXPIRED'|'OPEN', outcomeR, exitTs, candlesToOutcome, beReached }
-function simulateOutcome(signal, forwardCandles, tfMs) {
+function simulateOutcome(signal, forwardCandles, tfMs, opts = {}) {
   if (!signal || signal.direction === 'NO TRADE') return null;
+  const beStopEnabled = opts.beStopEnabled !== false;       // default ON (mirrors live)
+  const beTriggerPct = opts.beTriggerPct != null ? opts.beTriggerPct : 0.5; // 0.5 = halfway to TP
   const e = parseFloat(signal.entry);
   const sl = parseFloat(signal.sl);
   const tp = parseFloat(signal.tp);
   const isLong = signal.direction === 'LONG';
   const rr = parseFloat(signal.rr) || (isLong ? (tp - e) / (e - sl) : (e - tp) / (sl - e));
   const expiryCandles = parseInt(signal.expiry_candles, 10) || 4;
-  const bePrice = isLong ? e + (tp - e) * 0.5 : e - (e - tp) * 0.5;
+  const bePrice = isLong ? e + (tp - e) * beTriggerPct : e - (e - tp) * beTriggerPct;
 
   let entryHit = false;
   let entryIdx = -1;
@@ -3960,8 +3962,6 @@ function simulateOutcome(signal, forwardCandles, tfMs) {
       if (isLong ? c.l <= e : c.h >= e) {
         entryHit = true;
         entryIdx = i;
-        // Check rest of this candle for SL/TP after fill
-        // (assume fill happened at entry, then candle finished trading)
       } else {
         // Check expiry — only relevant before entry hit
         if (i + 1 >= expiryCandles) {
@@ -3978,19 +3978,18 @@ function simulateOutcome(signal, forwardCandles, tfMs) {
     }
 
     // Post-entry: check BE level then SL/TP
-    if (!beReached) {
+    if (beStopEnabled && !beReached) {
       if (isLong ? c.h >= bePrice : c.l <= bePrice) beReached = true;
     }
 
     const slHit = isLong ? c.l <= sl : c.h >= sl;
     const tpHit = isLong ? c.h >= tp : c.l <= tp;
-
-    // BE-stop: if beReached and price comes back to entry
-    const beStopHit = beReached && (isLong ? c.l <= e : c.h >= e);
+    // BE-stop only fires if the feature is enabled
+    const beStopHit = beStopEnabled && beReached && (isLong ? c.l <= e : c.h >= e);
 
     // Conservative when both SL and TP intersect: assume SL first
     if (slHit) {
-      const stoppedAtBE = beReached;
+      const stoppedAtBE = beStopEnabled && beReached;
       return {
         outcome: stoppedAtBE ? 'BE' : 'SL',
         outcomeR: stoppedAtBE ? 0 : -1,
@@ -4124,7 +4123,16 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     return res.status(403).json({ error: 'admin_only' });
   }
   try {
-    const { pair, broker, tf, days, preAiThreshold = 65, cooldownCandles = 1, skipAi = false, strategy } = req.body || {};
+    const {
+      pair, broker, tf, days,
+      preAiThreshold = 65,
+      cooldownCandles = 1,
+      skipAi = false,
+      strategy,
+      beStopEnabled = true,
+      beTriggerPct = 0.5,
+      directionFilter = 'both',  // 'both' | 'longs' | 'shorts'
+    } = req.body || {};
     const strategyMode = (strategy || STRATEGY_MODE).toLowerCase();
     const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
     const tfMs = TF_MS[tf];
@@ -4225,10 +4233,19 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
         signal = { direction: 'DRY_RUN', _dry: true };
       }
 
+      // ── Direction filter — drop signals in the unwanted direction ──
+      // Note: we still count the AI call (already made) but the trade gets tagged as filtered
+      // so the user can see how many were skipped without the filter.
+      let directionFiltered = false;
+      if (signal && (signal.direction === 'LONG' || signal.direction === 'SHORT')) {
+        if (directionFilter === 'longs' && signal.direction !== 'LONG')   directionFiltered = true;
+        if (directionFilter === 'shorts' && signal.direction !== 'SHORT') directionFiltered = true;
+      }
+
       const forward = candles.slice(i + 1, i + 1 + 100); // up to 100 candles forward for outcome
       let outcome = null;
-      if (!skipAi && signal && (signal.direction === 'LONG' || signal.direction === 'SHORT')) {
-        outcome = simulateOutcome(signal, forward, tfMs);
+      if (!directionFiltered && !skipAi && signal && (signal.direction === 'LONG' || signal.direction === 'SHORT')) {
+        outcome = simulateOutcome(signal, forward, tfMs, { beStopEnabled, beTriggerPct });
       }
       trades.push({
         idx: i,
@@ -4238,6 +4255,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
         preReasons: pre.reasons,
         signal: skipAi ? null : signal,
         outcome,
+        directionFiltered,
       });
     }
 
@@ -4276,8 +4294,10 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     const byDirection = byKey(t => t.signal?.direction || 'unknown');
 
     const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
+    const directionFilteredCount = trades.filter(t => t.directionFiltered).length;
     res.json({
-      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode },
+      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode, beStopEnabled, beTriggerPct, directionFilter },
+      directionFilteredCount,
       candlesProcessed: candles.length,
       triggers,
       triggersByType: triggerCounts,

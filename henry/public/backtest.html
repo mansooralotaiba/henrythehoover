@@ -127,6 +127,30 @@
         <option value="price-action">Price Action (BOS / Sweep / etc.)</option>
       </select>
     </div>
+    <div>
+      <label>DIRECTION FILTER</label>
+      <select id="directionFilter">
+        <option value="both" selected>Both Longs &amp; Shorts</option>
+        <option value="longs">Longs only</option>
+        <option value="shorts">Shorts only</option>
+      </select>
+    </div>
+    <div>
+      <label>BE-STOP SIM</label>
+      <select id="beStopEnabled">
+        <option value="true" selected>ON (mirror live)</option>
+        <option value="false">OFF (raw TP/SL only)</option>
+      </select>
+    </div>
+    <div>
+      <label>BE TRIGGER %</label>
+      <select id="beTriggerPct">
+        <option value="0.5" selected>50% to TP (default)</option>
+        <option value="0.6">60% to TP</option>
+        <option value="0.7">70% to TP (less BE-stops)</option>
+        <option value="0.8">80% to TP (very few BE-stops)</option>
+      </select>
+    </div>
   </div>
   <div class="form-row">
     <button id="estimateBtn" class="ghost">📊 ESTIMATE COST (FREE)</button>
@@ -238,6 +262,9 @@ function getConfig(){
     preAiThreshold: parseInt(document.getElementById('threshold').value, 10),
     cooldownCandles: parseInt(document.getElementById('cooldown').value, 10),
     strategy: document.getElementById('strategy').value,
+    directionFilter: document.getElementById('directionFilter').value,
+    beStopEnabled: document.getElementById('beStopEnabled').value === 'true',
+    beTriggerPct: parseFloat(document.getElementById('beTriggerPct').value),
   };
 }
 
@@ -346,6 +373,32 @@ function renderResults(d) {
   document.getElementById('r-funnel-veto').textContent = d.hardVetoed || 0;
   document.getElementById('r-funnel-pre').textContent = d.preAiRejected || 0;
   document.getElementById('r-funnel-pass').textContent = d.preAiPasses || 0;
+  // Show config summary
+  const cfg = d.config || {};
+  const cfgBits = [];
+  if (cfg.directionFilter && cfg.directionFilter !== 'both') {
+    const dropped = d.directionFilteredCount || 0;
+    cfgBits.push(`<span style="color:var(--am)">Direction filter: ${cfg.directionFilter} (${dropped} signals dropped)</span>`);
+  }
+  if (cfg.beStopEnabled === false) {
+    cfgBits.push('<span style="color:var(--cy)">BE-stop sim: OFF</span>');
+  } else if (cfg.beTriggerPct && cfg.beTriggerPct !== 0.5) {
+    cfgBits.push(`<span style="color:var(--cy)">BE trigger: ${Math.round(cfg.beTriggerPct * 100)}%</span>`);
+  }
+  if (cfgBits.length) {
+    const el = document.getElementById('r-trigger-types');
+    if (el && el.parentElement) {
+      // Inject a config-summary line above trigger-types
+      let summaryEl = document.getElementById('r-config-summary');
+      if (!summaryEl) {
+        summaryEl = document.createElement('div');
+        summaryEl.id = 'r-config-summary';
+        summaryEl.style.cssText = 'font-size:10px;margin-bottom:8px;line-height:1.6';
+        el.parentElement.insertBefore(summaryEl, el.parentElement.firstChild);
+      }
+      summaryEl.innerHTML = '<b style="color:var(--mu)">Active config:</b> ' + cfgBits.join('  ·  ');
+    }
+  }
   if (d.vetoBreakdown) {
     const vb = d.vetoBreakdown;
     const parts = [];
