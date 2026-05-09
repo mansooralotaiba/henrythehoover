@@ -21,7 +21,7 @@ const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').to
 // Anthropic model used everywhere (server-side AI + browser AI ANALYSE).
 // Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
 // Models from generation 4.6+ use the dateless format `claude-{name}-{major}-{minor}`.
-const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-7';
+const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-6';
 const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
   ? 'sandbox-api.paddle.com'
   : 'api.paddle.com';
