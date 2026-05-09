@@ -2243,7 +2243,7 @@ function _detectFVG(candles) {
 
 // 1. MSS + Displacement — refined BOS. Requires:
 //   • Close exceeds 10-bar range (break of structure)
-//   • Strong displacement: candle body >= 70% of range, in direction of break
+//   • Strong displacement: candle body >= 60% of range, in direction of break
 //   • Volume >= 1.5× the 10-bar avg (institutional confirmation)
 function _detectMSSDisplacement(candles) {
   if (candles.length < 12) return null;
@@ -2257,7 +2257,7 @@ function _detectMSSDisplacement(candles) {
   const bodyPct = body / range;
   const avgVol = recent.reduce((s, c) => s + (c.v || 0), 0) / 10;
   const volSpike = avgVol > 0 && (last.v || 0) > avgVol * 1.5;
-  if (!volSpike || bodyPct < 0.7) return null;
+  if (!volSpike || bodyPct < 0.6) return null;
 
   if (last.c > maxH && last.c > last.o) {
     return { type: 'mss_disp', desc: `Bullish MSS+displacement — close ${last.c.toFixed(4)} > prev high ${maxH.toFixed(4)} (body ${Math.round(bodyPct * 100)}%, vol ${(last.v / avgVol).toFixed(1)}x)` };
@@ -2303,7 +2303,7 @@ function _detectSweepDisplacement(candles) {
 }
 
 // 3. Order Block Mitigation — institutional pattern.
-//   • Find last opposite-color candle before strong displacement (3+ candles in trend dir, total move ≥ 2× OB range)
+//   • Find last opposite-color candle before strong displacement (3+ candles in trend dir, total move ≥ 1.5× OB range)
 //   • OB must NOT have been mitigated by intervening candles
 //   • Current candle must be retesting the OB's range
 function _detectOrderBlock(candles) {
@@ -2324,7 +2324,7 @@ function _detectOrderBlock(candles) {
     // Bullish OB: red candle followed by strong up move
     if (isRed) {
       const moveUp = Math.max(...next.map(c => c.h)) - ob.l;
-      if (moveUp > obRange * 2) {
+      if (moveUp > obRange * 1.5) {
         const obTop = ob.h;
         const obBot = ob.l;
         // Check OB hasn't been mitigated yet (price hasn't dipped into OB range since formation, excluding current candle)
@@ -2343,7 +2343,7 @@ function _detectOrderBlock(candles) {
     // Bearish OB: green candle followed by strong down move
     if (isGreen) {
       const moveDown = ob.h - Math.min(...next.map(c => c.l));
-      if (moveDown > obRange * 2) {
+      if (moveDown > obRange * 1.5) {
         const obTop = ob.h;
         const obBot = ob.l;
         const intervening = candles.slice(i + 1, candles.length - 1);
@@ -2363,7 +2363,7 @@ function _detectOrderBlock(candles) {
 
 // 4. Supply/Demand Zone Retest — classic pattern.
 //   • Base: 3-5 tight candles within a small range (≤1.5× the prior candle avg range)
-//   • Followed by strong move out (≥ 2× base range, in 3-4 candles)
+//   • Followed by strong move out (≥ 1.5× base range, in 3-4 candles)
 //   • Has not been retested yet (first touch)
 //   • Current candle is testing the base
 function _detectSDZone(candles) {
@@ -2388,7 +2388,7 @@ function _detectSDZone(candles) {
       const moveDown = baseLow - Math.min(...afterBase.map(c => c.l));
 
       // Demand zone (rally out of base)
-      if (moveUp > baseRange * 2 && moveUp > moveDown) {
+      if (moveUp > baseRange * 1.5 && moveUp > moveDown) {
         const intervening = candles.slice(baseEnd + 4, candles.length - 1);
         const wasRetested = intervening.some(c => c.l <= baseHigh && c.l >= baseLow);
         if (wasRetested) continue;
@@ -2397,7 +2397,7 @@ function _detectSDZone(candles) {
         }
       }
       // Supply zone (drop out of base)
-      if (moveDown > baseRange * 2 && moveDown > moveUp) {
+      if (moveDown > baseRange * 1.5 && moveDown > moveUp) {
         const intervening = candles.slice(baseEnd + 4, candles.length - 1);
         const wasRetested = intervening.some(c => c.h >= baseLow && c.h <= baseHigh);
         if (wasRetested) continue;
