@@ -3766,12 +3766,14 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
     const threshold = preAiThreshold ?? 65;  // matches live default
     let triggers = 0, passes = 0;
     const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
+    const triggerCounts = { bos: 0, sweep: 0, rejection: 0, atr: 0, fvg: 0 };
     // Pre-build per-trigger-TF candle-by-time index for funding lookups
     for (let i = 30; i < candles.length; i++) {
       const window = candles.slice(i - 30, i + 1);
       const trig = detectTrigger(window);
       if (!trig) continue;
       triggers++;
+      if (triggerCounts[trig.type] != null) triggerCounts[trig.type]++;
       const ts = candles[i].t;
       const h1Window = (() => {
         const idx = h1.findIndex(c => c.t > ts);
@@ -3811,6 +3813,7 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
     res.json({
       candlesFetched: candles.length,
       triggersDetected: triggers,
+      triggersByType: triggerCounts,
       hardVetoed: totalVetoed,
       vetoBreakdown: vetoCounts,
       preAiPasses: passes,
@@ -3854,6 +3857,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
 
     let triggers = 0, preAiPasses = 0, aiCalls = 0;
     const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
+    const triggerCounts = { bos: 0, sweep: 0, rejection: 0, atr: 0, fvg: 0 };
     const trades = [];
     let cooldownUntilIdx = 0;
 
@@ -3864,6 +3868,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const trig = detectTrigger(window);
       if (!trig) continue;
       triggers++;
+      if (triggerCounts[trig.type] != null) triggerCounts[trig.type]++;
 
       const ts = candles[i].t;
       const h1WinEnd = (() => { const idx = h1.findIndex(c => c.t > ts); return idx < 0 ? h1.length : idx; })();
@@ -3980,6 +3985,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi },
       candlesProcessed: candles.length,
       triggers,
+      triggersByType: triggerCounts,
       hardVetoed: totalVetoed,
       vetoBreakdown: vetoCounts,
       preAiPasses,

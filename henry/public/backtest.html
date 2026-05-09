@@ -172,8 +172,12 @@
       <div><div class="big-num-label">PRE-AI REJECTED</div><div class="big-num v-am" id="r-funnel-pre">—</div></div>
       <div><div class="big-num-label">PASSED TO AI</div><div class="big-num v-cy" id="r-funnel-pass">—</div></div>
     </div>
-    <div style="font-size:10px;color:var(--mu);margin-top:10px">
-      Veto breakdown: <span id="r-veto-breakdown">—</span>
+    <div style="font-size:10px;color:var(--mu);margin-top:14px;line-height:1.8">
+      <b style="color:var(--cy)">Triggers detected by type</b>
+      <span style="color:var(--di)"> (priority cascade — BOS short-circuits the rest):</span><br>
+      <span id="r-trigger-types">—</span>
+      <br><br>
+      <b style="color:var(--re)">Hard-veto breakdown:</b> <span id="r-veto-breakdown">—</span>
     </div>
   </div>
 
@@ -328,6 +332,19 @@ function renderResults(d) {
     if (vb.divergence) parts.push('Divergence: ' + vb.divergence);
     if (vb.funding)    parts.push('Funding: ' + vb.funding);
     document.getElementById('r-veto-breakdown').textContent = parts.length ? parts.join(' · ') : 'none';
+  }
+  // Per-type trigger detection counts (raw — before vetoes)
+  if (d.triggersByType) {
+    const tt = d.triggersByType;
+    const parts2 = [];
+    if (tt.bos)       parts2.push('<span style="color:var(--gr)">BOS: ' + tt.bos + '</span>');
+    if (tt.sweep)     parts2.push('<span style="color:var(--cy)">SWEEP: ' + tt.sweep + '</span>');
+    if (tt.rejection) parts2.push('<span style="color:var(--am)">REJECTION: ' + tt.rejection + '</span>');
+    if (tt.atr)       parts2.push('<span style="color:var(--pu)">ATR: ' + tt.atr + '</span>');
+    if (tt.fvg)       parts2.push('<span style="color:var(--re)">FVG: ' + tt.fvg + '</span>');
+    document.getElementById('r-trigger-types').innerHTML = parts2.length
+      ? parts2.join('  ·  ')
+      : '<span style="color:var(--mu)">No triggers detected in this window</span>';
   }
 
   renderGroupTable('t-trigger', d.byTrigger);
