@@ -2280,7 +2280,54 @@ async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800) {
   return (d.content && d.content[0] && d.content[0].text) || '';
 }
 
+// Robust JSON parser: strips markdown fences and tries to repair truncated JSON.
 function parseSignalJSONServer(text) {
+  if (!text) return null;
+  let s = String(text).trim();
+  // Strip markdown code fences if present
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) s = fence[1].trim();
+  // Quick path
+  try { return JSON.parse(s); } catch {}
+  // Extract first {...} block
+  const m = s.match(/\{[\s\S]*\}/);
+  if (m) {
+    try { return JSON.parse(m[0]); } catch {}
+  }
+  // Truncation repair
+  const open = s.indexOf('{');
+  if (open < 0) return null;
+  s = s.slice(open);
+  let lastQuote = -1, esc = false, inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; if (!inStr) lastQuote = i; }
+  }
+  if (inStr && lastQuote >= 0) {
+    s = s.slice(0, lastQuote + 1);
+    s = s.replace(/[,]\s*"[^"]*$/, '');
+    s = s.replace(/[,]\s*"[^"]*"\s*:\s*"[^"]*$/, '');
+  }
+  let bO = 0, kO = 0;
+  esc = false; inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === '{') bO++; else if (c === '}') bO--;
+    else if (c === '[') kO++; else if (c === ']') kO--;
+  }
+  s = s.replace(/,\s*$/, '');
+  while (kO > 0) { s += ']'; kO--; }
+  while (bO > 0) { s += '}'; bO--; }
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function _legacy_parseSignalJSONServer_unused(text) {
   try {
     const m = text.match(/\{[\s\S]*\}/);
     return m ? JSON.parse(m[0]) : JSON.parse(text);
@@ -2417,8 +2464,16 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     '',
     'WHEN UNSURE: return direction "NO TRADE" with reasoning explaining why. Do NOT force a low-quality signal.',
     '',
-    'Output ONLY this JSON (no markdown, no extra text):',
-    `{"pair":"${coin}","direction":"LONG or SHORT or NO TRADE","entry":${exLE},"sl":${exLS},"tp":${exLT},"rr":2.1,"confidence":72,"session":"","entry_reason":"Level and why","reasoning":"Reference the data sources you used (1H/4H/BTC/funding/etc).","be_note":"Move SL to BE at X","key_risk":"Main risk","expiry_candles":3,"invalidation":"Price action that cancels trade"}`,
+    'CRITICAL OUTPUT FORMAT — READ TWICE:',
+    '• Output ONLY raw JSON. Start with { and end with }. Nothing else.',
+    '• DO NOT wrap in ```json ... ``` code fences.',
+    '• DO NOT prefix with "Here is..." or any preamble.',
+    '• DO NOT append commentary after the closing }.',
+    '• Keep `reasoning` field UNDER 600 characters — concise, not essays.',
+    '• If you run long, the response gets truncated and parsing fails — be terse.',
+    '',
+    'Schema:',
+    `{"pair":"${coin}","direction":"LONG or SHORT or NO TRADE","entry":${exLE},"sl":${exLS},"tp":${exLT},"rr":2.1,"confidence":72,"session":"","entry_reason":"Level and why","reasoning":"Concise refs to data sources","be_note":"Move SL to BE at X","key_risk":"Main risk","expiry_candles":3,"invalidation":"Price action that cancels trade"}`,
     '',
     'VERIFY BEFORE OUTPUT: if SHORT then tp < entry < sl AND be_note price between tp and entry. If LONG then sl < entry < tp AND be_note price between entry and tp.',
   ].join('\n');
@@ -2539,8 +2594,8 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
 
   let signal = null;
   try {
-    // 1200 max tokens — context is now ~2-3x larger with news/calendar/footprint/etc.
-    const text = await callAnthropicServer(systemPrompt, userMessage, 1200);
+    // 2000 max tokens — Sonnet 4.6 is more verbose than 4.0; truncation kills JSON parsing
+    const text = await callAnthropicServer(systemPrompt, userMessage, 2000);
     signal = parseSignalJSONServer(text);
   } catch (e) {
     console.error('[runServerAI call]', e.message);
@@ -2554,7 +2609,7 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
       (signal.direction === 'LONG' ? 'For LONG: SL must be BELOW entry, TP must be ABOVE entry.' : 'For SHORT: SL must be ABOVE entry, TP must be BELOW entry.') +
       ' Recalculate and output corrected JSON only.';
     try {
-      const retryText = await callAnthropicServer(systemPrompt, userMessage + '\n\n' + correction, 800);
+      const retryText = await callAnthropicServer(systemPrompt, userMessage + '\n\n' + correction, 1500);
       const retried = parseSignalJSONServer(retryText);
       if (retried && validateSignalLevelsServer(retried)) signal = retried;
     } catch (e) { console.error('[runServerAI retry]', e.message); }
