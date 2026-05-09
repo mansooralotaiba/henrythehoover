@@ -56,7 +56,12 @@ header{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid
 .il{background:rgba(90,95,122,.15);color:var(--mu);font-size:10px;padding:2px 6px;border-radius:2px}
 .tbull{color:var(--gr);font-size:10px}.tbear{color:var(--re);font-size:10px}.tneut{color:var(--mu);font-size:10px}
 /* CENTER COL */
-.ccol{display:flex;flex-direction:column;overflow:hidden}
+/* Center column scrolls as a single unit — chart, AUTO panel, signal card,
+   and outcome buttons all scroll together when content exceeds viewport. */
+.ccol{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden}
+.ccol::-webkit-scrollbar{width:4px}
+.ccol::-webkit-scrollbar-thumb{background:var(--di);border-radius:2px}
+.ccol::-webkit-scrollbar-thumb:hover{background:var(--mu)}
 .ctbar{display:flex;align-items:center;gap:5px;padding:6px 12px;border-bottom:1px solid var(--b1);background:var(--bg1);flex-shrink:0}
 .ctbar span{font-size:10px;color:var(--mu);margin-right:3px}
 .tft{padding:3px 8px;border:1px solid var(--di);background:transparent;color:var(--mu);font-family:var(--mn);font-size:10px;cursor:pointer;border-radius:2px;transition:all .2s}
@@ -80,9 +85,9 @@ header{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid
 .btn.primary{background:var(--cy);color:#08090d;border-color:var(--cy);font-weight:700}
 .btn.primary:hover{opacity:.9}
 .btn:disabled{opacity:.4;cursor:not-allowed}
-#sigarea{flex:1;overflow-y:auto;padding:14px;min-height:0}
-#sigarea::-webkit-scrollbar{width:2px}
-#sigarea::-webkit-scrollbar-thumb{background:var(--di)}
+/* Signal area no longer needs internal scroll — center column handles it.
+   min-height keeps the empty state visible when there's no signal yet. */
+#sigarea{padding:14px;min-height:200px}
 /* SIGNAL CARD */
 .scard{background:var(--bg2);border:1px solid var(--b2);border-radius:4px;overflow:hidden;animation:fu .3s ease}
 @keyframes fu{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
