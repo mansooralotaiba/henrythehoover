@@ -614,6 +614,10 @@ app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req
     return res.status(500).json({ error: 'anthropic_not_configured' });
   }
   try {
+    // Normalize model: ALWAYS use the server-side AI_MODEL regardless of what the
+    // browser sends. This prevents stale cached values in old browser tabs from
+    // hitting the API with deprecated/incorrect model IDs after a model bump.
+    const body = { ...req.body, model: AI_MODEL };
     const upstream = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -621,7 +625,7 @@ app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req
         'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
         'content-type': 'application/json',
       },
-      body: JSON.stringify(req.body),
+      body: JSON.stringify(body),
     });
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => {
