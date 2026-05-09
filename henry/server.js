@@ -3462,15 +3462,41 @@ function preAiScoreBacktest(coin, tf, baseCandles, trigger, h1Slice, fundingRate
 
 // Fire AI with REDUCED context (no news/calendar/footprint/cross-broker).
 // Backtest pragmatism: those sources can't be reconstructed historically.
-async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, btcSlice, fundingRate, trigger) {
+// Now mirrors live mode: ATR-based stop guidance + ADX trend strength + volume + divergence in context.
+async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, btcSlice, fundingRate, trigger, indicators) {
   const lastClose = baseCandles[baseCandles.length - 1].c;
   const ctxLines = [];
   ctxLines.push(`AUTO TRIGGER: ${trigger.type.toUpperCase()} — ${trigger.desc}`);
+
+  // ── ATR-based stop guidance (matches live behavior) ──
+  if (indicators && indicators.atr14 != null) {
+    const am = atrMultiplierForAsset(coin);
+    const atrStopDist = indicators.atr14 * am.multiplier;
+    const buffer = indicators.atr14 * 1.5;
+    ctxLines.push(
+      `\nVOLATILITY (ATR-based stops — REPLACES fixed/round-number stops):` +
+      `\n  ATR(14) on ${tf} = ${indicators.atr14.toFixed(4)}` +
+      `\n  Asset class: ${am.klass} → multiplier ${am.multiplier}× ATR = ${atrStopDist.toFixed(4)} stop distance from entry` +
+      `\n  STOP PLACEMENT RULE: place SL BEYOND structure (swing low for LONG, swing high for SHORT) + ${buffer.toFixed(4)} (1.5×ATR) buffer.` +
+      `\n  NEVER place SL on a round number. Offset by at least 0.5×ATR.`
+    );
+  }
+  if (indicators && indicators.adx != null) {
+    const trendQ = indicators.adx >= 25 ? 'strong trend' : indicators.adx >= 20 ? 'mild trend' : 'CHOP (avoid)';
+    ctxLines.push(`TREND STRENGTH: ADX(14) = ${indicators.adx.toFixed(1)} — ${trendQ}`);
+  }
+  if (indicators && indicators.volRatio != null) {
+    ctxLines.push(`TRIGGER VOLUME: ${indicators.volRatio.toFixed(2)}× the 20-bar avg — ${indicators.volRatio >= 2 ? 'CONFIRMED' : 'weak'}`);
+  }
+  if (indicators && indicators.divergence) {
+    ctxLines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH)' : 'BULLISH (price LL, RSI HL)'}`);
+  }
+
   if (baseCandles.length >= 5) {
     const recent = baseCandles.slice(-15);
     const high = Math.max(...recent.map(c => c.h));
     const low  = Math.min(...recent.map(c => c.l));
-    ctxLines.push(`${tf} STRUCTURE (last 15): range ${low.toFixed(4)} — ${high.toFixed(4)}, last close ${lastClose}.`);
+    ctxLines.push(`\n${tf} STRUCTURE (last 15, trigger TF): range ${low.toFixed(4)} — ${high.toFixed(4)}, last close ${lastClose}.`);
   }
   if (h1Slice && h1Slice.length >= 5) {
     const ema = h1Slice.reduce((s, c) => s + c.c, 0) / h1Slice.length;
@@ -3636,8 +3662,10 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
       fetchHistoricalFunding(pair, lookbackMs).catch(() => []),
     ]);
 
-    const threshold = preAiThreshold ?? 45;
+    const threshold = preAiThreshold ?? 65;  // matches live default
     let triggers = 0, passes = 0;
+    const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
+    // Pre-build per-trigger-TF candle-by-time index for funding lookups
     for (let i = 30; i < candles.length; i++) {
       const window = candles.slice(i - 30, i + 1);
       const trig = detectTrigger(window);
@@ -3650,12 +3678,31 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
         return h1.slice(Math.max(0, end - 10), end);
       })();
       const fr = fundingAt(funding, ts);
+
+      // ── HARD VETOES (mirror live behavior, minus portfolio heat) ──
+      const trigDir = inferTriggerDirection(trig);
+      const adx = computeADX(window, 14);
+      if (adx != null && adx < 20) { vetoCounts.adx++; continue; }
+      const lastC = window[window.length - 1];
+      const avgVol = window.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
+      const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
+      if (volRatio != null && volRatio < 2.0) { vetoCounts.volume++; continue; }
+      const div = detectDivergence(window, Math.min(30, window.length - 14));
+      if ((div === 'bearish' && trigDir === 'bull') || (div === 'bullish' && trigDir === 'bear')) {
+        vetoCounts.divergence++; continue;
+      }
+      if (fr != null && Math.abs(fr) > 0.01 && trigDir) {
+        const crowdDir = fr > 0 ? 'bull' : 'bear';
+        if (trigDir === crowdDir) { vetoCounts.funding++; continue; }
+      }
+
+      // Pre-AI confluence score (if vetoes pass)
       const pre = preAiScoreBacktest(pair, tf, window, trig, h1Window, fr);
       if (pre.score >= threshold) passes++;
     }
-    const tokensIn  = passes * 2500;  // ~2.5k input tokens per call (system prompt + reduced context)
-    const tokensOut = passes * 500;   // ~500 output tokens
-    // Sonnet 4.6 pricing (approximate, $/MTok):
+    const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
+    const tokensIn  = passes * 2500;
+    const tokensOut = passes * 500;
     const inUsd  = tokensIn  / 1_000_000 * 3;
     const outUsd = tokensOut / 1_000_000 * 15;
     const estUsd = +(inUsd + outUsd).toFixed(3);
@@ -3663,8 +3710,10 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
     res.json({
       candlesFetched: candles.length,
       triggersDetected: triggers,
+      hardVetoed: totalVetoed,
+      vetoBreakdown: vetoCounts,
       preAiPasses: passes,
-      preAiRejected: triggers - passes,
+      preAiRejected: triggers - totalVetoed - passes,
       estimatedAiCalls: passes,
       estimatedTokensIn: tokensIn,
       estimatedTokensOut: tokensOut,
@@ -3682,7 +3731,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     return res.status(403).json({ error: 'admin_only' });
   }
   try {
-    const { pair, broker, tf, days, preAiThreshold = 45, cooldownCandles = 1, skipAi = false } = req.body || {};
+    const { pair, broker, tf, days, preAiThreshold = 65, cooldownCandles = 1, skipAi = false } = req.body || {};
     const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
     const tfMs = TF_MS[tf];
     if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
@@ -3703,6 +3752,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     if (!candles.length) return res.status(502).json({ error: 'no_candles' });
 
     let triggers = 0, preAiPasses = 0, aiCalls = 0;
+    const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
     const trades = [];
     let cooldownUntilIdx = 0;
 
@@ -3723,6 +3773,40 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const btcSlice = btcCandles.slice(Math.max(0, btcEnd - 30), btcEnd);
       const fr = fundingAt(funding, ts);
 
+      // ── HARD VETOES (mirror live behavior — block before AI call) ──
+      const trigDir = inferTriggerDirection(trig);
+      const adx = computeADX(window, 14);
+      const atr14 = computeATR(window, 14);
+      const lastC = window[window.length - 1];
+      const avgVol = window.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
+      const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
+      const divergence = detectDivergence(window, Math.min(30, window.length - 14));
+
+      if (adx != null && adx < 20) {
+        vetoCounts.adx++;
+        cooldownUntilIdx = i + cooldownCandles;
+        continue;
+      }
+      if (volRatio != null && volRatio < 2.0) {
+        vetoCounts.volume++;
+        cooldownUntilIdx = i + cooldownCandles;
+        continue;
+      }
+      if ((divergence === 'bearish' && trigDir === 'bull') || (divergence === 'bullish' && trigDir === 'bear')) {
+        vetoCounts.divergence++;
+        cooldownUntilIdx = i + cooldownCandles;
+        continue;
+      }
+      if (fr != null && Math.abs(fr) > 0.01 && trigDir) {
+        const crowdDir = fr > 0 ? 'bull' : 'bear';
+        if (trigDir === crowdDir) {
+          vetoCounts.funding++;
+          cooldownUntilIdx = i + cooldownCandles;
+          continue;
+        }
+      }
+
+      // Pre-AI confluence score
       const pre = preAiScoreBacktest(pair, tf, window, trig, h1Slice, fr);
       if (pre.score < preAiThreshold) continue;
       preAiPasses++;
@@ -3731,7 +3815,9 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       let signal = null;
       if (!skipAi) {
         aiCalls++;
-        signal = await runBacktestAI(pair, tf, broker, window, h1Slice, h4Slice, btcSlice, fr, trig);
+        // Pass indicators so AI gets ATR-based stop guidance + ADX/Vol/Div context
+        const indicators = { atr14, adx, volRatio, divergence };
+        signal = await runBacktestAI(pair, tf, broker, window, h1Slice, h4Slice, btcSlice, fr, trig, indicators);
         if (!signal) continue; // AI failed
       } else {
         // Synthetic signal for dry-run cost preview
@@ -3788,12 +3874,15 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     const byHour = byKey(t => String(new Date(t.ts).getUTCHours()).padStart(2, '0'));
     const byDirection = byKey(t => t.signal?.direction || 'unknown');
 
+    const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
     res.json({
       config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi },
       candlesProcessed: candles.length,
       triggers,
+      hardVetoed: totalVetoed,
+      vetoBreakdown: vetoCounts,
       preAiPasses,
-      preAiRejected: triggers - preAiPasses,
+      preAiRejected: triggers - totalVetoed - preAiPasses,
       aiCalls,
       stats: {
         signalsGenerated: trades.length,

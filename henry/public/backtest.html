@@ -63,10 +63,11 @@
 </header>
 
 <div class="warning">
-  <b>⚠ Backtest is approximate, not a guarantee.</b> News, calendar, footprint and
-  cross-broker context can't be reconstructed historically — those sources are skipped.
-  Sonnet outputs are non-deterministic. Slippage isn't modeled. Use this to validate
-  prompt/threshold changes vs. baseline, not as proof of future performance.
+  <b>⚠ Backtest mirrors live mode</b> — same hard vetoes (ADX&lt;20, volume&lt;2×, RSI divergence,
+  funding extreme), same pre-AI threshold (default 65), same ATR-based stop guidance to the AI.
+  Skipped sources: news / calendar / footprint / cross-broker / portfolio heat (can't reconstruct
+  historically). Sonnet is non-deterministic. Slippage = 0. Use to validate config changes,
+  not as proof of future performance.
 </div>
 
 <div class="card">
@@ -112,7 +113,7 @@
     </div>
     <div>
       <label>PRE-AI THRESHOLD</label>
-      <input type="number" id="threshold" value="45" min="0" max="85" step="5">
+      <input type="number" id="threshold" value="65" min="0" max="85" step="5">
     </div>
     <div>
       <label>COOLDOWN (CANDLES)</label>
@@ -131,11 +132,15 @@
   <div class="big-num-row">
     <div><div class="big-num-label">CANDLES</div><div class="big-num" id="est-candles">—</div></div>
     <div><div class="big-num-label">TRIGGERS</div><div class="big-num" id="est-triggers">—</div></div>
+    <div><div class="big-num-label">HARD VETOED</div><div class="big-num v-re" id="est-vetoed">—</div></div>
     <div><div class="big-num-label">PRE-AI PASSES</div><div class="big-num v-cy" id="est-passes">—</div></div>
     <div><div class="big-num-label">EST. AI CALLS</div><div class="big-num v-am" id="est-calls">—</div></div>
     <div><div class="big-num-label">EST. COST</div><div class="big-num v-am" id="est-cost">—</div></div>
   </div>
-  <div style="font-size:10px;color:var(--mu);margin-top:6px">Pre-AI filter rejected: <span id="est-rejected">—</span> | Tokens in/out: <span id="est-tokens">—</span></div>
+  <div style="font-size:10px;color:var(--mu);margin-top:8px">
+    Veto breakdown: <span id="est-veto-breakdown">—</span><br>
+    Pre-AI score rejected: <span id="est-rejected">—</span> | Tokens in/out: <span id="est-tokens">—</span>
+  </div>
 </div>
 
 <div id="results" style="display:none">
@@ -156,6 +161,19 @@
       <span class="pill exp">EXPIRED: <span id="r-exp-count">0</span></span>
       <span class="pill">NO TRADE: <span id="r-nt">0</span></span>
       <span class="pill">RR-DOWNGRADED: <span id="r-rr-d">0</span></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>FILTER FUNNEL</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+      <div><div class="big-num-label">TRIGGERS DETECTED</div><div class="big-num v-mu" id="r-funnel-trig">—</div></div>
+      <div><div class="big-num-label">HARD VETOED</div><div class="big-num v-re" id="r-funnel-veto">—</div></div>
+      <div><div class="big-num-label">PRE-AI REJECTED</div><div class="big-num v-am" id="r-funnel-pre">—</div></div>
+      <div><div class="big-num-label">PASSED TO AI</div><div class="big-num v-cy" id="r-funnel-pass">—</div></div>
+    </div>
+    <div style="font-size:10px;color:var(--mu);margin-top:10px">
+      Veto breakdown: <span id="r-veto-breakdown">—</span>
     </div>
   </div>
 
@@ -225,11 +243,21 @@ document.getElementById('estimateBtn').onclick = async function() {
     if (!r.ok) throw new Error(d.error || 'failed');
     document.getElementById('est-candles').textContent = d.candlesFetched;
     document.getElementById('est-triggers').textContent = d.triggersDetected;
+    document.getElementById('est-vetoed').textContent = d.hardVetoed != null ? d.hardVetoed : '—';
     document.getElementById('est-passes').textContent = d.preAiPasses;
     document.getElementById('est-calls').textContent = d.estimatedAiCalls;
     document.getElementById('est-cost').textContent = '$' + d.estimatedUsd;
     document.getElementById('est-rejected').textContent = d.preAiRejected;
     document.getElementById('est-tokens').textContent = (d.estimatedTokensIn/1000).toFixed(1) + 'k / ' + (d.estimatedTokensOut/1000).toFixed(1) + 'k';
+    if (d.vetoBreakdown) {
+      const vb = d.vetoBreakdown;
+      const parts = [];
+      if (vb.adx)        parts.push('ADX: ' + vb.adx);
+      if (vb.volume)     parts.push('Volume: ' + vb.volume);
+      if (vb.divergence) parts.push('Divergence: ' + vb.divergence);
+      if (vb.funding)    parts.push('Funding: ' + vb.funding);
+      document.getElementById('est-veto-breakdown').textContent = parts.length ? parts.join(' · ') : 'none';
+    }
     document.getElementById('estimateBox').style.display = 'block';
     document.getElementById('runBtn').disabled = false;
     setStatus('Cost estimated. Click RUN to execute (' + d.preAiPasses + ' AI calls).');
@@ -286,6 +314,21 @@ function renderResults(d) {
   document.getElementById('r-exp-count').textContent = s.expired;
   document.getElementById('r-nt').textContent = s.noTrade;
   document.getElementById('r-rr-d').textContent = s.rrDowngraded;
+
+  // Filter funnel
+  document.getElementById('r-funnel-trig').textContent = d.triggers || 0;
+  document.getElementById('r-funnel-veto').textContent = d.hardVetoed || 0;
+  document.getElementById('r-funnel-pre').textContent = d.preAiRejected || 0;
+  document.getElementById('r-funnel-pass').textContent = d.preAiPasses || 0;
+  if (d.vetoBreakdown) {
+    const vb = d.vetoBreakdown;
+    const parts = [];
+    if (vb.adx)        parts.push('ADX: ' + vb.adx);
+    if (vb.volume)     parts.push('Volume: ' + vb.volume);
+    if (vb.divergence) parts.push('Divergence: ' + vb.divergence);
+    if (vb.funding)    parts.push('Funding: ' + vb.funding);
+    document.getElementById('r-veto-breakdown').textContent = parts.length ? parts.join(' · ') : 'none';
+  }
 
   renderGroupTable('t-trigger', d.byTrigger);
   renderGroupTable('t-dir', d.byDirection);
