@@ -1117,18 +1117,59 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
 // Hit /api/performance/debug from a browser tab while authenticated.
 app.get('/api/performance/debug', requireAuth, async (req, res) => {
   try {
-    const { data: all, count: totalCount } = await supaAdmin
+    // 1) Count ALL signals in the table (any user) — sanity check that table has rows
+    const { count: globalCount, error: globalErr } = await supaAdmin
       .from('signals')
-      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, user_id', { count: 'exact' })
+      .select('id', { count: 'exact', head: true });
+
+    // 2) Count for THIS user
+    const { count: myCount, error: myErr } = await supaAdmin
+      .from('signals')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id);
+
+    // 3) Last 5 rows GLOBALLY — to see what user_ids actually exist
+    const { data: globalSample, error: gsErr } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_at, created_at, user_id')
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    // 4) Last 20 rows for THIS user
+    const { data: mine, error: mineErr } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, user_id')
       .eq('user_id', req.user.id)
       .order('created_at', { ascending: false })
       .limit(20);
-    const withOutcome = (all || []).filter(s => s.outcome != null);
+
+    // 5) Distinct user_ids in signals (sample)
+    const distinctUsers = new Set();
+    if (globalSample) for (const r of globalSample) distinctUsers.add(r.user_id);
+
     res.json({
       authenticatedUserId: req.user.id,
       authenticatedEmail: req.user.email,
-      totalSignalsForUser: totalCount,
-      lastSignalsSample: (all || []).map(s => ({
+      counts: {
+        totalSignalsGlobally: globalCount ?? null,
+        totalSignalsForMe: myCount ?? null,
+      },
+      errors: {
+        globalCountErr: globalErr?.message || null,
+        myCountErr:     myErr?.message     || null,
+        globalSampleErr:gsErr?.message     || null,
+        mineErr:        mineErr?.message   || null,
+      },
+      distinctUserIdsInRecent5: Array.from(distinctUsers),
+      latest5GlobalSignals: (globalSample || []).map(s => ({
+        id: s.id,
+        pair: s.pair,
+        outcome: s.outcome,
+        created_at: s.created_at,
+        user_id: s.user_id,
+        user_id_matches_me: s.user_id === req.user.id,
+      })),
+      latest20MySignals: (mine || []).map(s => ({
         id: s.id,
         pair: s.pair,
         direction: s.direction,
@@ -1136,9 +1177,8 @@ app.get('/api/performance/debug', requireAuth, async (req, res) => {
         outcome_rr: s.outcome_rr,
         outcome_at: s.outcome_at,
         created_at: s.created_at,
-        user_id_matches: s.user_id === req.user.id,
       })),
-      signalsWithOutcome: withOutcome.length,
+      mySignalsWithOutcome: (mine || []).filter(s => s.outcome != null).length,
     });
   } catch (err) {
     console.error('[performance debug]', err.message);
