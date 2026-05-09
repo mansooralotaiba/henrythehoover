@@ -131,8 +131,15 @@
       <label>DIRECTION FILTER</label>
       <select id="directionFilter">
         <option value="both" selected>Both Longs &amp; Shorts</option>
-        <option value="longs">Longs only</option>
-        <option value="shorts">Shorts only</option>
+        <option value="longs">Longs only (force)</option>
+        <option value="shorts">Shorts only (force)</option>
+      </select>
+    </div>
+    <div>
+      <label>REGIME FILTER (4H trend)</label>
+      <select id="regimeFilter">
+        <option value="auto" selected>Auto (uptrend→longs, downtrend→shorts, range→both)</option>
+        <option value="off">Off (no regime filter)</option>
       </select>
     </div>
     <div>
@@ -303,6 +310,7 @@ function getConfig(){
     cooldownCandles: parseInt(document.getElementById('cooldown').value, 10),
     strategy: document.getElementById('strategy').value,
     directionFilter: document.getElementById('directionFilter').value,
+    regimeFilter: document.getElementById('regimeFilter').value,
     beStopEnabled: document.getElementById('beStopEnabled').value === 'true',
     beTriggerPct: parseFloat(document.getElementById('beTriggerPct').value),
   };
@@ -337,6 +345,7 @@ document.getElementById('estimateBtn').onclick = async function() {
     if (d.vetoBreakdown) {
       const vb = d.vetoBreakdown;
       const parts = [];
+      if (vb.regime)     parts.push('Regime: ' + vb.regime);
       if (vb.adx)        parts.push('ADX: ' + vb.adx);
       if (vb.volume)     parts.push('Volume: ' + vb.volume);
       if (vb.divergence) parts.push('Divergence: ' + vb.divergence);
@@ -452,6 +461,7 @@ function renderResults(d) {
   if (d.vetoBreakdown) {
     const vb = d.vetoBreakdown;
     const parts = [];
+    if (vb.regime)     parts.push('Regime: ' + vb.regime);
     if (vb.adx)        parts.push('ADX: ' + vb.adx);
     if (vb.volume)     parts.push('Volume: ' + vb.volume);
     if (vb.divergence) parts.push('Divergence: ' + vb.divergence);

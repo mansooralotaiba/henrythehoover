@@ -995,6 +995,16 @@ function renderPairMonitor(data){
       box.appendChild(veto);
     }
 
+    // Regime badge (top-right of card if known)
+    if(p.regime&&p.regime.regime){
+      var regColor=p.regime.regime==='up'?'var(--gr)':p.regime.regime==='down'?'var(--re)':'var(--mu)';
+      var regText=(p.regime.regime==='up'?'↑ UP':p.regime.regime==='down'?'↓ DOWN':'↔ RANGE');
+      var reg=document.createElement('div');
+      reg.style.cssText='color:'+regColor+';font-size:9px;margin-top:2px;letter-spacing:.05em';
+      reg.textContent=regText+' ('+(p.regime.confidence||'?')+')';
+      box.appendChild(reg);
+    }
+
     // Indicator readouts (when scanning)
     if(p.lastIndicators&&!p.hasSignal&&!p.pauseRemaining){
       var ind=p.lastIndicators;
@@ -3780,7 +3790,7 @@ function runTradeMonitor(){
         if(!validSide)bePrice=null;
       }
       if(!bePrice){
-        bePrice=isLong?e+(tp-e)*0.5:e-(e-tp)*0.5;
+        bePrice=isLong?e+(tp-e)*0.7:e-(e-tp)*0.7;
       }
       var beReached=isLong?cp>=bePrice:cp<=bePrice;
       if(beReached&&!window._beAlerted){

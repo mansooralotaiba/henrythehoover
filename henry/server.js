@@ -22,6 +22,10 @@ const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').to
 // Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
 // Models from generation 4.6+ use the dateless format `claude-{name}-{major}-{minor}`.
 const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-6';
+// BE trigger: how far in profit before SL moves to breakeven. Default 70% of
+// the way to TP (was 50%) — tested as the sweet spot in backtest. Override via
+// HENRY_BE_TRIGGER_PCT env var on Railway (e.g. 0.5 for legacy behavior).
+const BE_TRIGGER_PCT = parseFloat(process.env.HENRY_BE_TRIGGER_PCT) || 0.7;
 const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
   ? 'sandbox-api.paddle.com'
   : 'api.paddle.com';
@@ -1418,6 +1422,91 @@ function detectDivergence(candles, lookback = 30) {
   return null;
 }
 
+// Exponential Moving Average — used for regime detection.
+function computeEMA(candles, period) {
+  if (!candles || candles.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = candles.slice(0, period).reduce((s, c) => s + c.c, 0) / period;
+  for (let i = period; i < candles.length; i++) {
+    ema = candles[i].c * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+// Market regime detector — operates on 4H candles. Returns:
+//   { regime: 'up' | 'down' | 'range', confidence: 'strong' | 'medium' | 'weak', ema20, ema50, adx, slope }
+//
+// Logic:
+//   • Price above both 20-EMA and 50-EMA + 50-EMA slope rising  → 'up'
+//   • Price below both EMAs + 50-EMA slope falling               → 'down'
+//   • Anything mixed                                              → 'range'
+//   • Confidence boosted to 'strong' when ADX >= 25 (trending market)
+function detectRegimeFromCandles(h4Candles) {
+  if (!h4Candles || h4Candles.length < 50) return { regime: 'range', confidence: 'weak' };
+  const last = h4Candles[h4Candles.length - 1];
+  const ema20 = computeEMA(h4Candles, 20);
+  const ema50 = computeEMA(h4Candles, 50);
+  if (ema20 == null || ema50 == null) return { regime: 'range', confidence: 'weak' };
+  // 50-EMA slope: compare current vs 5-bar-ago value
+  const ema50Past = computeEMA(h4Candles.slice(0, -5), 50);
+  const slopePct = ema50Past ? (ema50 - ema50Past) / ema50Past : 0;
+  const slopeUp = slopePct > 0.003;    // 0.3% rise over 5 bars
+  const slopeDown = slopePct < -0.003;
+  const aboveBoth = last.c > ema20 && last.c > ema50;
+  const belowBoth = last.c < ema20 && last.c < ema50;
+  const adx = computeADX(h4Candles, 14);
+
+  let regime = 'range', confidence = 'medium';
+  if (aboveBoth && slopeUp) {
+    regime = 'up';
+    confidence = (adx != null && adx >= 25) ? 'strong' : 'medium';
+  } else if (belowBoth && slopeDown) {
+    regime = 'down';
+    confidence = (adx != null && adx >= 25) ? 'strong' : 'medium';
+  } else {
+    regime = 'range';
+    // Range confidence depends on ADX — low ADX = stronger range conviction
+    confidence = (adx != null && adx < 20) ? 'strong' : 'medium';
+  }
+  return {
+    regime, confidence,
+    ema20: +ema20.toFixed(4),
+    ema50: +ema50.toFixed(4),
+    adx: adx != null ? +adx.toFixed(1) : null,
+    slopePct: +(slopePct * 100).toFixed(2),
+  };
+}
+
+// Live regime detector — fetches 4H candles itself, with per-pair caching.
+const _regimeCache = new Map(); // coin → { ts, data }
+async function detectMarketRegime(coin, broker) {
+  const cached = _regimeCache.get(coin);
+  if (cached && Date.now() - cached.ts < 60 * 60 * 1000) return cached.data; // 1-hour cache
+  try {
+    const h4 = await fetchCandlesServer(coin, '4h', 100, broker);
+    const data = detectRegimeFromCandles(h4);
+    _regimeCache.set(coin, { ts: Date.now(), data });
+    return data;
+  } catch (e) {
+    console.error('[regime]', coin, e.message);
+    return { regime: 'range', confidence: 'weak' };
+  }
+}
+
+// Should the trigger direction be allowed in the current regime?
+//   'up'   → only LONG triggers
+//   'down' → only SHORT triggers
+//   'range'→ both allowed
+// Returns { allowed: bool, reason: string }
+function regimeAllowsDirection(regime, trigDir) {
+  if (!regime || regime === 'range') return { allowed: true };
+  if (regime === 'up' && trigDir === 'bear')   return { allowed: false, reason: 'Uptrend regime — short-side trigger blocked' };
+  if (regime === 'down' && trigDir === 'bull') return { allowed: false, reason: 'Downtrend regime — long-side trigger blocked' };
+  return { allowed: true };
+}
+
+const REGIME_FILTER_ENABLED = (process.env.HENRY_REGIME_FILTER || 'on').toLowerCase() !== 'off';
+
 // Asset-class ATR multiplier for stop placement (per user's table).
 function atrMultiplierForAsset(coin) {
   const u = coin.toUpperCase();
@@ -1908,6 +1997,7 @@ app.get('/api/scan/all-pairs', requireAuth, async (req, res) => {
       lastTrigger:  ps && ps.lastTrigger ? ps.lastTrigger : null,
       lastPreScore: ps ? (ps.lastPreScore != null ? ps.lastPreScore : null) : null,
       lastVetoReason: ps ? (ps.lastVetoReason || null) : null,
+      regime: ps && ps.regime ? { regime: ps.regime.regime, confidence: ps.regime.confidence } : null,
       lastIndicators: ps && ps.lastIndicators ? {
         adx: ps.lastIndicators.adx != null ? +ps.lastIndicators.adx.toFixed(1) : null,
         atr14: ps.lastIndicators.atr14 != null ? +ps.lastIndicators.atr14.toFixed(4) : null,
@@ -2054,7 +2144,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
 
   // BE
   if (ps._entryAlerted && !ps._beAlerted) {
-    const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
+    const bePrice = isLong ? e + (tpP - e) * BE_TRIGGER_PCT : e - (e - tpP) * BE_TRIGGER_PCT;
     const beReached = isLong ? price >= bePrice : price <= bePrice;
     if (beReached) {
       ps._beAlerted = true;
@@ -3071,7 +3161,7 @@ function validateAndFixBEServer(sig) {
   const bePrice = m ? parseFloat(m[1].replace(/,/g, '')) : null;
   const validSide = bePrice != null && (isLong ? (bePrice > e && bePrice < tp) : (bePrice < e && bePrice > tp));
   if (!validSide) {
-    const correctBE = isLong ? e + (tp - e) * 0.5 : e - (e - tp) * 0.5;
+    const correctBE = isLong ? e + (tp - e) * BE_TRIGGER_PCT : e - (e - tp) * BE_TRIGGER_PCT;
     const decimals = e >= 1000 ? 2 : e >= 100 ? 2 : e >= 1 ? 4 : 6;
     sig.be_note = `Move SL to BE at ${correctBE.toFixed(decimals)} (50% to TP)`;
   }
@@ -3208,8 +3298,8 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     '',
     'BE_NOTE RULES:',
     'be_note is the price at which the user moves SL to entry (breakeven).',
-    'For LONG: BE price MUST be ABOVE entry, BELOW TP. Recommended: halfway between entry and TP.',
-    'For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: halfway between entry and TP.',
+    'For LONG: BE price MUST be ABOVE entry, BELOW TP. Recommended: 70% of the way from entry to TP (gives the trade more room before locking in BE).',
+    'For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: 70% of the way from entry to TP.',
     'Format: "Move SL to BE at <PRICE>".',
     '',
     'WHEN UNSURE: return direction "NO TRADE" with reasoning explaining why. Do NOT force a low-quality signal.',
@@ -3509,6 +3599,24 @@ async function processPair(userId, sub, coin) {
   // Cache for AI prompt + later use
   ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding };
 
+  // ── REGIME FILTER — adaptive direction filter based on 4H trend ──
+  // Detects market regime (up / down / range) on 4H candles. Blocks signals
+  // that fight the trend in clearly trending markets. Allows both directions
+  // in ranging markets (where ICT/S&D works in both).
+  if (REGIME_FILTER_ENABLED && trigDir) {
+    const regimeData = await detectMarketRegime(coin, broker);
+    ps.regime = regimeData;
+    const allow = regimeAllowsDirection(regimeData.regime, trigDir);
+    if (!allow.allowed) {
+      console.log('[regime veto]', coin, regimeData.regime, '(' + regimeData.confidence + ')', '— blocking', trigDir);
+      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+      ps.lastTrigger = trigger;
+      ps.lastStatus = 'veto:regime';
+      ps.lastVetoReason = `${allow.reason} (regime: ${regimeData.regime} / ${regimeData.confidence})`;
+      return;
+    }
+  }
+
   const veto = runHardVetoes({ coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding, strategyMode: STRATEGY_MODE });
   if (veto.blocked) {
     console.log('[veto]', coin, '[' + veto.code + ']', veto.reason);
@@ -3602,7 +3710,7 @@ async function postUserStatus(userId) {
       if (ps._entryAlerted) {
         inTradeCount++;
         const pctToTp = (tpP && e && cp) ? Math.round(Math.abs(cp - e) / Math.abs(tpP - e) * 100) : 0;
-        const bePrice = isLong ? e + (tpP - e) * 0.5 : e - (e - tpP) * 0.5;
+        const bePrice = isLong ? e + (tpP - e) * BE_TRIGGER_PCT : e - (e - tpP) * BE_TRIGGER_PCT;
         const beReached = cp != null ? (isLong ? cp >= bePrice : cp <= bePrice) : false;
         lines.push(`✅ **IN TRADE — ${ticker} ${ps.pendSignal.direction}** @ \`${e}\``);
         lines.push(`   SL: \`${slP}\` | TP: \`${tpP}\` | ${ps.pendSignal.rr || '—'}R${cp != null ? ` | Current: \`${cp.toFixed(2)}\` (${pctToTp}% to TP)` : ''}`);
@@ -4078,7 +4186,7 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
 
     const threshold = preAiThreshold ?? 65;  // matches live default
     let triggers = 0, passes = 0;
-    const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
+    const vetoCounts = { regime: 0, adx: 0, volume: 0, divergence: 0, funding: 0 };
     const triggerCounts = {
       // ICT/S&D types
       mss_disp: 0, sweep_disp: 0, ob_mitigation: 0, sd_zone: 0, fvg_ote: 0,
@@ -4121,7 +4229,7 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
       const pre = preAiScoreBacktest(pair, tf, window, trig, h1Window, fr);
       if (pre.score >= threshold) passes++;
     }
-    const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
+    const totalVetoed = (vetoCounts.regime || 0) + vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
     const tokensIn  = passes * 2500;
     const tokensOut = passes * 500;
     const inUsd  = tokensIn  / 1_000_000 * 3;
@@ -4166,6 +4274,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       volMin = null,             // null = use strategy-aware default; 0 = disabled
       divergenceVeto = null,     // null = default, false = disabled
       fundingVeto = null,        // null = default, false = disabled
+      regimeFilter = 'auto',     // 'auto' | 'off' | 'longs' | 'shorts'
     } = req.body || {};
     const strategyMode = (strategy || STRATEGY_MODE).toLowerCase();
     // Build veto config — explicit values override strategy defaults
@@ -4194,7 +4303,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     if (!candles.length) return res.status(502).json({ error: 'no_candles' });
 
     let triggers = 0, preAiPasses = 0, aiCalls = 0;
-    const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
+    const vetoCounts = { regime: 0, adx: 0, volume: 0, divergence: 0, funding: 0 };
     const triggerCounts = {
       // ICT/S&D types
       mss_disp: 0, sweep_disp: 0, ob_mitigation: 0, sd_zone: 0, fvg_ote: 0,
@@ -4230,6 +4339,31 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const avgVol = window.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
       const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
       const divergence = detectDivergence(window, Math.min(30, window.length - 14));
+
+      // ── REGIME FILTER (applied BEFORE other vetoes; saves AI budget) ──
+      // Compute regime from h4 candles up to (but NOT including) the trigger time
+      let regimeForTrade = null;
+      if (regimeFilter !== 'off' && trigDir) {
+        const h4UpTo = h4.slice(0, h4WinEnd);
+        if (h4UpTo.length >= 50) {
+          const r = detectRegimeFromCandles(h4UpTo);
+          regimeForTrade = r.regime;
+          let blocked = false;
+          if (regimeFilter === 'auto') {
+            if (r.regime === 'up' && trigDir === 'bear')   blocked = true;
+            if (r.regime === 'down' && trigDir === 'bull') blocked = true;
+          } else if (regimeFilter === 'longs' && trigDir === 'bear') {
+            blocked = true;
+          } else if (regimeFilter === 'shorts' && trigDir === 'bull') {
+            blocked = true;
+          }
+          if (blocked) {
+            vetoCounts.regime = (vetoCounts.regime || 0) + 1;
+            cooldownUntilIdx = i + cooldownCandles;
+            continue;
+          }
+        }
+      }
 
       if (vetoCfg.adxMin > 0 && adx != null && adx < vetoCfg.adxMin) {
         vetoCounts.adx++;
@@ -4333,10 +4467,10 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     const byHour = byKey(t => String(new Date(t.ts).getUTCHours()).padStart(2, '0'));
     const byDirection = byKey(t => t.signal?.direction || 'unknown');
 
-    const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
+    const totalVetoed = (vetoCounts.regime || 0) + vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
     const directionFilteredCount = trades.filter(t => t.directionFiltered).length;
     res.json({
-      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode, beStopEnabled, beTriggerPct, directionFilter, vetoCfg },
+      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode, beStopEnabled, beTriggerPct, directionFilter, vetoCfg, regimeFilter },
       directionFilteredCount,
       candlesProcessed: candles.length,
       triggers,
