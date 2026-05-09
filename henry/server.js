@@ -298,6 +298,7 @@ app.get('/subscribe/success', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 
 app.get('/reset-password', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reset-password.html')));
 app.get('/account',        requireSession, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
 app.get('/performance',    requireAuth,    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'performance.html')));
+app.get('/backtest',       requireAuth,    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'backtest.html')));
 
 // Set a new password — requires valid session set by /auth/callback (recovery flow)
 app.post('/api/auth/update-password', requireSession, express.json(), async (req, res) => {
@@ -2985,6 +2986,537 @@ process.on('SIGTERM', () => _gracefulShutdown('SIGTERM'));
 process.on('SIGINT',  () => _gracefulShutdown('SIGINT'));
 
 // ════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// BACKTEST MODE — replays historical candles through the full signal pipeline
+// (trigger → pre-AI filter → AI → simulated outcome). Surfaces aggregate stats
+// so prompt/threshold changes can be validated against history before going live.
+//
+// Limitations (caller is warned in UI):
+//   • News, calendar, footprint, cross-broker context skipped (point-in-time
+//     reconstruction infeasible for free APIs).
+//   • Slippage not modeled — limit fill at exact entry.
+//   • Sonnet outputs are non-deterministic — same setup ≠ same signal.
+//   • When SL & TP both intersect a single candle, conservative SL-first.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Fetch a long range of historical candles from a broker (more candles than
+// the regular fetchCandlesServer's 30-bar window).
+async function fetchHistoricalCandles(coin, tf, broker, totalCount) {
+  // Binance allows max 1500 per call; Weex 1000; HL ~5000. Single call usually fits.
+  const lim = Math.min(totalCount, 1500);
+  try {
+    if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
+      const tfDef = POLY_TF[tf] || POLY_TF['15m'];
+      const start = Date.now() - tfDef.ms * lim * 1.1;
+      const from = new Date(start).toISOString().split('T')[0];
+      const to = new Date().toISOString().split('T')[0];
+      const data = await polyFetch(
+        `/v2/aggs/ticker/C:XAUUSD/range/${tfDef.multiplier}/${tfDef.timespan}/${from}/${to}`,
+        { adjusted: 'true', sort: 'asc', limit: lim }
+      );
+      return (data.results || []).slice(-lim).map(r => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v || 0 }));
+    }
+    if (broker === 'binance') {
+      const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${lim}`);
+      const arr = await r.json();
+      if (!Array.isArray(arr)) return [];
+      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+    }
+    if (broker === 'hyperliquid') {
+      const sym = coin.replace('USDT', '');
+      const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
+      const ms = tfMs[tf] || 900000;
+      const start = Date.now() - ms * lim * 1.1;
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'candleSnapshot',
+          req: { coin: sym, interval: tf, startTime: start, endTime: Date.now() },
+        }),
+      });
+      const arr = await r.json();
+      if (!Array.isArray(arr)) return [];
+      return arr.map(c => ({ t: c.t, o: +c.o, h: +c.h, l: +c.l, c: +c.c, v: +c.v }));
+    }
+    // weex
+    const fsym = FUTURES_SYM_SERVER[coin] || ('cmt_' + coin.toLowerCase());
+    const tfMap = { '1m': '60', '5m': '300', '15m': '900', '1h': '3600', '4h': '14400', '1d': '86400' };
+    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${tfMap[tf] || '900'}&limit=${lim}`);
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return [];
+    return arr.map(c => ({ t: +c[0] * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+  } catch (e) {
+    console.error('[backtest fetch]', e.message);
+    return [];
+  }
+}
+
+// Fetch funding-rate history from Binance — returns array of { fundingTime, fundingRate }
+async function fetchHistoricalFunding(coin, lookbackMs) {
+  try {
+    const startTime = Date.now() - lookbackMs - 24 * 3600 * 1000; // pad a day for first lookup
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${coin}&startTime=${startTime}&limit=1000`);
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return [];
+    return arr.map(x => ({ ts: +x.fundingTime, rate: parseFloat(x.fundingRate) }))
+              .sort((a, b) => a.ts - b.ts);
+  } catch { return []; }
+}
+
+// At a given timestamp, find the funding rate that was active.
+function fundingAt(fundingHistory, ts) {
+  if (!fundingHistory || !fundingHistory.length) return null;
+  let last = null;
+  for (const f of fundingHistory) {
+    if (f.ts <= ts) last = f.rate;
+    else break;
+  }
+  return last;
+}
+
+// Find HTF candle (1H or 4H) whose close timestamp is <= candleTs (so we don't
+// peek at unfinished future-data during the iteration).
+function htfCandleAt(htfCandles, ts) {
+  if (!htfCandles || !htfCandles.length) return null;
+  let result = null;
+  for (const c of htfCandles) {
+    if (c.t <= ts) result = c;
+    else break;
+  }
+  return result;
+}
+
+// Compute pre-AI confluence score from historical-context only (no live fetches).
+function preAiScoreBacktest(coin, tf, baseCandles, trigger, h1Slice, fundingRate) {
+  const reasons = [];
+  let score = 0;
+
+  // 1) Kill zone — derived from the candle's UTC time (not now())
+  const lastCandle = baseCandles[baseCandles.length - 1];
+  const m = (() => {
+    const d = new Date(lastCandle.t);
+    return d.getUTCHours() * 60 + d.getUTCMinutes();
+  })();
+  let kzScore = 0, kzName = 'OFF';
+  if (m >= 420 && m < 600)       { kzScore = 20; kzName = 'LDN-OPEN'; }
+  else if (m >= 720 && m < 900)  { kzScore = 20; kzName = 'NY-OPEN';  }
+  else if (m >= 900 && m < 1020) { kzScore = 12; kzName = 'LDN-CLOSE';}
+  else if (m >= 0   && m < 300)  { kzScore =  5; kzName = 'ASIA';     }
+  score += kzScore;
+  reasons.push(`KZ=${kzName}+${kzScore}`);
+
+  // 2) Trigger strength (vol-confirmed bonus)
+  const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
+  const volSpike = histAvgVol > 0 && lastCandle.v > histAvgVol * 1.5;
+  let tScore = 0;
+  if (trigger.type === 'bos')   tScore = volSpike ? 20 : 12;
+  else if (trigger.type === 'sweep') tScore = volSpike ? 15 : 8;
+  else                          tScore = 8;
+  score += tScore;
+  reasons.push(`Trig=${trigger.type}${volSpike ? '✓vol' : ''}+${tScore}`);
+
+  // 3) Direction inferred from trigger desc
+  let trigDir = null;
+  if (trigger.type === 'bos')        trigDir = /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  else if (trigger.type === 'sweep') trigDir = /high/i.test(trigger.desc) ? 'bear' : 'bull';
+
+  // 4) HTF alignment from h1Slice (last 10 1H candles up to current time)
+  let htfScore = 5;
+  if (trigDir && h1Slice && h1Slice.length >= 5) {
+    const htfDir = h1Slice[h1Slice.length - 1].c > h1Slice[0].c ? 'bull' : 'bear';
+    if (trigDir === htfDir) { htfScore = 20; reasons.push('HTF-aligned+20'); }
+    else                    { htfScore = -15; reasons.push('HTF-conflict-15'); }
+  }
+  score += htfScore;
+
+  // 5) Funding bias support
+  let fScore = 3;
+  if (fundingRate != null && trigDir) {
+    const fadeDir = fundingRate > 0.005 ? 'bear' : fundingRate < -0.005 ? 'bull' : null;
+    if (fadeDir && fadeDir === trigDir) {
+      fScore = Math.abs(fundingRate) > 0.01 ? 15 : 8;
+      reasons.push(`Fund-fade+${fScore}`);
+    } else if (fadeDir && fadeDir !== trigDir) {
+      fScore = -5;
+      reasons.push('Fund-against-5');
+    }
+  }
+  score += fScore;
+
+  // 6) Recent volume momentum
+  if (baseCandles.length >= 10) {
+    const last3 = baseCandles.slice(-3).reduce((s, c) => s + (c.v || 0), 0) / 3;
+    const prev = baseCandles.slice(-23, -3);
+    const prevAvg = prev.reduce((s, c) => s + (c.v || 0), 0) / Math.max(prev.length, 1);
+    if (prevAvg > 0) {
+      const ratio = last3 / prevAvg;
+      const vmScore = ratio > 1.5 ? 10 : ratio > 1 ? 5 : 0;
+      score += vmScore;
+      if (vmScore) reasons.push(`Vol-x${ratio.toFixed(1)}+${vmScore}`);
+    }
+  }
+
+  return { score, reasons: reasons.join(' ') };
+}
+
+// Fire AI with REDUCED context (no news/calendar/footprint/cross-broker).
+// Backtest pragmatism: those sources can't be reconstructed historically.
+async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, btcSlice, fundingRate, trigger) {
+  const lastClose = baseCandles[baseCandles.length - 1].c;
+  const ctxLines = [];
+  ctxLines.push(`AUTO TRIGGER: ${trigger.type.toUpperCase()} — ${trigger.desc}`);
+  if (baseCandles.length >= 5) {
+    const recent = baseCandles.slice(-15);
+    const high = Math.max(...recent.map(c => c.h));
+    const low  = Math.min(...recent.map(c => c.l));
+    ctxLines.push(`${tf} STRUCTURE (last 15): range ${low.toFixed(4)} — ${high.toFixed(4)}, last close ${lastClose}.`);
+  }
+  if (h1Slice && h1Slice.length >= 5) {
+    const ema = h1Slice.reduce((s, c) => s + c.c, 0) / h1Slice.length;
+    ctxLines.push(`1H bias: last ${h1Slice[h1Slice.length-1].c.toFixed(4)} vs ${h1Slice.length}-EMA ${ema.toFixed(4)} — ${h1Slice[h1Slice.length-1].c > ema ? 'above' : 'below'}.`);
+  }
+  if (h4Slice && h4Slice.length >= 3) {
+    const ema = h4Slice.reduce((s, c) => s + c.c, 0) / h4Slice.length;
+    ctxLines.push(`4H bias (HTF): last ${h4Slice[h4Slice.length-1].c.toFixed(4)} vs ${h4Slice.length}-EMA ${ema.toFixed(4)} — ${h4Slice[h4Slice.length-1].c > ema ? 'above (bullish)' : 'below (bearish)'}.`);
+  }
+  if (btcSlice && btcSlice.length >= 3 && coin !== 'BTCUSDT') {
+    const first = btcSlice[0].c, last = btcSlice[btcSlice.length-1].c;
+    const pct = ((last - first) / first * 100).toFixed(2);
+    ctxLines.push(`BTC moved ${pct}% over recent window — ${parseFloat(pct) > 0.5 ? 'risk-on' : parseFloat(pct) < -0.5 ? 'risk-off' : 'neutral'}.`);
+  }
+  if (fundingRate != null) {
+    const fpct = (fundingRate * 100).toFixed(4);
+    ctxLines.push(`Funding rate: ${fpct}%${Math.abs(fundingRate) > 0.01 ? ' (extreme)' : ''}.`);
+  }
+  // Liquidity (computed from current candle window — same as live)
+  const liqCtx = buildLiquidityContextServer(baseCandles, tf);
+  if (liqCtx) ctxLines.push(liqCtx.trim());
+
+  const contextStr = ctxLines.join('\n');
+  const systemPrompt = buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose);
+
+  const userMessage = `Analyse ${coin} on ${tf}. Auto trigger: ${trigger.type.toUpperCase()} — ${trigger.desc}. Output the signal JSON.`;
+  try {
+    const text = await callAnthropicServer(systemPrompt, userMessage, 1500);
+    let signal = parseSignalJSONServer(text);
+    if (!signal) return null;
+    // Validate + retry
+    if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) {
+      const correction = `Your previous output had invalid levels. Direction was ${signal.direction} but: entry=${signal.entry} SL=${signal.sl} TP=${signal.tp}. Recalculate. Output corrected JSON only.`;
+      const retryText = await callAnthropicServer(systemPrompt, userMessage + '\n\n' + correction, 1200);
+      const retried = parseSignalJSONServer(retryText);
+      if (retried && validateSignalLevelsServer(retried)) signal = retried;
+    }
+    if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) return null;
+    if (signal.direction !== 'NO TRADE') {
+      // RR floor: <1.5 → NO TRADE
+      const e = parseFloat(signal.entry), sl = parseFloat(signal.sl), tp = parseFloat(signal.tp);
+      const rr = signal.direction === 'LONG' ? (tp - e) / (e - sl) : (e - tp) / (sl - e);
+      if (isFinite(rr) && rr < 1.5) {
+        signal.direction = 'NO TRADE';
+        signal._rrDowngraded = true;
+      } else {
+        signal = validateAndFixBEServer(signal);
+      }
+    }
+    return signal;
+  } catch (e) {
+    console.error('[backtest AI]', e.message);
+    return null;
+  }
+}
+
+// Walk forward through candles AFTER the signal candle to determine outcome.
+// Returns { outcome: 'TP'|'SL'|'BE'|'EXPIRED'|'OPEN', outcomeR, exitTs, candlesToOutcome, beReached }
+function simulateOutcome(signal, forwardCandles, tfMs) {
+  if (!signal || signal.direction === 'NO TRADE') return null;
+  const e = parseFloat(signal.entry);
+  const sl = parseFloat(signal.sl);
+  const tp = parseFloat(signal.tp);
+  const isLong = signal.direction === 'LONG';
+  const rr = parseFloat(signal.rr) || (isLong ? (tp - e) / (e - sl) : (e - tp) / (sl - e));
+  const expiryCandles = parseInt(signal.expiry_candles, 10) || 4;
+  const bePrice = isLong ? e + (tp - e) * 0.5 : e - (e - tp) * 0.5;
+
+  let entryHit = false;
+  let entryIdx = -1;
+  let beReached = false;
+
+  for (let i = 0; i < forwardCandles.length; i++) {
+    const c = forwardCandles[i];
+    if (!entryHit) {
+      // Limit fill: LONG fills if low <= entry; SHORT fills if high >= entry
+      if (isLong ? c.l <= e : c.h >= e) {
+        entryHit = true;
+        entryIdx = i;
+        // Check rest of this candle for SL/TP after fill
+        // (assume fill happened at entry, then candle finished trading)
+      } else {
+        // Check expiry — only relevant before entry hit
+        if (i + 1 >= expiryCandles) {
+          return {
+            outcome: 'EXPIRED',
+            outcomeR: 0,
+            exitTs: c.t,
+            candlesToOutcome: i + 1,
+            beReached: false,
+          };
+        }
+        continue;
+      }
+    }
+
+    // Post-entry: check BE level then SL/TP
+    if (!beReached) {
+      if (isLong ? c.h >= bePrice : c.l <= bePrice) beReached = true;
+    }
+
+    const slHit = isLong ? c.l <= sl : c.h >= sl;
+    const tpHit = isLong ? c.h >= tp : c.l <= tp;
+
+    // BE-stop: if beReached and price comes back to entry
+    const beStopHit = beReached && (isLong ? c.l <= e : c.h >= e);
+
+    // Conservative when both SL and TP intersect: assume SL first
+    if (slHit) {
+      const stoppedAtBE = beReached;
+      return {
+        outcome: stoppedAtBE ? 'BE' : 'SL',
+        outcomeR: stoppedAtBE ? 0 : -1,
+        exitTs: c.t,
+        candlesToOutcome: i + 1,
+        beReached,
+      };
+    }
+    if (tpHit) {
+      return {
+        outcome: 'TP',
+        outcomeR: rr,
+        exitTs: c.t,
+        candlesToOutcome: i + 1,
+        beReached,
+      };
+    }
+    if (beStopHit) {
+      return {
+        outcome: 'BE',
+        outcomeR: 0,
+        exitTs: c.t,
+        candlesToOutcome: i + 1,
+        beReached: true,
+      };
+    }
+  }
+
+  // Reached end of forward window without exit
+  return entryHit
+    ? { outcome: 'OPEN', outcomeR: 0, exitTs: forwardCandles[forwardCandles.length - 1]?.t, candlesToOutcome: forwardCandles.length, beReached }
+    : { outcome: 'EXPIRED', outcomeR: 0, exitTs: forwardCandles[forwardCandles.length - 1]?.t, candlesToOutcome: forwardCandles.length, beReached: false };
+}
+
+// ── Backtest API endpoints ────────────────────────────────────────────────
+app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req, res) => {
+  // Quick estimate: fetches candles, counts triggers + pre-AI passes, no AI calls.
+  try {
+    const { pair, broker, tf, days, preAiThreshold } = req.body || {};
+    const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
+    const tfMs = TF_MS[tf];
+    if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
+    const totalCandles = Math.ceil((days * 24 * 3600 * 1000) / tfMs);
+    if (totalCandles > 1500) return res.status(400).json({ error: 'too_many_candles', detail: 'Reduce days or use a higher TF.' });
+
+    const candles = await fetchHistoricalCandles(pair, tf, broker, totalCandles);
+    if (!candles.length) return res.status(502).json({ error: 'no_candles_returned' });
+
+    // Quick HTF + funding fetch for pre-score accuracy
+    const lookbackMs = days * 24 * 3600 * 1000;
+    const [h1, funding] = await Promise.all([
+      fetchHistoricalCandles(pair, '1h', broker, Math.min(Math.ceil(lookbackMs / 3600000) + 24, 1000)).catch(() => []),
+      fetchHistoricalFunding(pair, lookbackMs).catch(() => []),
+    ]);
+
+    const threshold = preAiThreshold ?? 45;
+    let triggers = 0, passes = 0;
+    for (let i = 30; i < candles.length; i++) {
+      const window = candles.slice(i - 30, i + 1);
+      const trig = detectTrigger(window);
+      if (!trig) continue;
+      triggers++;
+      const ts = candles[i].t;
+      const h1Window = (() => {
+        const idx = h1.findIndex(c => c.t > ts);
+        const end = idx < 0 ? h1.length : idx;
+        return h1.slice(Math.max(0, end - 10), end);
+      })();
+      const fr = fundingAt(funding, ts);
+      const pre = preAiScoreBacktest(pair, tf, window, trig, h1Window, fr);
+      if (pre.score >= threshold) passes++;
+    }
+    const tokensIn  = passes * 2500;  // ~2.5k input tokens per call (system prompt + reduced context)
+    const tokensOut = passes * 500;   // ~500 output tokens
+    // Sonnet 4.6 pricing (approximate, $/MTok):
+    const inUsd  = tokensIn  / 1_000_000 * 3;
+    const outUsd = tokensOut / 1_000_000 * 15;
+    const estUsd = +(inUsd + outUsd).toFixed(3);
+
+    res.json({
+      candlesFetched: candles.length,
+      triggersDetected: triggers,
+      preAiPasses: passes,
+      preAiRejected: triggers - passes,
+      estimatedAiCalls: passes,
+      estimatedTokensIn: tokensIn,
+      estimatedTokensOut: tokensOut,
+      estimatedUsd: estUsd,
+      tfMs,
+    });
+  } catch (e) {
+    console.error('[backtest cost]', e.message);
+    res.status(500).json({ error: 'cost_estimate_failed', detail: e.message });
+  }
+});
+
+app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
+  if (!req.profile?.is_admin && req.user.email.toLowerCase() !== ADMIN_EMAIL) {
+    return res.status(403).json({ error: 'admin_only' });
+  }
+  try {
+    const { pair, broker, tf, days, preAiThreshold = 45, cooldownCandles = 1, skipAi = false } = req.body || {};
+    const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
+    const tfMs = TF_MS[tf];
+    if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
+    const totalCandles = Math.ceil((days * 24 * 3600 * 1000) / tfMs);
+    if (totalCandles > 1500) return res.status(400).json({ error: 'too_many_candles' });
+
+    console.log('[backtest]', pair, tf, days + 'd', 'skipAi=' + skipAi, 'threshold=' + preAiThreshold);
+
+    const lookbackMs = days * 24 * 3600 * 1000;
+    const [candles, h1, h4, btcCandles, funding] = await Promise.all([
+      fetchHistoricalCandles(pair, tf, broker, totalCandles),
+      fetchHistoricalCandles(pair, '1h', broker, Math.min(Math.ceil(lookbackMs / 3600000) + 24, 1000)).catch(() => []),
+      fetchHistoricalCandles(pair, '4h', broker, Math.min(Math.ceil(lookbackMs / 14400000) + 12, 500)).catch(() => []),
+      pair !== 'BTCUSDT' ? fetchHistoricalCandles('BTCUSDT', tf, 'binance', totalCandles).catch(() => []) : Promise.resolve([]),
+      fetchHistoricalFunding(pair, lookbackMs).catch(() => []),
+    ]);
+
+    if (!candles.length) return res.status(502).json({ error: 'no_candles' });
+
+    let triggers = 0, preAiPasses = 0, aiCalls = 0;
+    const trades = [];
+    let cooldownUntilIdx = 0;
+
+    for (let i = 30; i < candles.length; i++) {
+      if (i < cooldownUntilIdx) continue;
+
+      const window = candles.slice(i - 30, i + 1);
+      const trig = detectTrigger(window);
+      if (!trig) continue;
+      triggers++;
+
+      const ts = candles[i].t;
+      const h1WinEnd = (() => { const idx = h1.findIndex(c => c.t > ts); return idx < 0 ? h1.length : idx; })();
+      const h4WinEnd = (() => { const idx = h4.findIndex(c => c.t > ts); return idx < 0 ? h4.length : idx; })();
+      const btcEnd  = (() => { const idx = btcCandles.findIndex(c => c.t > ts); return idx < 0 ? btcCandles.length : idx; })();
+      const h1Slice = h1.slice(Math.max(0, h1WinEnd - 10), h1WinEnd);
+      const h4Slice = h4.slice(Math.max(0, h4WinEnd - 8),  h4WinEnd);
+      const btcSlice = btcCandles.slice(Math.max(0, btcEnd - 30), btcEnd);
+      const fr = fundingAt(funding, ts);
+
+      const pre = preAiScoreBacktest(pair, tf, window, trig, h1Slice, fr);
+      if (pre.score < preAiThreshold) continue;
+      preAiPasses++;
+      cooldownUntilIdx = i + cooldownCandles;
+
+      let signal = null;
+      if (!skipAi) {
+        aiCalls++;
+        signal = await runBacktestAI(pair, tf, broker, window, h1Slice, h4Slice, btcSlice, fr, trig);
+        if (!signal) continue; // AI failed
+      } else {
+        // Synthetic signal for dry-run cost preview
+        signal = { direction: 'DRY_RUN', _dry: true };
+      }
+
+      const forward = candles.slice(i + 1, i + 1 + 100); // up to 100 candles forward for outcome
+      let outcome = null;
+      if (!skipAi && signal && (signal.direction === 'LONG' || signal.direction === 'SHORT')) {
+        outcome = simulateOutcome(signal, forward, tfMs);
+      }
+      trades.push({
+        idx: i,
+        ts,
+        trigger: trig,
+        preScore: pre.score,
+        preReasons: pre.reasons,
+        signal: skipAi ? null : signal,
+        outcome,
+      });
+    }
+
+    // Aggregate stats
+    const closed = trades.filter(t => t.outcome && (t.outcome.outcome === 'TP' || t.outcome.outcome === 'SL' || t.outcome.outcome === 'BE'));
+    const tp = closed.filter(t => t.outcome.outcome === 'TP').length;
+    const sl = closed.filter(t => t.outcome.outcome === 'SL').length;
+    const be = closed.filter(t => t.outcome.outcome === 'BE').length;
+    const expired = trades.filter(t => t.outcome && t.outcome.outcome === 'EXPIRED').length;
+    const totalR = closed.reduce((s, t) => s + (t.outcome.outcomeR || 0), 0);
+    const winRate = closed.length ? +(((tp + be * 0.5) / closed.length) * 100).toFixed(1) : 0;
+    const expectancy = closed.length ? +(totalR / closed.length).toFixed(2) : 0;
+
+    // By trigger type
+    function byKey(getKey) {
+      const groups = {};
+      for (const t of trades) {
+        if (!t.outcome || !['TP', 'SL', 'BE'].includes(t.outcome.outcome)) continue;
+        const k = getKey(t);
+        if (!groups[k]) groups[k] = { tp: 0, sl: 0, be: 0, totalR: 0, total: 0 };
+        groups[k].total++;
+        if (t.outcome.outcome === 'TP') groups[k].tp++;
+        else if (t.outcome.outcome === 'SL') groups[k].sl++;
+        else if (t.outcome.outcome === 'BE') groups[k].be++;
+        groups[k].totalR += t.outcome.outcomeR || 0;
+      }
+      for (const g of Object.values(groups)) {
+        g.totalR = +g.totalR.toFixed(2);
+        g.winRate = g.total ? +(((g.tp + g.be * 0.5) / g.total) * 100).toFixed(1) : 0;
+      }
+      return groups;
+    }
+
+    const byTrigger = byKey(t => t.trigger.type);
+    const byHour = byKey(t => String(new Date(t.ts).getUTCHours()).padStart(2, '0'));
+    const byDirection = byKey(t => t.signal?.direction || 'unknown');
+
+    res.json({
+      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi },
+      candlesProcessed: candles.length,
+      triggers,
+      preAiPasses,
+      preAiRejected: triggers - preAiPasses,
+      aiCalls,
+      stats: {
+        signalsGenerated: trades.length,
+        noTrade: trades.filter(t => t.signal?.direction === 'NO TRADE').length,
+        rrDowngraded: trades.filter(t => t.signal?._rrDowngraded).length,
+        long: trades.filter(t => t.signal?.direction === 'LONG').length,
+        short: trades.filter(t => t.signal?.direction === 'SHORT').length,
+        closed: closed.length,
+        tp, sl, be, expired,
+        totalR: +totalR.toFixed(2),
+        winRate,
+        expectancy,
+      },
+      byTrigger,
+      byHour,
+      byDirection,
+      trades, // full list for the UI to render
+    });
+  } catch (e) {
+    console.error('[backtest run]', e.message);
+    res.status(500).json({ error: 'backtest_failed', detail: e.message });
+  }
+});
+
 // PART 6 — SSE LIVE PRICES (server multiplexes one exchange WS per symbol)
 // ════════════════════════════════════════════════════════════════════════════
 

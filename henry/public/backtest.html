@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Backtest</title>
+<style>
+  :root{
+    --bg:#08090d;--bg2:#12141b;--bg3:#1a1d28;--fg:#e8eaf0;--mu:#9aa0a6;
+    --b1:rgba(255,255,255,0.06);--b2:rgba(255,255,255,0.12);--di:#23262e;
+    --cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830;--pu:#9966ff;
+    --mn:'Courier New',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--mn);font-size:12px;line-height:1.6;padding:16px;min-height:100vh}
+  header{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--b1);padding-bottom:14px;margin-bottom:18px;flex-wrap:wrap}
+  h1{font-size:14px;letter-spacing:.18em;color:var(--cy);font-weight:bold}
+  a.back{padding:5px 14px;background:transparent;border:1px solid var(--b2);color:var(--mu);text-decoration:none;border-radius:3px;font-size:10px;letter-spacing:.1em}
+  a.back:hover{color:var(--cy);border-color:var(--cy)}
+  .card{background:var(--bg2);border:1px solid var(--b1);border-radius:6px;padding:14px;margin-bottom:14px}
+  .card h2{font-size:10px;color:var(--mu);letter-spacing:.15em;margin-bottom:10px;font-weight:normal}
+  label{font-size:10px;color:var(--mu);letter-spacing:.1em;display:block;margin-bottom:4px}
+  select,input[type=number]{background:var(--bg3);border:1px solid var(--di);color:var(--fg);font-family:var(--mn);font-size:12px;padding:6px 9px;border-radius:3px;outline:none;width:100%}
+  select:focus,input:focus{border-color:var(--cy)}
+  .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px}
+  .form-row{display:flex;align-items:center;gap:8px}
+  button{background:var(--cy);border:none;color:#000;font-family:var(--mn);font-size:11px;letter-spacing:.12em;font-weight:bold;padding:8px 16px;border-radius:3px;cursor:pointer}
+  button:hover{background:#00bce0}
+  button:disabled{opacity:.5;cursor:not-allowed;background:var(--di);color:var(--mu)}
+  button.ghost{background:transparent;border:1px solid var(--di);color:var(--mu)}
+  button.ghost:hover{border-color:var(--cy);color:var(--cy)}
+  .stat-row{display:flex;justify-content:space-between;padding:4px 0;font-size:11px;border-bottom:1px solid var(--b1)}
+  .stat-row:last-child{border-bottom:none}
+  .stat-label{color:var(--mu)}
+  .v-gr{color:var(--gr)}.v-re{color:var(--re)}.v-am{color:var(--am)}.v-cy{color:var(--cy)}.v-mu{color:var(--mu)}
+  .big-num{font-size:24px;font-weight:bold}
+  .big-num-row{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .big-num-label{font-size:9px;color:var(--mu);letter-spacing:.1em}
+  table{width:100%;border-collapse:collapse;font-size:10.5px}
+  th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--b1)}
+  th{font-size:9px;color:var(--mu);letter-spacing:.1em;font-weight:normal;background:var(--bg3);position:sticky;top:0}
+  tr:hover{background:rgba(255,255,255,0.02)}
+  .pill{display:inline-block;padding:2px 7px;border:1px solid var(--b1);border-radius:2px;font-size:9px;color:var(--mu);letter-spacing:.05em;margin-right:4px}
+  .pill.tp{color:var(--gr);border-color:rgba(0,229,160,0.3);background:rgba(0,229,160,0.05)}
+  .pill.sl{color:var(--re);border-color:rgba(255,68,102,0.3);background:rgba(255,68,102,0.05)}
+  .pill.be{color:var(--am);border-color:rgba(255,184,48,0.3);background:rgba(255,184,48,0.05)}
+  .pill.exp{color:var(--mu);border-color:var(--b1)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:14px}
+  .empty{padding:30px 14px;text-align:center;color:var(--mu);font-size:11px;font-style:italic}
+  .chart-wrap{height:200px;padding:8px 4px;background:var(--bg3);border-radius:4px;margin-top:8px}
+  svg{width:100%;height:100%;font-size:9px}
+  .warning{background:rgba(255,184,48,0.05);border:1px solid rgba(255,184,48,0.3);color:var(--am);padding:10px 14px;border-radius:4px;font-size:10px;line-height:1.7;margin-bottom:14px}
+  .warning b{color:#ffd175}
+  details summary{cursor:pointer;color:var(--mu);font-size:10px;letter-spacing:.1em;padding:4px 0}
+  details summary:hover{color:var(--cy)}
+  .trades-scroll{max-height:400px;overflow-y:auto}
+</style>
+</head>
+<body>
+<header>
+  <h1>HENRY · BACKTEST</h1>
+  <a href="/terminal" class="back">← BACK TO TERMINAL</a>
+</header>
+
+<div class="warning">
+  <b>⚠ Backtest is approximate, not a guarantee.</b> News, calendar, footprint and
+  cross-broker context can't be reconstructed historically — those sources are skipped.
+  Sonnet outputs are non-deterministic. Slippage isn't modeled. Use this to validate
+  prompt/threshold changes vs. baseline, not as proof of future performance.
+</div>
+
+<div class="card">
+  <h2>CONFIGURATION</h2>
+  <div class="form-grid">
+    <div>
+      <label>PAIR</label>
+      <select id="pair">
+        <option>BTCUSDT</option><option>ETHUSDT</option><option>SOLUSDT</option>
+        <option>XRPUSDT</option><option>DOGEUSDT</option><option>AVAXUSDT</option>
+        <option>BNBUSDT</option><option>ADAUSDT</option><option>LINKUSDT</option>
+        <option>SUIUSDT</option><option>NEARUSDT</option><option>1000PEPEUSDT</option>
+        <option>GOLD</option>
+      </select>
+    </div>
+    <div>
+      <label>BROKER</label>
+      <select id="broker">
+        <option value="binance">Binance</option>
+        <option value="weex">Weex</option>
+        <option value="hyperliquid">Hyperliquid</option>
+        <option value="massive">Massive (Polygon — Gold only)</option>
+      </select>
+    </div>
+    <div>
+      <label>TIMEFRAME</label>
+      <select id="tf">
+        <option value="5m">5m</option>
+        <option value="15m" selected>15m</option>
+        <option value="1h">1H</option>
+        <option value="4h">4H</option>
+      </select>
+    </div>
+    <div>
+      <label>DAYS BACK</label>
+      <select id="days">
+        <option value="1">1 day</option>
+        <option value="3">3 days</option>
+        <option value="7" selected>7 days</option>
+        <option value="14">14 days</option>
+        <option value="30">30 days</option>
+      </select>
+    </div>
+    <div>
+      <label>PRE-AI THRESHOLD</label>
+      <input type="number" id="threshold" value="45" min="0" max="85" step="5">
+    </div>
+    <div>
+      <label>COOLDOWN (CANDLES)</label>
+      <input type="number" id="cooldown" value="2" min="0" max="20">
+    </div>
+  </div>
+  <div class="form-row">
+    <button id="estimateBtn" class="ghost">📊 ESTIMATE COST (FREE)</button>
+    <button id="runBtn" disabled>▶ RUN BACKTEST</button>
+    <span id="status" style="font-size:10px;color:var(--mu);margin-left:auto"></span>
+  </div>
+</div>
+
+<div id="estimateBox" style="display:none" class="card">
+  <h2>COST ESTIMATE</h2>
+  <div class="big-num-row">
+    <div><div class="big-num-label">CANDLES</div><div class="big-num" id="est-candles">—</div></div>
+    <div><div class="big-num-label">TRIGGERS</div><div class="big-num" id="est-triggers">—</div></div>
+    <div><div class="big-num-label">PRE-AI PASSES</div><div class="big-num v-cy" id="est-passes">—</div></div>
+    <div><div class="big-num-label">EST. AI CALLS</div><div class="big-num v-am" id="est-calls">—</div></div>
+    <div><div class="big-num-label">EST. COST</div><div class="big-num v-am" id="est-cost">—</div></div>
+  </div>
+  <div style="font-size:10px;color:var(--mu);margin-top:6px">Pre-AI filter rejected: <span id="est-rejected">—</span> | Tokens in/out: <span id="est-tokens">—</span></div>
+</div>
+
+<div id="results" style="display:none">
+
+  <div class="card">
+    <h2>RESULTS — OVERALL</h2>
+    <div class="big-num-row">
+      <div><div class="big-num-label">SIGNALS</div><div class="big-num" id="r-signals">—</div></div>
+      <div><div class="big-num-label">CLOSED</div><div class="big-num" id="r-closed">—</div></div>
+      <div><div class="big-num-label">WIN RATE</div><div class="big-num" id="r-wr">—</div></div>
+      <div><div class="big-num-label">NET R</div><div class="big-num" id="r-net">—</div></div>
+      <div><div class="big-num-label">EXPECTANCY / TRADE</div><div class="big-num" id="r-exp">—</div></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <span class="pill tp">TP: <span id="r-tp">0</span></span>
+      <span class="pill sl">SL: <span id="r-sl">0</span></span>
+      <span class="pill be">BE: <span id="r-be">0</span></span>
+      <span class="pill exp">EXPIRED: <span id="r-exp-count">0</span></span>
+      <span class="pill">NO TRADE: <span id="r-nt">0</span></span>
+      <span class="pill">RR-DOWNGRADED: <span id="r-rr-d">0</span></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>CUMULATIVE R</h2>
+    <div class="chart-wrap"><svg id="chart"></svg></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>BY TRIGGER</h2>
+      <table id="t-trigger"><thead><tr><th>Type</th><th>N</th><th>WR%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>BY DIRECTION</h2>
+      <table id="t-dir"><thead><tr><th>Dir</th><th>N</th><th>WR%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>BY HOUR (UTC)</h2>
+      <table id="t-hour"><thead><tr><th>Hour</th><th>N</th><th>WR%</th><th>R</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>ALL TRADES (<span id="t-count">0</span>)</h2>
+    <details>
+      <summary>SHOW DETAILED LOG</summary>
+      <div class="trades-scroll" style="margin-top:10px">
+        <table id="t-trades"><thead><tr>
+          <th>Time</th><th>Trig</th><th>Score</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>RR</th><th>Outcome</th><th>R</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </details>
+  </div>
+</div>
+
+<script>
+function fmt(n){if(n==null||isNaN(n))return '—';return (n>=0?'+':'')+n.toFixed(2)+'R';}
+function color(n){return n>=0?'v-gr':'v-re';}
+function wrColor(p){return p>=60?'v-gr':p>=40?'v-am':'v-re';}
+function pCol(o){return o==='TP'?'v-gr':o==='SL'?'v-re':o==='BE'?'v-am':'v-mu';}
+function shortDate(s){if(!s)return '—';try{return new Date(s).toISOString().slice(5,16).replace('T',' ');}catch(e){return '—';}}
+
+function getConfig(){
+  return {
+    pair: document.getElementById('pair').value,
+    broker: document.getElementById('broker').value,
+    tf: document.getElementById('tf').value,
+    days: parseInt(document.getElementById('days').value, 10),
+    preAiThreshold: parseInt(document.getElementById('threshold').value, 10),
+    cooldownCandles: parseInt(document.getElementById('cooldown').value, 10),
+  };
+}
+
+document.getElementById('estimateBtn').onclick = async function() {
+  const cfg = getConfig();
+  setStatus('Estimating cost…');
+  document.getElementById('estimateBox').style.display = 'none';
+  try {
+    const r = await fetch('/api/backtest/cost-estimate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(cfg),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'failed');
+    document.getElementById('est-candles').textContent = d.candlesFetched;
+    document.getElementById('est-triggers').textContent = d.triggersDetected;
+    document.getElementById('est-passes').textContent = d.preAiPasses;
+    document.getElementById('est-calls').textContent = d.estimatedAiCalls;
+    document.getElementById('est-cost').textContent = '$' + d.estimatedUsd;
+    document.getElementById('est-rejected').textContent = d.preAiRejected;
+    document.getElementById('est-tokens').textContent = (d.estimatedTokensIn/1000).toFixed(1) + 'k / ' + (d.estimatedTokensOut/1000).toFixed(1) + 'k';
+    document.getElementById('estimateBox').style.display = 'block';
+    document.getElementById('runBtn').disabled = false;
+    setStatus('Cost estimated. Click RUN to execute (' + d.preAiPasses + ' AI calls).');
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  }
+};
+
+document.getElementById('runBtn').onclick = async function() {
+  const cfg = getConfig();
+  setStatus('Running backtest… this can take 1-3 minutes for ' + cfg.preAiThreshold + '+ AI calls.');
+  document.getElementById('runBtn').disabled = true;
+  document.getElementById('estimateBtn').disabled = true;
+  document.getElementById('results').style.display = 'none';
+  try {
+    const r = await fetch('/api/backtest/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(cfg),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'failed');
+    renderResults(d);
+    setStatus('Backtest complete: ' + d.aiCalls + ' AI calls, ' + d.stats.closed + ' closed trades.');
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  } finally {
+    document.getElementById('runBtn').disabled = false;
+    document.getElementById('estimateBtn').disabled = false;
+  }
+};
+
+function setStatus(msg){
+  document.getElementById('status').textContent = msg;
+}
+
+function renderResults(d) {
+  const s = d.stats;
+  document.getElementById('r-signals').textContent = s.signalsGenerated;
+  document.getElementById('r-closed').textContent = s.closed;
+  const wrEl = document.getElementById('r-wr');
+  wrEl.textContent = s.winRate + '%';
+  wrEl.className = 'big-num ' + wrColor(s.winRate);
+  const netEl = document.getElementById('r-net');
+  netEl.textContent = fmt(s.totalR);
+  netEl.className = 'big-num ' + color(s.totalR);
+  const expEl = document.getElementById('r-exp');
+  expEl.textContent = fmt(s.expectancy);
+  expEl.className = 'big-num ' + color(s.expectancy);
+  document.getElementById('r-tp').textContent = s.tp;
+  document.getElementById('r-sl').textContent = s.sl;
+  document.getElementById('r-be').textContent = s.be;
+  document.getElementById('r-exp-count').textContent = s.expired;
+  document.getElementById('r-nt').textContent = s.noTrade;
+  document.getElementById('r-rr-d').textContent = s.rrDowngraded;
+
+  renderGroupTable('t-trigger', d.byTrigger);
+  renderGroupTable('t-dir', d.byDirection);
+  renderGroupTable('t-hour', d.byHour);
+  renderTrades(d.trades);
+  drawCumChart(d.trades);
+
+  document.getElementById('results').style.display = 'block';
+}
+
+function renderGroupTable(elId, groups) {
+  const tbody = document.querySelector('#' + elId + ' tbody');
+  tbody.innerHTML = '';
+  const entries = Object.entries(groups || {}).sort((a, b) => b[1].total - a[1].total);
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="v-mu" style="font-style:italic">No data</td></tr>';
+    return;
+  }
+  for (const [k, v] of entries) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + k + '</td>'
+      + '<td class="v-mu">' + v.total + '</td>'
+      + '<td class="' + wrColor(v.winRate) + '">' + v.winRate + '%</td>'
+      + '<td class="' + color(v.totalR) + '">' + fmt(v.totalR) + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+function renderTrades(trades) {
+  const tbody = document.querySelector('#t-trades tbody');
+  tbody.innerHTML = '';
+  document.getElementById('t-count').textContent = trades.length;
+  for (const t of trades) {
+    const sig = t.signal || {};
+    const o = t.outcome;
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td class="v-mu">' + shortDate(t.ts) + '</td>'
+      + '<td>' + (t.trigger?.type || '—') + '</td>'
+      + '<td class="v-mu">' + (t.preScore != null ? t.preScore : '—') + '</td>'
+      + '<td class="' + (sig.direction === 'LONG' ? 'v-gr' : sig.direction === 'SHORT' ? 'v-re' : 'v-mu') + '">' + (sig.direction || '—') + '</td>'
+      + '<td class="v-mu">' + (sig.entry != null ? sig.entry : '—') + '</td>'
+      + '<td class="v-mu">' + (sig.sl != null ? sig.sl : '—') + '</td>'
+      + '<td class="v-mu">' + (sig.tp != null ? sig.tp : '—') + '</td>'
+      + '<td class="v-mu">' + (sig.rr != null ? sig.rr + 'R' : '—') + '</td>'
+      + '<td class="' + (o ? pCol(o.outcome) : 'v-mu') + '">' + (o ? o.outcome : '—') + '</td>'
+      + '<td class="' + (o ? color(o.outcomeR) : 'v-mu') + '">' + (o && o.outcome !== 'EXPIRED' ? fmt(o.outcomeR) : '—') + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+function drawCumChart(trades) {
+  const svg = document.getElementById('chart');
+  svg.innerHTML = '';
+  const closed = trades.filter(t => t.outcome && ['TP', 'SL', 'BE'].includes(t.outcome.outcome));
+  if (!closed.length) {
+    svg.innerHTML = '<text x="50%" y="50%" fill="#5a5f7a" text-anchor="middle">No closed trades</text>';
+    return;
+  }
+  let cum = 0;
+  const points = closed.map(t => {
+    cum += t.outcome.outcomeR || 0;
+    return { ts: t.outcome.exitTs || t.ts, cumR: cum };
+  });
+  const rect = svg.getBoundingClientRect();
+  const W = rect.width || 800, H = rect.height || 200;
+  const PL = 50, PR = 10, PT = 12, PB = 20, cW = W - PL - PR, cH = H - PT - PB;
+  const maxR = Math.max(...points.map(p => p.cumR));
+  const minR = Math.min(...points.map(p => p.cumR));
+  const rng = (maxR - minR) || 1;
+  const x = i => PL + i / (points.length - 1 || 1) * cW;
+  const y = v => PT + cH - (v - minR) / rng * cH;
+  // zero line
+  if (minR < 0 && maxR > 0) {
+    const zy = y(0);
+    svg.innerHTML += '<line x1="' + PL + '" x2="' + (W-PR) + '" y1="' + zy + '" y2="' + zy + '" stroke="rgba(255,255,255,0.08)" stroke-dasharray="2,3"/>';
+  }
+  // y labels
+  for (let t = 0; t <= 4; t++) {
+    const v = minR + rng * (t/4);
+    const py = y(v);
+    svg.innerHTML += '<text x="' + (PL-6) + '" y="' + (py+3) + '" fill="#5a5f7a" text-anchor="end">' + v.toFixed(1) + 'R</text>';
+    svg.innerHTML += '<line x1="' + PL + '" x2="' + (W-PR) + '" y1="' + py + '" y2="' + py + '" stroke="rgba(255,255,255,0.04)"/>';
+  }
+  // path
+  const d = points.map((p, i) => (i===0?'M':'L') + x(i) + ',' + y(p.cumR)).join(' ');
+  svg.innerHTML += '<path d="' + d + '" stroke="#00d4ff" stroke-width="1.5" fill="none"/>';
+  const fillD = d + ' L' + x(points.length-1) + ',' + (PT+cH) + ' L' + x(0) + ',' + (PT+cH) + ' Z';
+  svg.innerHTML = '<path d="' + fillD + '" fill="rgba(0,212,255,0.06)"/>' + svg.innerHTML;
+  // end marker
+  const last = points[points.length-1];
+  svg.innerHTML += '<circle cx="' + x(points.length-1) + '" cy="' + y(last.cumR) + '" r="3" fill="#00d4ff"/>';
+  svg.innerHTML += '<text x="' + (x(points.length-1)-6) + '" y="' + (y(last.cumR)-6) + '" fill="#00d4ff" text-anchor="end">' + last.cumR.toFixed(2) + 'R</text>';
+}
+</script>
+</body>
+</html>
