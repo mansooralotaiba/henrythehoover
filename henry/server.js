@@ -385,6 +385,7 @@ app.get('/api/me', requireSession, (req, res) => {
     subscription_status: req.profile?.subscription_status || 'inactive',
     current_period_end:  req.profile?.current_period_end || null,
     ai_model:            AI_MODEL,
+    strategy_mode:       STRATEGY_MODE,
   });
 });
 
@@ -1431,11 +1432,18 @@ function atrMultiplierForAsset(coin) {
 // Trigger direction inference from detector output (e.g. "BOS up" → bull)
 function inferTriggerDirection(trigger) {
   if (!trigger) return null;
-  if (trigger.type === 'bos')        return /up/i.test(trigger.desc) ? 'bull' : 'bear';
-  if (trigger.type === 'sweep')      return /high/i.test(trigger.desc) ? 'bear' : 'bull';
-  if (trigger.type === 'rejection')  return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
-  if (trigger.type === 'atr')        return /up/i.test(trigger.desc) ? 'bull' : 'bear';
-  if (trigger.type === 'fvg')        return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  // Price-action types (legacy)
+  if (trigger.type === 'bos')           return /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'sweep')         return /high/i.test(trigger.desc) ? 'bear' : 'bull';
+  if (trigger.type === 'rejection')     return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'atr')           return /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'fvg')           return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  // ICT/S&D types
+  if (trigger.type === 'mss_disp')      return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'sweep_disp')    return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'ob_mitigation') return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'sd_zone')       return /Demand/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'fvg_ote')       return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
   return null;
 }
 
@@ -1550,12 +1558,19 @@ async function preAiConfluenceScore(coin, tf, broker, baseCandles, trigger) {
   const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
   const volSpike = histAvgVol > 0 && last.v > histAvgVol * 1.5;
   let tScore = 0;
+  // Price-action types (legacy)
   if (trigger.type === 'bos')             tScore = volSpike ? 20 : 12;
   else if (trigger.type === 'sweep')      tScore = volSpike ? 15 : 8;
-  else if (trigger.type === 'rejection')  tScore = volSpike ? 18 : 12; // detector already enforces 1.2× volume
-  else if (trigger.type === 'atr')        tScore = 14;                  // intrinsic vol expansion
-  else if (trigger.type === 'fvg')        tScore = volSpike ? 12 : 8;   // passive entry zone
-  else                                    tScore = 8;
+  else if (trigger.type === 'rejection')  tScore = volSpike ? 18 : 12;
+  else if (trigger.type === 'atr')        tScore = 14;
+  else if (trigger.type === 'fvg')        tScore = volSpike ? 12 : 8;
+  // ICT/S&D types — higher base scores (built-in confirmation)
+  else if (trigger.type === 'mss_disp')      tScore = 22; // 70% body + 1.5x vol baked in
+  else if (trigger.type === 'sweep_disp')    tScore = 18; // 60% close-position baked in
+  else if (trigger.type === 'ob_mitigation') tScore = 22; // first OB touch is high-conviction
+  else if (trigger.type === 'sd_zone')       tScore = 20; // first S&D zone touch
+  else if (trigger.type === 'fvg_ote')       tScore = 20; // FVG + 62-79% retrace confluence
+  else                                       tScore = 8;
   score += tScore;
   reasons.push(`Trig=${trigger.type}${volSpike ? '✓vol' : ''}+${tScore}`);
 
@@ -2222,13 +2237,274 @@ function _detectFVG(candles) {
 
 // Main trigger dispatcher — tries detectors in priority order
 //   bos > sweep > rejection > atr > fvg
-function detectTrigger(candles) {
+// ── ICT / SUPPLY-DEMAND DETECTORS ─────────────────────────────────────────
+// Higher-conviction patterns. Fire less often than BOS/sweep but with much
+// stronger institutional setups (order blocks, S&D zones, displacement, OTE).
+
+// 1. MSS + Displacement — refined BOS. Requires:
+//   • Close exceeds 10-bar range (break of structure)
+//   • Strong displacement: candle body >= 70% of range, in direction of break
+//   • Volume >= 1.5× the 10-bar avg (institutional confirmation)
+function _detectMSSDisplacement(candles) {
+  if (candles.length < 12) return null;
+  const last = candles[candles.length - 1];
+  const recent = candles.slice(-11, -1);
+  const maxH = Math.max(...recent.map(c => c.h));
+  const minL = Math.min(...recent.map(c => c.l));
+  const range = last.h - last.l;
+  if (range <= 0) return null;
+  const body = Math.abs(last.c - last.o);
+  const bodyPct = body / range;
+  const avgVol = recent.reduce((s, c) => s + (c.v || 0), 0) / 10;
+  const volSpike = avgVol > 0 && (last.v || 0) > avgVol * 1.5;
+  if (!volSpike || bodyPct < 0.7) return null;
+
+  if (last.c > maxH && last.c > last.o) {
+    return { type: 'mss_disp', desc: `Bullish MSS+displacement — close ${last.c.toFixed(4)} > prev high ${maxH.toFixed(4)} (body ${Math.round(bodyPct * 100)}%, vol ${(last.v / avgVol).toFixed(1)}x)` };
+  }
+  if (last.c < minL && last.c < last.o) {
+    return { type: 'mss_disp', desc: `Bearish MSS+displacement — close ${last.c.toFixed(4)} < prev low ${minL.toFixed(4)} (body ${Math.round(bodyPct * 100)}%, vol ${(last.v / avgVol).toFixed(1)}x)` };
+  }
+  return null;
+}
+
+// 2. Liquidity Sweep + Displacement — refined sweep. Requires:
+//   • Wick beyond 10-bar high/low (liquidity grab)
+//   • Close back inside the range
+//   • Body sits in upper/lower 40% (strong rejection back)
+//   • Volume >= 1.2× avg
+function _detectSweepDisplacement(candles) {
+  if (candles.length < 12) return null;
+  const last = candles[candles.length - 1];
+  const recent = candles.slice(-11, -1);
+  const maxH = Math.max(...recent.map(c => c.h));
+  const minL = Math.min(...recent.map(c => c.l));
+  const range = last.h - last.l;
+  if (range <= 0) return null;
+  const avgVol = recent.reduce((s, c) => s + (c.v || 0), 0) / 10;
+  const volOk = avgVol > 0 && (last.v || 0) > avgVol * 1.2;
+  if (!volOk) return null;
+
+  // Bullish: wick below range, close in upper 60% of bar
+  if (last.l < minL && last.c > minL) {
+    const closePosition = (last.c - last.l) / range;
+    if (closePosition >= 0.6) {
+      return { type: 'sweep_disp', desc: `Bullish sweep+displacement — wick ${last.l.toFixed(4)} swept ${minL.toFixed(4)}, close in upper ${Math.round(closePosition * 100)}%` };
+    }
+  }
+  // Bearish: wick above range, close in lower 60% of bar
+  if (last.h > maxH && last.c < maxH) {
+    const closePosition = (last.h - last.c) / range;
+    if (closePosition >= 0.6) {
+      return { type: 'sweep_disp', desc: `Bearish sweep+displacement — wick ${last.h.toFixed(4)} swept ${maxH.toFixed(4)}, close in lower ${Math.round(closePosition * 100)}%` };
+    }
+  }
+  return null;
+}
+
+// 3. Order Block Mitigation — institutional pattern.
+//   • Find last opposite-color candle before strong displacement (3+ candles in trend dir, total move ≥ 2× OB range)
+//   • OB must NOT have been mitigated by intervening candles
+//   • Current candle must be retesting the OB's range
+function _detectOrderBlock(candles) {
+  if (candles.length < 30) return null;
+  const last = candles[candles.length - 1];
+  // Search candles 5-25 bars back for OBs
+  for (let i = candles.length - 25; i <= candles.length - 5; i++) {
+    if (i < 0) continue;
+    const ob = candles[i];
+    const next = candles.slice(i + 1, Math.min(i + 5, candles.length));
+    if (next.length < 3) continue;
+    const obRange = ob.h - ob.l;
+    if (obRange <= 0) continue;
+
+    const isRed = ob.c < ob.o;
+    const isGreen = ob.c > ob.o;
+
+    // Bullish OB: red candle followed by strong up move
+    if (isRed) {
+      const moveUp = Math.max(...next.map(c => c.h)) - ob.l;
+      if (moveUp > obRange * 2) {
+        const obTop = ob.h;
+        const obBot = ob.l;
+        // Check OB hasn't been mitigated yet (price hasn't dipped into OB range since formation, excluding current candle)
+        const intervening = candles.slice(i + 1, candles.length - 1);
+        const wasMitigated = intervening.some(c => c.l <= obTop && c.l > obBot && c.h > obTop);
+        if (wasMitigated) continue;
+        // Current candle testing the OB
+        if (last.l <= obTop && last.l >= obBot) {
+          return {
+            type: 'ob_mitigation',
+            desc: `Bullish OB mitigation @ ${obBot.toFixed(4)}-${obTop.toFixed(4)} (formed ${candles.length - 1 - i} bars ago)`,
+          };
+        }
+      }
+    }
+    // Bearish OB: green candle followed by strong down move
+    if (isGreen) {
+      const moveDown = ob.h - Math.min(...next.map(c => c.l));
+      if (moveDown > obRange * 2) {
+        const obTop = ob.h;
+        const obBot = ob.l;
+        const intervening = candles.slice(i + 1, candles.length - 1);
+        const wasMitigated = intervening.some(c => c.h >= obBot && c.h < obTop && c.l < obBot);
+        if (wasMitigated) continue;
+        if (last.h >= obBot && last.h <= obTop) {
+          return {
+            type: 'ob_mitigation',
+            desc: `Bearish OB mitigation @ ${obBot.toFixed(4)}-${obTop.toFixed(4)} (formed ${candles.length - 1 - i} bars ago)`,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// 4. Supply/Demand Zone Retest — classic pattern.
+//   • Base: 3-5 tight candles within a small range (≤1.5× the prior candle avg range)
+//   • Followed by strong move out (≥ 2× base range, in 3-4 candles)
+//   • Has not been retested yet (first touch)
+//   • Current candle is testing the base
+function _detectSDZone(candles) {
+  if (candles.length < 30) return null;
+  const last = candles[candles.length - 1];
+  for (let i = candles.length - 25; i <= candles.length - 8; i++) {
+    if (i < 5) continue;
+    for (let baseSize = 3; baseSize <= 5; baseSize++) {
+      const baseEnd = i + baseSize;
+      if (baseEnd >= candles.length - 3) break;
+      const base = candles.slice(i, baseEnd);
+      const baseHigh = Math.max(...base.map(c => c.h));
+      const baseLow = Math.min(...base.map(c => c.l));
+      const baseRange = baseHigh - baseLow;
+      if (baseRange <= 0) continue;
+      const surroundingAvg = candles.slice(Math.max(0, i - 5), i).reduce((s, c) => s + (c.h - c.l), 0) / 5;
+      if (surroundingAvg > 0 && baseRange > surroundingAvg * 1.5) continue; // base must be tighter than surroundings
+
+      const afterBase = candles.slice(baseEnd, Math.min(baseEnd + 4, candles.length - 1));
+      if (afterBase.length < 3) continue;
+      const moveUp = Math.max(...afterBase.map(c => c.h)) - baseHigh;
+      const moveDown = baseLow - Math.min(...afterBase.map(c => c.l));
+
+      // Demand zone (rally out of base)
+      if (moveUp > baseRange * 2 && moveUp > moveDown) {
+        const intervening = candles.slice(baseEnd + 4, candles.length - 1);
+        const wasRetested = intervening.some(c => c.l <= baseHigh && c.l >= baseLow);
+        if (wasRetested) continue;
+        if (last.l <= baseHigh && last.l >= baseLow * 0.998) {
+          return { type: 'sd_zone', desc: `Demand zone retest @ ${baseLow.toFixed(4)}-${baseHigh.toFixed(4)} (${baseSize}-candle base)` };
+        }
+      }
+      // Supply zone (drop out of base)
+      if (moveDown > baseRange * 2 && moveDown > moveUp) {
+        const intervening = candles.slice(baseEnd + 4, candles.length - 1);
+        const wasRetested = intervening.some(c => c.h >= baseLow && c.h <= baseHigh);
+        if (wasRetested) continue;
+        if (last.h >= baseLow && last.h <= baseHigh * 1.002) {
+          return { type: 'sd_zone', desc: `Supply zone retest @ ${baseLow.toFixed(4)}-${baseHigh.toFixed(4)} (${baseSize}-candle base)` };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// 5. FVG in OTE Zone — Optimal Trade Entry confluence.
+//   • Find unfilled FVGs in last 20 candles
+//   • Compute swing high/low of last 30 candles
+//   • OTE zone for LONG = 62-79% retracement from swing high (in discount)
+//   • OTE zone for SHORT = 62-79% retracement from swing low (in premium)
+//   • FVG midpoint must sit in the OTE zone, AND current price must be in the FVG
+function _detectFVGInOTE(candles) {
+  if (candles.length < 30) return null;
+  const last = candles[candles.length - 1];
+  const cp = last.c;
+  const window = candles.slice(-30);
+  const swingHigh = Math.max(...window.map(c => c.h));
+  const swingLow = Math.min(...window.map(c => c.l));
+  const range = swingHigh - swingLow;
+  if (range <= 0) return null;
+  // OTE zones (62-79% retracement of the leg)
+  const oteBotLong = swingHigh - range * 0.79;
+  const oteTopLong = swingHigh - range * 0.62;
+  const oteBotShort = swingLow + range * 0.62;
+  const oteTopShort = swingLow + range * 0.79;
+
+  for (let i = candles.length - 22; i < candles.length - 1; i++) {
+    if (i < 1) continue;
+    const c0 = candles[i - 1];
+    const c2 = candles[i + 1];
+    if (!c0 || !c2) continue;
+
+    // Bullish FVG (gap up): c2.l > c0.h
+    if (c2.l > c0.h) {
+      const fvgTop = c2.l, fvgBot = c0.h;
+      const fvgMid = (fvgTop + fvgBot) / 2;
+      // Must be in long OTE zone (discount)
+      if (fvgMid >= oteBotLong && fvgMid <= oteTopLong) {
+        // Check current price is in the FVG
+        if (cp >= fvgBot && cp <= fvgTop) {
+          // Check FVG hasn't been filled yet (no candle between i+1 and now closed below fvgBot)
+          const intervening = candles.slice(i + 2, candles.length - 1);
+          const filled = intervening.some(c => c.l < fvgBot);
+          if (filled) continue;
+          return { type: 'fvg_ote', desc: `Bullish FVG-in-OTE @ ${fvgBot.toFixed(4)}-${fvgTop.toFixed(4)} (62-79% retrace zone)` };
+        }
+      }
+    }
+    // Bearish FVG (gap down): c2.h < c0.l
+    if (c2.h < c0.l) {
+      const fvgTop = c0.l, fvgBot = c2.h;
+      const fvgMid = (fvgTop + fvgBot) / 2;
+      if (fvgMid >= oteBotShort && fvgMid <= oteTopShort) {
+        if (cp >= fvgBot && cp <= fvgTop) {
+          const intervening = candles.slice(i + 2, candles.length - 1);
+          const filled = intervening.some(c => c.h > fvgTop);
+          if (filled) continue;
+          return { type: 'fvg_ote', desc: `Bearish FVG-in-OTE @ ${fvgBot.toFixed(4)}-${fvgTop.toFixed(4)} (62-79% retrace zone)` };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// ── Strategy mode dispatcher ──────────────────────────────────────────────
+// Three modes:
+//   'ict'         — only ICT/S&D detectors (default, higher conviction, fewer signals)
+//   'price-action'— only original BOS/sweep/rejection/atr/fvg (legacy, more signals)
+//   'hybrid'      — ICT first, fall back to price-action when ICT misses
+const STRATEGY_MODE = (process.env.HENRY_STRATEGY_MODE || 'ict').toLowerCase();
+
+function detectTrigger(candles, mode) {
   if (!candles || candles.length < 10) return null;
-  return _detectBOS(candles)
-      || _detectSweep(candles)
-      || _detectRejection(candles)
-      || _detectATRExpansion(candles)
-      || _detectFVG(candles);
+  const m = mode || STRATEGY_MODE;
+
+  if (m === 'price-action') {
+    return _detectBOS(candles)
+        || _detectSweep(candles)
+        || _detectRejection(candles)
+        || _detectATRExpansion(candles)
+        || _detectFVG(candles);
+  }
+
+  // ICT detectors (priority: MSS > sweep+disp > OB > S&D > FVG-OTE)
+  const ictTrigger = _detectMSSDisplacement(candles)
+      || _detectSweepDisplacement(candles)
+      || _detectOrderBlock(candles)
+      || _detectSDZone(candles)
+      || _detectFVGInOTE(candles);
+
+  if (m === 'hybrid' && !ictTrigger) {
+    // Fall through to price-action detectors
+    return _detectBOS(candles)
+        || _detectSweep(candles)
+        || _detectRejection(candles)
+        || _detectATRExpansion(candles)
+        || _detectFVG(candles);
+  }
+  return ictTrigger; // 'ict' mode or hybrid-with-match
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2874,7 +3150,7 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     `You are Henry, an institutional futures trading AI. You are analysing ${coin} on ${tf} timeframe (${broker} broker) AUTONOMOUSLY (no human will retry — your output goes to a phone push and Discord embed directly).`,
     '',
     'You have access to these data sources — REFERENCE THEM in your reasoning field:',
-    '1. Trigger detection — what fired the scan. Types: BOS (break of structure), SWEEP (liquidity grab), REJECTION (long-wick reversal), ATR (volatility expansion + trend), FVG (price entered fair value gap).',
+    '1. Trigger detection — what fired the scan. ICT/S&D types: MSS+DISP (market structure shift with displacement), SWEEP+DISP (liquidity grab + close-in-opposite-half), OB MITIGATION (price retesting an unmitigated order block), S/D ZONE (first retest of a base+drop or base+rally pattern), FVG-OTE (fair value gap inside the 62-79% retracement). Legacy fallback: BOS, SWEEP, REJECTION, ATR, FVG.',
     '2. Multi-timeframe (1H, 4H) — HTF bias and structure',
     '3. Macro correlation — BTC for crypto pairs, DXY for gold/metals (gold has INVERSE correlation with DXY — DXY up = gold down). Use whichever is in the context block.',
     '4. Funding rate — positioning, fade extremes',
@@ -3508,12 +3784,19 @@ function preAiScoreBacktest(coin, tf, baseCandles, trigger, h1Slice, fundingRate
   const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
   const volSpike = histAvgVol > 0 && lastCandle.v > histAvgVol * 1.5;
   let tScore = 0;
+  // Price-action types (legacy)
   if (trigger.type === 'bos')             tScore = volSpike ? 20 : 12;
   else if (trigger.type === 'sweep')      tScore = volSpike ? 15 : 8;
-  else if (trigger.type === 'rejection')  tScore = volSpike ? 18 : 12; // detector already enforces 1.2× volume
-  else if (trigger.type === 'atr')        tScore = 14;                  // intrinsic vol expansion
-  else if (trigger.type === 'fvg')        tScore = volSpike ? 12 : 8;   // passive entry zone
-  else                                    tScore = 8;
+  else if (trigger.type === 'rejection')  tScore = volSpike ? 18 : 12;
+  else if (trigger.type === 'atr')        tScore = 14;
+  else if (trigger.type === 'fvg')        tScore = volSpike ? 12 : 8;
+  // ICT/S&D types — higher base scores (built-in confirmation)
+  else if (trigger.type === 'mss_disp')      tScore = 22; // 70% body + 1.5x vol baked in
+  else if (trigger.type === 'sweep_disp')    tScore = 18; // 60% close-position baked in
+  else if (trigger.type === 'ob_mitigation') tScore = 22; // first OB touch is high-conviction
+  else if (trigger.type === 'sd_zone')       tScore = 20; // first S&D zone touch
+  else if (trigger.type === 'fvg_ote')       tScore = 20; // FVG + 62-79% retrace confluence
+  else                                       tScore = 8;
   score += tScore;
   reasons.push(`Trig=${trigger.type}${volSpike ? '✓vol' : ''}+${tScore}`);
 
@@ -3746,7 +4029,8 @@ function simulateOutcome(signal, forwardCandles, tfMs) {
 app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req, res) => {
   // Quick estimate: fetches candles, counts triggers + pre-AI passes, no AI calls.
   try {
-    const { pair, broker, tf, days, preAiThreshold } = req.body || {};
+    const { pair, broker, tf, days, preAiThreshold, strategy } = req.body || {};
+    const strategyMode = (strategy || STRATEGY_MODE).toLowerCase();
     const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
     const tfMs = TF_MS[tf];
     if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
@@ -3766,11 +4050,16 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
     const threshold = preAiThreshold ?? 65;  // matches live default
     let triggers = 0, passes = 0;
     const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
-    const triggerCounts = { bos: 0, sweep: 0, rejection: 0, atr: 0, fvg: 0 };
+    const triggerCounts = {
+      // ICT/S&D types
+      mss_disp: 0, sweep_disp: 0, ob_mitigation: 0, sd_zone: 0, fvg_ote: 0,
+      // Price-action fallback types
+      bos: 0, sweep: 0, rejection: 0, atr: 0, fvg: 0,
+    };
     // Pre-build per-trigger-TF candle-by-time index for funding lookups
     for (let i = 30; i < candles.length; i++) {
       const window = candles.slice(i - 30, i + 1);
-      const trig = detectTrigger(window);
+      const trig = detectTrigger(window, strategyMode);
       if (!trig) continue;
       triggers++;
       if (triggerCounts[trig.type] != null) triggerCounts[trig.type]++;
@@ -3835,7 +4124,8 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     return res.status(403).json({ error: 'admin_only' });
   }
   try {
-    const { pair, broker, tf, days, preAiThreshold = 65, cooldownCandles = 1, skipAi = false } = req.body || {};
+    const { pair, broker, tf, days, preAiThreshold = 65, cooldownCandles = 1, skipAi = false, strategy } = req.body || {};
+    const strategyMode = (strategy || STRATEGY_MODE).toLowerCase();
     const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
     const tfMs = TF_MS[tf];
     if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
@@ -3857,7 +4147,12 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
 
     let triggers = 0, preAiPasses = 0, aiCalls = 0;
     const vetoCounts = { adx: 0, volume: 0, divergence: 0, funding: 0 };
-    const triggerCounts = { bos: 0, sweep: 0, rejection: 0, atr: 0, fvg: 0 };
+    const triggerCounts = {
+      // ICT/S&D types
+      mss_disp: 0, sweep_disp: 0, ob_mitigation: 0, sd_zone: 0, fvg_ote: 0,
+      // Price-action fallback types
+      bos: 0, sweep: 0, rejection: 0, atr: 0, fvg: 0,
+    };
     const trades = [];
     let cooldownUntilIdx = 0;
 
@@ -3865,7 +4160,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       if (i < cooldownUntilIdx) continue;
 
       const window = candles.slice(i - 30, i + 1);
-      const trig = detectTrigger(window);
+      const trig = detectTrigger(window, strategyMode);
       if (!trig) continue;
       triggers++;
       if (triggerCounts[trig.type] != null) triggerCounts[trig.type]++;
@@ -3982,7 +4277,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
 
     const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
     res.json({
-      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi },
+      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode },
       candlesProcessed: candles.length,
       triggers,
       triggersByType: triggerCounts,

@@ -119,6 +119,14 @@
       <label>COOLDOWN (CANDLES)</label>
       <input type="number" id="cooldown" value="2" min="0" max="20">
     </div>
+    <div>
+      <label>STRATEGY MODE</label>
+      <select id="strategy">
+        <option value="ict" selected>ICT / S&amp;D</option>
+        <option value="hybrid">Hybrid (ICT first, BOS fallback)</option>
+        <option value="price-action">Price Action (BOS / Sweep / etc.)</option>
+      </select>
+    </div>
   </div>
   <div class="form-row">
     <button id="estimateBtn" class="ghost">📊 ESTIMATE COST (FREE)</button>
@@ -229,6 +237,7 @@ function getConfig(){
     days: parseInt(document.getElementById('days').value, 10),
     preAiThreshold: parseInt(document.getElementById('threshold').value, 10),
     cooldownCandles: parseInt(document.getElementById('cooldown').value, 10),
+    strategy: document.getElementById('strategy').value,
   };
 }
 
@@ -260,7 +269,20 @@ document.getElementById('estimateBtn').onclick = async function() {
       if (vb.volume)     parts.push('Volume: ' + vb.volume);
       if (vb.divergence) parts.push('Divergence: ' + vb.divergence);
       if (vb.funding)    parts.push('Funding: ' + vb.funding);
-      document.getElementById('est-veto-breakdown').textContent = parts.length ? parts.join(' · ') : 'none';
+      let txt = parts.length ? parts.join(' · ') : 'none';
+      if (d.triggersByType) {
+        const tt = d.triggersByType;
+        const tparts = [];
+        if (tt.mss_disp)      tparts.push('MSS+DISP:' + tt.mss_disp);
+        if (tt.sweep_disp)    tparts.push('SWEEP+DISP:' + tt.sweep_disp);
+        if (tt.ob_mitigation) tparts.push('OB:' + tt.ob_mitigation);
+        if (tt.sd_zone)       tparts.push('S/D:' + tt.sd_zone);
+        if (tt.fvg_ote)       tparts.push('FVG-OTE:' + tt.fvg_ote);
+        if (tt.bos)           tparts.push('BOS:' + tt.bos);
+        if (tt.sweep)         tparts.push('SWEEP:' + tt.sweep);
+        if (tparts.length) txt += ' · Triggers: ' + tparts.join(' / ');
+      }
+      document.getElementById('est-veto-breakdown').textContent = txt;
     }
     document.getElementById('estimateBox').style.display = 'block';
     document.getElementById('runBtn').disabled = false;
@@ -337,14 +359,21 @@ function renderResults(d) {
   if (d.triggersByType) {
     const tt = d.triggersByType;
     const parts2 = [];
-    if (tt.bos)       parts2.push('<span style="color:var(--gr)">BOS: ' + tt.bos + '</span>');
-    if (tt.sweep)     parts2.push('<span style="color:var(--cy)">SWEEP: ' + tt.sweep + '</span>');
-    if (tt.rejection) parts2.push('<span style="color:var(--am)">REJECTION: ' + tt.rejection + '</span>');
-    if (tt.atr)       parts2.push('<span style="color:var(--pu)">ATR: ' + tt.atr + '</span>');
-    if (tt.fvg)       parts2.push('<span style="color:var(--re)">FVG: ' + tt.fvg + '</span>');
+    // ICT/S&D types
+    if (tt.mss_disp)      parts2.push('<span style="color:var(--gr)">MSS+DISP: ' + tt.mss_disp + '</span>');
+    if (tt.sweep_disp)    parts2.push('<span style="color:var(--cy)">SWEEP+DISP: ' + tt.sweep_disp + '</span>');
+    if (tt.ob_mitigation) parts2.push('<span style="color:var(--am)">OB MITIG: ' + tt.ob_mitigation + '</span>');
+    if (tt.sd_zone)       parts2.push('<span style="color:var(--pu)">S/D ZONE: ' + tt.sd_zone + '</span>');
+    if (tt.fvg_ote)       parts2.push('<span style="color:var(--re)">FVG-OTE: ' + tt.fvg_ote + '</span>');
+    // Price-action fallback types
+    if (tt.bos)       parts2.push('<span style="color:#666">BOS: ' + tt.bos + '</span>');
+    if (tt.sweep)     parts2.push('<span style="color:#666">SWEEP: ' + tt.sweep + '</span>');
+    if (tt.rejection) parts2.push('<span style="color:#666">REJECTION: ' + tt.rejection + '</span>');
+    if (tt.atr)       parts2.push('<span style="color:#666">ATR: ' + tt.atr + '</span>');
+    if (tt.fvg)       parts2.push('<span style="color:#666">FVG: ' + tt.fvg + '</span>');
     document.getElementById('r-trigger-types').innerHTML = parts2.length
       ? parts2.join('  ·  ')
-      : '<span style="color:var(--mu)">No triggers detected in this window</span>';
+      : '<span style="color:var(--mu)">No triggers detected in this window — try Hybrid mode or lower threshold</span>';
   }
 
   renderGroupTable('t-trigger', d.byTrigger);
