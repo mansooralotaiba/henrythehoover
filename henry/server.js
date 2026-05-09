@@ -3309,6 +3309,7 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     'Format: "Move SL to BE at <PRICE>".',
     '',
     'TRADE-OR-SKIP: every trigger reaches you with full filter context. Use your judgment to take or return "NO TRADE". A NO TRADE costs nothing; a bad signal costs 1R.',
+    'IF YOU RETURN NO TRADE: the `reasoning` field must explain your judgment — which specific data points (ADX/volume/divergence/regime/confluence/HTF/news/etc) made you skip and how they weighed against the trigger. Be concrete (cite numbers), not generic ("low confluence" is not enough — say WHICH metric and WHY).',
     '',
     'CRITICAL OUTPUT FORMAT — READ TWICE:',
     '• Output ONLY raw JSON. Start with { and end with }. Nothing else.',
