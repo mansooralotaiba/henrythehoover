@@ -3193,7 +3193,19 @@ function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCand
     lines.push(`TRIGGER VOLUME: ${indicators.volRatio.toFixed(2)}× the 20-bar average — ${indicators.volRatio >= 2 ? 'CONFIRMED' : 'weak'}`);
   }
   if (indicators && indicators.divergence) {
-    lines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH)' : 'BULLISH (price LL, RSI HL)'}`);
+    lines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH) — bearish for longs, supports shorts' : 'BULLISH (price LL, RSI HL) — bullish for shorts, supports longs'}`);
+  }
+  if (indicators && indicators.regime && indicators.regime.regime) {
+    const r = indicators.regime;
+    const rmsg = r.regime === 'up' ? 'UPTREND (favours longs, fights shorts)'
+              : r.regime === 'down' ? 'DOWNTREND (favours shorts, fights longs)'
+              : 'RANGE (both directions viable, supports mean-reversion ICT setups)';
+    lines.push(`4H REGIME: ${rmsg} — confidence: ${r.confidence}${r.adx != null ? ', ADX ' + r.adx : ''}, slope ${r.slopePct >= 0 ? '+' : ''}${r.slopePct}%`);
+  }
+  if (indicators && indicators.confluenceScore != null) {
+    const s = indicators.confluenceScore;
+    const q = s >= 70 ? 'HIGH confluence' : s >= 50 ? 'medium confluence' : 'WEAK confluence — be skeptical';
+    lines.push(`PRE-AI CONFLUENCE SCORE: ${s}/85 — ${q}`);
   }
 
   if (baseCandles && baseCandles.length >= 5) {
@@ -3302,7 +3314,22 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     'For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: 70% of the way from entry to TP.',
     'Format: "Move SL to BE at <PRICE>".',
     '',
-    'WHEN UNSURE: return direction "NO TRADE" with reasoning explaining why. Do NOT force a low-quality signal.',
+    'TRADE-OR-SKIP DECISION (CRITICAL — this is now YOUR call, no pre-filters):',
+    '• The system used to auto-veto triggers based on ADX/volume/divergence/funding/regime. Those vetoes are REMOVED. You see the raw data and YOU decide.',
+    '• Each trigger reaches you regardless of confluence. You must filter low-quality setups by returning "NO TRADE".',
+    '• Strong reasons to return NO TRADE:',
+    '    – ADX < 20 in a price-action breakout strategy (chop, no trend)',
+    '    – Trigger volume < 1.5× the 20-bar avg (weak confirmation)',
+    '    – RSI divergence opposing your direction (counter-momentum)',
+    '    – Extreme funding (>1%) AND your direction agrees with the crowd',
+    '    – 4H regime conflicts with your direction in a STRONG trend (e.g. uptrend regime + you want to short)',
+    '    – Pre-AI confluence score < 50/85',
+    '    – Multiple data sources disagree with your direction',
+    '• OK to take trades when:',
+    '    – Range/ranging regime + ICT setup (OB / S&D / FVG-OTE) — these LIVE in ranges',
+    '    – Mild divergence but other strong confluence',
+    '    – Counter-trend in 4H but trigger is at a major HTF level (rare exception)',
+    '• Default to NO TRADE when in doubt. A NO TRADE costs nothing; a bad signal costs 1R.',
     '',
     'CRITICAL OUTPUT FORMAT — READ TWICE:',
     '• Output ONLY raw JSON. Start with { and end with }. Nothing else.',
@@ -3596,46 +3623,33 @@ async function processPair(userId, sub, coin) {
   const trigDir = inferTriggerDirection(trigger);
   const funding = await fetchFundingRateServer(coin).catch(() => null);
 
-  // Cache for AI prompt + later use
-  ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding };
-
-  // ── REGIME FILTER — adaptive direction filter based on 4H trend ──
-  // Detects market regime (up / down / range) on 4H candles. Blocks signals
-  // that fight the trend in clearly trending markets. Allows both directions
-  // in ranging markets (where ICT/S&D works in both).
-  if (REGIME_FILTER_ENABLED && trigDir) {
-    const regimeData = await detectMarketRegime(coin, broker);
-    ps.regime = regimeData;
-    const allow = regimeAllowsDirection(regimeData.regime, trigDir);
-    if (!allow.allowed) {
-      console.log('[regime veto]', coin, regimeData.regime, '(' + regimeData.confidence + ')', '— blocking', trigDir);
-      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
-      ps.lastTrigger = trigger;
-      ps.lastStatus = 'veto:regime';
-      ps.lastVetoReason = `${allow.reason} (regime: ${regimeData.regime} / ${regimeData.confidence})`;
-      return;
-    }
+  // Compute regime as INFO (passed to AI), no longer a veto.
+  let regimeData = null;
+  if (trigDir) {
+    regimeData = await detectMarketRegime(coin, broker).catch(() => null);
+    if (regimeData) ps.regime = regimeData;
   }
 
-  const veto = runHardVetoes({ coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding, strategyMode: STRATEGY_MODE });
-  if (veto.blocked) {
-    console.log('[veto]', coin, '[' + veto.code + ']', veto.reason);
-    ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
-    ps.lastTrigger = trigger;
-    ps.lastStatus = 'veto:' + veto.code;
-    ps.lastVetoReason = veto.reason;
-    return;
-  }
-  ps.lastVetoReason = null;
-
-  // 5) PRE-AI CONFLUENCE FILTER — cheap score check before firing the expensive AI
+  // Compute confluence score as INFO (passed to AI), no longer a hard gate.
   const pre = await preAiConfluenceScore(coin, sub.tf, broker, candles, trigger).catch(() => null);
   ps.lastPreScore = pre ? pre.score : null;
-  if (pre && pre.score < PRE_AI_THRESHOLD) {
-    console.log('[prescore]', coin, 'score=' + pre.score, '<', PRE_AI_THRESHOLD, '— skipping AI [' + pre.reasons + ']');
+
+  // Cache for AI prompt + later use (all filter data — AI decides what to do with it)
+  ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding, confluenceScore: pre ? pre.score : null, regime: regimeData };
+  ps.lastVetoReason = null;
+
+  // System-safety vetoes (NOT trade-quality filters):
+  //   • Portfolio heat — concurrency cap (5 max active, 2/cluster)
+  //   • Circuit breaker — loss-streak pause (handled earlier in this function)
+  // Everything else (ADX, volume, divergence, funding, regime) is passed to the
+  // AI as data and the AI decides whether to take or skip the trade.
+  const heat = checkPortfolioHeat(sub, coin);
+  if (heat.blocked) {
+    console.log('[heat veto]', coin, heat.reason);
     ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
     ps.lastTrigger = trigger;
-    ps.lastStatus = 'low-score';
+    ps.lastStatus = 'veto:' + heat.code;
+    ps.lastVetoReason = heat.reason;
     return;
   }
 
@@ -4006,7 +4020,19 @@ async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, bt
     ctxLines.push(`TRIGGER VOLUME: ${indicators.volRatio.toFixed(2)}× the 20-bar avg — ${indicators.volRatio >= 2 ? 'CONFIRMED' : 'weak'}`);
   }
   if (indicators && indicators.divergence) {
-    ctxLines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH)' : 'BULLISH (price LL, RSI HL)'}`);
+    ctxLines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH) — bearish for longs' : 'BULLISH (price LL, RSI HL) — bullish for shorts'}`);
+  }
+  if (indicators && indicators.regime && indicators.regime.regime) {
+    const r = indicators.regime;
+    const rmsg = r.regime === 'up' ? 'UPTREND (favours longs)'
+              : r.regime === 'down' ? 'DOWNTREND (favours shorts)'
+              : 'RANGE (both directions viable for ICT)';
+    ctxLines.push(`4H REGIME: ${rmsg}, confidence: ${r.confidence}`);
+  }
+  if (indicators && indicators.confluenceScore != null) {
+    const s = indicators.confluenceScore;
+    const q = s >= 70 ? 'HIGH' : s >= 50 ? 'medium' : 'WEAK — be skeptical';
+    ctxLines.push(`PRE-AI CONFLUENCE SCORE: ${s}/85 — ${q}`);
   }
 
   if (baseCandles.length >= 5) {
@@ -4208,26 +4234,9 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
       })();
       const fr = fundingAt(funding, ts);
 
-      // ── HARD VETOES (use strategy-aware config + per-call overrides) ──
-      const trigDir = inferTriggerDirection(trig);
-      const adx = computeADX(window, 14);
-      if (vetoCfg.adxMin > 0 && adx != null && adx < vetoCfg.adxMin) { vetoCounts.adx++; continue; }
-      const lastC = window[window.length - 1];
-      const avgVol = window.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
-      const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
-      if (vetoCfg.volMin > 0 && volRatio != null && volRatio < vetoCfg.volMin) { vetoCounts.volume++; continue; }
-      const div = detectDivergence(window, Math.min(30, window.length - 14));
-      if (vetoCfg.divergenceVeto && ((div === 'bearish' && trigDir === 'bull') || (div === 'bullish' && trigDir === 'bear'))) {
-        vetoCounts.divergence++; continue;
-      }
-      if (vetoCfg.fundingVeto && fr != null && Math.abs(fr) > 0.01 && trigDir) {
-        const crowdDir = fr > 0 ? 'bull' : 'bear';
-        if (trigDir === crowdDir) { vetoCounts.funding++; continue; }
-      }
-
-      // Pre-AI confluence score (if vetoes pass)
-      const pre = preAiScoreBacktest(pair, tf, window, trig, h1Window, fr);
-      if (pre.score >= threshold) passes++;
+      // No hard vetoes — every trigger reaches the AI for decisioning.
+      // Each candidate trigger = one AI call (Sonnet decides take/skip).
+      passes++;
     }
     const totalVetoed = (vetoCounts.regime || 0) + vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
     const tokensIn  = passes * 2500;
@@ -4240,10 +4249,10 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
       candlesFetched: candles.length,
       triggersDetected: triggers,
       triggersByType: triggerCounts,
-      hardVetoed: totalVetoed,
+      hardVetoed: 0,                      // legacy field — vetoes removed
       vetoBreakdown: vetoCounts,
       preAiPasses: passes,
-      preAiRejected: triggers - totalVetoed - passes,
+      preAiRejected: 0,                   // legacy field — pre-AI gate removed
       estimatedAiCalls: passes,
       estimatedTokensIn: tokensIn,
       estimatedTokensOut: tokensOut,
@@ -4331,7 +4340,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const btcSlice = btcCandles.slice(Math.max(0, btcEnd - 30), btcEnd);
       const fr = fundingAt(funding, ts);
 
-      // ── HARD VETOES (strategy-aware + per-call overrides) ──
+      // ── COMPUTE FILTER DATA (passed to AI as context, not used as veto) ──
       const trigDir = inferTriggerDirection(trig);
       const adx = computeADX(window, 14);
       const atr14 = computeATR(window, 14);
@@ -4340,66 +4349,31 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
       const divergence = detectDivergence(window, Math.min(30, window.length - 14));
 
-      // ── REGIME FILTER (applied BEFORE other vetoes; saves AI budget) ──
-      // Compute regime from h4 candles up to (but NOT including) the trigger time
+      // Compute regime as INFO (passed to AI, not a veto)
       let regimeForTrade = null;
-      if (regimeFilter !== 'off' && trigDir) {
+      if (trigDir) {
         const h4UpTo = h4.slice(0, h4WinEnd);
         if (h4UpTo.length >= 50) {
-          const r = detectRegimeFromCandles(h4UpTo);
-          regimeForTrade = r.regime;
-          let blocked = false;
-          if (regimeFilter === 'auto') {
-            if (r.regime === 'up' && trigDir === 'bear')   blocked = true;
-            if (r.regime === 'down' && trigDir === 'bull') blocked = true;
-          } else if (regimeFilter === 'longs' && trigDir === 'bear') {
-            blocked = true;
-          } else if (regimeFilter === 'shorts' && trigDir === 'bull') {
-            blocked = true;
-          }
-          if (blocked) {
-            vetoCounts.regime = (vetoCounts.regime || 0) + 1;
-            cooldownUntilIdx = i + cooldownCandles;
-            continue;
-          }
+          regimeForTrade = detectRegimeFromCandles(h4UpTo);
         }
       }
 
-      if (vetoCfg.adxMin > 0 && adx != null && adx < vetoCfg.adxMin) {
-        vetoCounts.adx++;
-        cooldownUntilIdx = i + cooldownCandles;
-        continue;
-      }
-      if (vetoCfg.volMin > 0 && volRatio != null && volRatio < vetoCfg.volMin) {
-        vetoCounts.volume++;
-        cooldownUntilIdx = i + cooldownCandles;
-        continue;
-      }
-      if (vetoCfg.divergenceVeto && ((divergence === 'bearish' && trigDir === 'bull') || (divergence === 'bullish' && trigDir === 'bear'))) {
-        vetoCounts.divergence++;
-        cooldownUntilIdx = i + cooldownCandles;
-        continue;
-      }
-      if (vetoCfg.fundingVeto && fr != null && Math.abs(fr) > 0.01 && trigDir) {
-        const crowdDir = fr > 0 ? 'bull' : 'bear';
-        if (trigDir === crowdDir) {
-          vetoCounts.funding++;
-          cooldownUntilIdx = i + cooldownCandles;
-          continue;
-        }
-      }
-
-      // Pre-AI confluence score
+      // Pre-AI confluence score — kept as INFO for AI prompt, no longer a hard gate.
+      // (AI sees the score and can factor it into the take/skip decision.)
       const pre = preAiScoreBacktest(pair, tf, window, trig, h1Slice, fr);
-      if (pre.score < preAiThreshold) continue;
       preAiPasses++;
       cooldownUntilIdx = i + cooldownCandles;
 
       let signal = null;
       if (!skipAi) {
         aiCalls++;
-        // Pass indicators so AI gets ATR-based stop guidance + ADX/Vol/Div context
-        const indicators = { atr14, adx, volRatio, divergence };
+        // Pass full filter context so AI can decide on its own whether to take the trade
+        const indicators = {
+          atr14, adx, volRatio, divergence,
+          confluenceScore: pre ? pre.score : null,
+          regime: regimeForTrade,
+          funding: fr,
+        };
         signal = await runBacktestAI(pair, tf, broker, window, h1Slice, h4Slice, btcSlice, fr, trig, indicators);
         if (!signal) continue; // AI failed
       } else {

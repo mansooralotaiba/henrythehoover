@@ -63,11 +63,11 @@
 </header>
 
 <div class="warning">
-  <b>⚠ Backtest mirrors live mode</b> — same hard vetoes (ADX&lt;20, volume&lt;2×, RSI divergence,
-  funding extreme), same pre-AI threshold (default 65), same ATR-based stop guidance to the AI.
-  Skipped sources: news / calendar / footprint / cross-broker / portfolio heat (can't reconstruct
-  historically). Sonnet is non-deterministic. Slippage = 0. Use to validate config changes,
-  not as proof of future performance.
+  <b>⚠ AI-decisioned mode</b> — Hard vetoes are removed. Every detected trigger reaches Sonnet
+  with full filter context (ADX, volume, RSI divergence, funding, 4H regime, confluence score)
+  and the model decides take or NO TRADE. The system only enforces structural safety
+  (portfolio heat, circuit breaker). Skipped historical sources: news / calendar / footprint
+  / cross-broker. Sonnet is non-deterministic. Slippage = 0.
 </div>
 
 <div class="card">
@@ -112,10 +112,6 @@
       </select>
     </div>
     <div>
-      <label>PRE-AI THRESHOLD</label>
-      <input type="number" id="threshold" value="65" min="0" max="85" step="5">
-    </div>
-    <div>
       <label>COOLDOWN (CANDLES)</label>
       <input type="number" id="cooldown" value="2" min="0" max="20">
     </div>
@@ -136,13 +132,6 @@
       </select>
     </div>
     <div>
-      <label>REGIME FILTER (4H trend)</label>
-      <select id="regimeFilter">
-        <option value="auto" selected>Auto (uptrend→longs, downtrend→shorts, range→both)</option>
-        <option value="off">Off (no regime filter)</option>
-      </select>
-    </div>
-    <div>
       <label>BE-STOP SIM</label>
       <select id="beStopEnabled">
         <option value="true" selected>ON (mirror live)</option>
@@ -156,42 +145,6 @@
         <option value="0.6">60% to TP</option>
         <option value="0.7">70% to TP (less BE-stops)</option>
         <option value="0.8">80% to TP (very few BE-stops)</option>
-      </select>
-    </div>
-    <div>
-      <label>ADX MIN VETO</label>
-      <select id="adxMin">
-        <option value="">Strategy default</option>
-        <option value="0">Disabled (no ADX veto)</option>
-        <option value="15">≥ 15 (loose, ICT-friendly)</option>
-        <option value="18">≥ 18 (medium)</option>
-        <option value="20">≥ 20 (strict)</option>
-        <option value="25">≥ 25 (very strict)</option>
-      </select>
-    </div>
-    <div>
-      <label>VOLUME MIN VETO</label>
-      <select id="volMin">
-        <option value="">Strategy default</option>
-        <option value="0">Disabled (no vol veto)</option>
-        <option value="1.2">≥ 1.2× avg</option>
-        <option value="1.5">≥ 1.5× avg (ICT default)</option>
-        <option value="1.75">≥ 1.75× avg</option>
-        <option value="2.0">≥ 2.0× avg (strict)</option>
-      </select>
-    </div>
-    <div>
-      <label>DIVERGENCE VETO</label>
-      <select id="divergenceVeto">
-        <option value="">Default (ON)</option>
-        <option value="false">OFF (allow counter-divergence)</option>
-      </select>
-    </div>
-    <div>
-      <label>FUNDING VETO</label>
-      <select id="fundingVeto">
-        <option value="">Default (ON)</option>
-        <option value="false">OFF (allow crowd-aligned trades)</option>
       </select>
     </div>
   </div>
@@ -297,28 +250,19 @@ function pCol(o){return o==='TP'?'v-gr':o==='SL'?'v-re':o==='BE'?'v-am':'v-mu';}
 function shortDate(s){if(!s)return '—';try{return new Date(s).toISOString().slice(5,16).replace('T',' ');}catch(e){return '—';}}
 
 function getConfig(){
-  const adxMinV = document.getElementById('adxMin').value;
-  const volMinV = document.getElementById('volMin').value;
-  const divV = document.getElementById('divergenceVeto').value;
-  const fundV = document.getElementById('fundingVeto').value;
-  const cfg = {
+  return {
     pair: document.getElementById('pair').value,
     broker: document.getElementById('broker').value,
     tf: document.getElementById('tf').value,
     days: parseInt(document.getElementById('days').value, 10),
-    preAiThreshold: parseInt(document.getElementById('threshold').value, 10),
+    preAiThreshold: 0,                                            // pre-AI gate removed; AI sees the score and decides
     cooldownCandles: parseInt(document.getElementById('cooldown').value, 10),
     strategy: document.getElementById('strategy').value,
     directionFilter: document.getElementById('directionFilter').value,
-    regimeFilter: document.getElementById('regimeFilter').value,
+    regimeFilter: 'off',                                          // regime is now informational, not a filter
     beStopEnabled: document.getElementById('beStopEnabled').value === 'true',
     beTriggerPct: parseFloat(document.getElementById('beTriggerPct').value),
   };
-  if (adxMinV !== '') cfg.adxMin = parseFloat(adxMinV);
-  if (volMinV !== '') cfg.volMin = parseFloat(volMinV);
-  if (divV === 'false') cfg.divergenceVeto = false;
-  if (fundV === 'false') cfg.fundingVeto = false;
-  return cfg;
 }
 
 document.getElementById('estimateBtn').onclick = async function() {
