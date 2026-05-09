@@ -1431,8 +1431,11 @@ function atrMultiplierForAsset(coin) {
 // Trigger direction inference from detector output (e.g. "BOS up" → bull)
 function inferTriggerDirection(trigger) {
   if (!trigger) return null;
-  if (trigger.type === 'bos')   return /up/i.test(trigger.desc) ? 'bull' : 'bear';
-  if (trigger.type === 'sweep') return /high/i.test(trigger.desc) ? 'bear' : 'bull';
+  if (trigger.type === 'bos')        return /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'sweep')      return /high/i.test(trigger.desc) ? 'bear' : 'bull';
+  if (trigger.type === 'rejection')  return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'atr')        return /up/i.test(trigger.desc) ? 'bull' : 'bear';
+  if (trigger.type === 'fvg')        return /Bullish/i.test(trigger.desc) ? 'bull' : 'bear';
   return null;
 }
 
@@ -1547,9 +1550,12 @@ async function preAiConfluenceScore(coin, tf, broker, baseCandles, trigger) {
   const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
   const volSpike = histAvgVol > 0 && last.v > histAvgVol * 1.5;
   let tScore = 0;
-  if (trigger.type === 'bos')   tScore = volSpike ? 20 : 12;
-  else if (trigger.type === 'sweep') tScore = volSpike ? 15 : 8;
-  else                          tScore = 8;
+  if (trigger.type === 'bos')             tScore = volSpike ? 20 : 12;
+  else if (trigger.type === 'sweep')      tScore = volSpike ? 15 : 8;
+  else if (trigger.type === 'rejection')  tScore = volSpike ? 18 : 12; // detector already enforces 1.2× volume
+  else if (trigger.type === 'atr')        tScore = 14;                  // intrinsic vol expansion
+  else if (trigger.type === 'fvg')        tScore = volSpike ? 12 : 8;   // passive entry zone
+  else                                    tScore = 8;
   score += tScore;
   reasons.push(`Trig=${trigger.type}${volSpike ? '✓vol' : ''}+${tScore}`);
 
@@ -2118,19 +2124,111 @@ async function fetchCandlesServer(coin, tf, limit, broker) {
   }
 }
 
-function detectTrigger(candles) {
-  if (!candles || candles.length < 10) return null;
+// ── Individual trigger detectors (all return null if condition not met) ──
+
+// 1. BOS — Break of Structure (close exceeds recent 10-bar range)
+function _detectBOS(candles) {
   const last = candles[candles.length - 1];
   const recent = candles.slice(-11, -1);
-  const highs = recent.map(c => c.h), lows = recent.map(c => c.l);
-  const maxH = Math.max(...highs), minL = Math.min(...lows);
-  // Break of structure: close exceeds recent range
+  const maxH = Math.max(...recent.map(c => c.h));
+  const minL = Math.min(...recent.map(c => c.l));
   if (last.c > maxH) return { type: 'bos', desc: `BOS up — close ${last.c} > prev high ${maxH.toFixed(2)}` };
   if (last.c < minL) return { type: 'bos', desc: `BOS down — close ${last.c} < prev low ${minL.toFixed(2)}` };
-  // Sweep: wick beyond range but close back inside
+  return null;
+}
+
+// 2. Sweep — wick beyond range but close back inside (liquidity grab)
+function _detectSweep(candles) {
+  const last = candles[candles.length - 1];
+  const recent = candles.slice(-11, -1);
+  const maxH = Math.max(...recent.map(c => c.h));
+  const minL = Math.min(...recent.map(c => c.l));
   if (last.h > maxH && last.c < maxH) return { type: 'sweep', desc: `Sweep high — wick ${last.h.toFixed(2)} swept ${maxH.toFixed(2)}, closed back inside` };
   if (last.l < minL && last.c > minL) return { type: 'sweep', desc: `Sweep low — wick ${last.l.toFixed(2)} swept ${minL.toFixed(2)}, closed back inside` };
   return null;
+}
+
+// 3. Rejection — long wick (>65% of range) + close opposite + 1.2× volume
+function _detectRejection(candles) {
+  if (candles.length < 11) return null;
+  const last = candles[candles.length - 1];
+  const range = last.h - last.l;
+  if (range <= 0) return null;
+  const bodyTop = Math.max(last.o, last.c);
+  const bodyBot = Math.min(last.o, last.c);
+  const upperWick = last.h - bodyTop;
+  const lowerWick = bodyBot - last.l;
+  const avgVol = candles.slice(-11, -1).reduce((s, c) => s + (c.v || 0), 0) / 10;
+  if (avgVol > 0 && (last.v || 0) < avgVol * 1.2) return null; // volume confirmation
+
+  // Bullish rejection: long lower wick (sellers rejected), close higher
+  if (lowerWick / range > 0.65 && last.c > last.o) {
+    const wickPct = Math.round(lowerWick / range * 100);
+    return { type: 'rejection', desc: `Bullish rejection wick @ ${last.l.toFixed(4)} (${wickPct}% wick)` };
+  }
+  // Bearish rejection: long upper wick (buyers rejected), close lower
+  if (upperWick / range > 0.65 && last.c < last.o) {
+    const wickPct = Math.round(upperWick / range * 100);
+    return { type: 'rejection', desc: `Bearish rejection wick @ ${last.h.toFixed(4)} (${wickPct}% wick)` };
+  }
+  return null;
+}
+
+// 4. ATR Expansion — recent volatility >1.5× prior. Direction inferred from trend.
+function _detectATRExpansion(candles) {
+  if (candles.length < 30) return null;
+  const recentATR = computeATR(candles.slice(-15), 14);
+  const priorATR = computeATR(candles.slice(-30, -15), 14);
+  if (!recentATR || !priorATR) return null;
+  const ratio = recentATR / priorATR;
+  if (ratio < 1.5) return null;
+  // Direction from recent 10-candle close trend
+  const slice = candles.slice(-10);
+  const first = slice[0].c, last = slice[slice.length - 1].c;
+  const dir = last > first ? 'up' : 'down';
+  return { type: 'atr', desc: `ATR expansion ${ratio.toFixed(2)}x — momentum ${dir}` };
+}
+
+// 5. FVG — current price has entered an unfilled fair value gap
+function _detectFVG(candles) {
+  if (candles.length < 5) return null;
+  const last = candles[candles.length - 1];
+  const cp = last.c;
+  // Walk backwards from candle[i-2] looking for 3-candle FVG patterns
+  // up to 20 candles back. FVG = gap between candle[i-2].h/l and candle[i].l/h
+  const lookback = Math.min(candles.length - 2, 20);
+  for (let i = candles.length - 2; i >= candles.length - lookback - 1; i--) {
+    if (i < 1) break;
+    const c0 = candles[i - 1];
+    const c2 = candles[i + 1];
+    if (!c0 || !c2) continue;
+    // Bullish FVG: c2.l > c0.h (gap upward); price re-enters from above
+    if (c2.l > c0.h) {
+      const top = c2.l, bot = c0.h;
+      if (cp >= bot && cp <= top) {
+        return { type: 'fvg', desc: `Bullish FVG entry zone ${bot.toFixed(4)}-${top.toFixed(4)}` };
+      }
+    }
+    // Bearish FVG: c2.h < c0.l (gap downward); price re-enters from below
+    if (c2.h < c0.l) {
+      const top = c0.l, bot = c2.h;
+      if (cp >= bot && cp <= top) {
+        return { type: 'fvg', desc: `Bearish FVG entry zone ${bot.toFixed(4)}-${top.toFixed(4)}` };
+      }
+    }
+  }
+  return null;
+}
+
+// Main trigger dispatcher — tries detectors in priority order
+//   bos > sweep > rejection > atr > fvg
+function detectTrigger(candles) {
+  if (!candles || candles.length < 10) return null;
+  return _detectBOS(candles)
+      || _detectSweep(candles)
+      || _detectRejection(candles)
+      || _detectATRExpansion(candles)
+      || _detectFVG(candles);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2776,7 +2874,7 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     `You are Henry, an institutional futures trading AI. You are analysing ${coin} on ${tf} timeframe (${broker} broker) AUTONOMOUSLY (no human will retry — your output goes to a phone push and Discord embed directly).`,
     '',
     'You have access to these data sources — REFERENCE THEM in your reasoning field:',
-    '1. Trigger detection (BOS/sweep) — what fired the scan',
+    '1. Trigger detection — what fired the scan. Types: BOS (break of structure), SWEEP (liquidity grab), REJECTION (long-wick reversal), ATR (volatility expansion + trend), FVG (price entered fair value gap).',
     '2. Multi-timeframe (1H, 4H) — HTF bias and structure',
     '3. Macro correlation — BTC for crypto pairs, DXY for gold/metals (gold has INVERSE correlation with DXY — DXY up = gold down). Use whichever is in the context block.',
     '4. Funding rate — positioning, fade extremes',
@@ -3410,9 +3508,12 @@ function preAiScoreBacktest(coin, tf, baseCandles, trigger, h1Slice, fundingRate
   const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
   const volSpike = histAvgVol > 0 && lastCandle.v > histAvgVol * 1.5;
   let tScore = 0;
-  if (trigger.type === 'bos')   tScore = volSpike ? 20 : 12;
-  else if (trigger.type === 'sweep') tScore = volSpike ? 15 : 8;
-  else                          tScore = 8;
+  if (trigger.type === 'bos')             tScore = volSpike ? 20 : 12;
+  else if (trigger.type === 'sweep')      tScore = volSpike ? 15 : 8;
+  else if (trigger.type === 'rejection')  tScore = volSpike ? 18 : 12; // detector already enforces 1.2× volume
+  else if (trigger.type === 'atr')        tScore = 14;                  // intrinsic vol expansion
+  else if (trigger.type === 'fvg')        tScore = volSpike ? 12 : 8;   // passive entry zone
+  else                                    tScore = 8;
   score += tScore;
   reasons.push(`Trig=${trigger.type}${volSpike ? '✓vol' : ''}+${tScore}`);
 
