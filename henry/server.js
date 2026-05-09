@@ -18,6 +18,11 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const SITE_URL = process.env.SITE_URL || `http://localhost:${PORT}`;
 const PROD = process.env.NODE_ENV === 'production';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').toLowerCase();
+// Anthropic model used everywhere (server-side AI + browser AI ANALYSE).
+// Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
+// Default below targets Opus 4.7 — adjust the date if Anthropic's latest snapshot
+// differs (the API will return 404 with the real ID in the error body).
+const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-opus-4-7-20260301';
 const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
   ? 'sandbox-api.paddle.com'
   : 'api.paddle.com';
@@ -379,6 +384,7 @@ app.get('/api/me', requireSession, (req, res) => {
     plan:                req.profile?.plan || 'none',
     subscription_status: req.profile?.subscription_status || 'inactive',
     current_period_end:  req.profile?.current_period_end || null,
+    ai_model:            AI_MODEL,
   });
 });
 
@@ -2260,7 +2266,7 @@ async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800) {
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: AI_MODEL,
       max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],

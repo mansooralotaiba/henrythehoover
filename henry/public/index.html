@@ -599,6 +599,9 @@ body.massive-mode #extrapairs{display:none!important}
 // ═══════════════════════════════════════════
 var APIURL = '/api/claude';
 var IS_ADMIN = false;
+// AI model used by browser AI ANALYSE — populated from /api/me on init.
+// Fallback to a sensible default until the API call resolves.
+var AI_MODEL = 'claude-opus-4-7-20260301';
 var FUTURES_BASE   = '/weex-futures';
 var BINANCE_BASE   = '/binance-futures';
 var HL_BASE        = 'https://api.hyperliquid.xyz';
@@ -695,6 +698,7 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){
 }).then(function(u){
   if(!u)return;
   IS_ADMIN=!!u.is_admin;
+  if(u.ai_model)AI_MODEL=u.ai_model;
   if(!IS_ADMIN)document.body.classList.add('not-admin');
   var w=document.getElementById('whoami');if(w)w.textContent=u.email||'';
   var al=document.getElementById('adminlink');if(al&&IS_ADMIN)al.style.display='';
@@ -3952,7 +3956,7 @@ function callAI(msg){
     method:'POST',
     credentials:'same-origin',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,system:buildSys(),messages:[{role:'user',content:msg}]})
+    body:JSON.stringify({model:AI_MODEL,max_tokens:1000,system:buildSys(),messages:[{role:'user',content:msg}]})
   })
   .then(function(r){
     if(!r.ok)return r.text().then(function(t){area.innerHTML='<div class="errbox">API ERROR '+r.status+'<br>'+t.slice(0,300)+'</div>';});
@@ -3980,7 +3984,7 @@ function callAI(msg){
             method:'POST',
             credentials:'same-origin',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,system:buildSys(),messages:[
+            body:JSON.stringify({model:AI_MODEL,max_tokens:600,system:buildSys(),messages:[
               {role:'user',content:'Analyse '+coin},
               {role:'assistant',content:raw},
               {role:'user',content:correction}
