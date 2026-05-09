@@ -3186,26 +3186,20 @@ function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCand
     );
   }
   if (indicators && indicators.adx != null) {
-    const trendQ = indicators.adx >= 25 ? 'strong trend' : indicators.adx >= 20 ? 'mild trend' : 'CHOP (avoid)';
-    lines.push(`TREND STRENGTH: ADX(14) = ${indicators.adx.toFixed(1)} — ${trendQ}`);
+    lines.push(`ADX(14): ${indicators.adx.toFixed(1)}`);
   }
   if (indicators && indicators.volRatio != null) {
-    lines.push(`TRIGGER VOLUME: ${indicators.volRatio.toFixed(2)}× the 20-bar average — ${indicators.volRatio >= 2 ? 'CONFIRMED' : 'weak'}`);
+    lines.push(`Trigger volume: ${indicators.volRatio.toFixed(2)}× the 20-bar average`);
   }
   if (indicators && indicators.divergence) {
-    lines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH) — bearish for longs, supports shorts' : 'BULLISH (price LL, RSI HL) — bullish for shorts, supports longs'}`);
+    lines.push(`RSI divergence: ${indicators.divergence === 'bearish' ? 'bearish (price HH, RSI LH)' : 'bullish (price LL, RSI HL)'}`);
   }
   if (indicators && indicators.regime && indicators.regime.regime) {
     const r = indicators.regime;
-    const rmsg = r.regime === 'up' ? 'UPTREND (favours longs, fights shorts)'
-              : r.regime === 'down' ? 'DOWNTREND (favours shorts, fights longs)'
-              : 'RANGE (both directions viable, supports mean-reversion ICT setups)';
-    lines.push(`4H REGIME: ${rmsg} — confidence: ${r.confidence}${r.adx != null ? ', ADX ' + r.adx : ''}, slope ${r.slopePct >= 0 ? '+' : ''}${r.slopePct}%`);
+    lines.push(`4H regime: ${r.regime}, confidence ${r.confidence}${r.adx != null ? ', ADX ' + r.adx : ''}, 50-EMA slope ${r.slopePct >= 0 ? '+' : ''}${r.slopePct}%`);
   }
   if (indicators && indicators.confluenceScore != null) {
-    const s = indicators.confluenceScore;
-    const q = s >= 70 ? 'HIGH confluence' : s >= 50 ? 'medium confluence' : 'WEAK confluence — be skeptical';
-    lines.push(`PRE-AI CONFLUENCE SCORE: ${s}/85 — ${q}`);
+    lines.push(`PRE-AI CONFLUENCE SCORE: ${indicators.confluenceScore}/85`);
   }
 
   if (baseCandles && baseCandles.length >= 5) {
@@ -3314,22 +3308,7 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     'For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: 70% of the way from entry to TP.',
     'Format: "Move SL to BE at <PRICE>".',
     '',
-    'TRADE-OR-SKIP DECISION (CRITICAL — this is now YOUR call, no pre-filters):',
-    '• The system used to auto-veto triggers based on ADX/volume/divergence/funding/regime. Those vetoes are REMOVED. You see the raw data and YOU decide.',
-    '• Each trigger reaches you regardless of confluence. You must filter low-quality setups by returning "NO TRADE".',
-    '• Strong reasons to return NO TRADE:',
-    '    – ADX < 20 in a price-action breakout strategy (chop, no trend)',
-    '    – Trigger volume < 1.5× the 20-bar avg (weak confirmation)',
-    '    – RSI divergence opposing your direction (counter-momentum)',
-    '    – Extreme funding (>1%) AND your direction agrees with the crowd',
-    '    – 4H regime conflicts with your direction in a STRONG trend (e.g. uptrend regime + you want to short)',
-    '    – Pre-AI confluence score < 50/85',
-    '    – Multiple data sources disagree with your direction',
-    '• OK to take trades when:',
-    '    – Range/ranging regime + ICT setup (OB / S&D / FVG-OTE) — these LIVE in ranges',
-    '    – Mild divergence but other strong confluence',
-    '    – Counter-trend in 4H but trigger is at a major HTF level (rare exception)',
-    '• Default to NO TRADE when in doubt. A NO TRADE costs nothing; a bad signal costs 1R.',
+    'TRADE-OR-SKIP: every trigger reaches you with full filter context. Use your judgment to take or return "NO TRADE". A NO TRADE costs nothing; a bad signal costs 1R.',
     '',
     'CRITICAL OUTPUT FORMAT — READ TWICE:',
     '• Output ONLY raw JSON. Start with { and end with }. Nothing else.',
@@ -4013,26 +3992,20 @@ async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, bt
     );
   }
   if (indicators && indicators.adx != null) {
-    const trendQ = indicators.adx >= 25 ? 'strong trend' : indicators.adx >= 20 ? 'mild trend' : 'CHOP (avoid)';
-    ctxLines.push(`TREND STRENGTH: ADX(14) = ${indicators.adx.toFixed(1)} — ${trendQ}`);
+    ctxLines.push(`ADX(14): ${indicators.adx.toFixed(1)}`);
   }
   if (indicators && indicators.volRatio != null) {
-    ctxLines.push(`TRIGGER VOLUME: ${indicators.volRatio.toFixed(2)}× the 20-bar avg — ${indicators.volRatio >= 2 ? 'CONFIRMED' : 'weak'}`);
+    ctxLines.push(`Trigger volume: ${indicators.volRatio.toFixed(2)}× the 20-bar avg`);
   }
   if (indicators && indicators.divergence) {
-    ctxLines.push(`RSI DIVERGENCE: ${indicators.divergence === 'bearish' ? 'BEARISH (price HH, RSI LH) — bearish for longs' : 'BULLISH (price LL, RSI HL) — bullish for shorts'}`);
+    ctxLines.push(`RSI divergence: ${indicators.divergence === 'bearish' ? 'bearish (price HH, RSI LH)' : 'bullish (price LL, RSI HL)'}`);
   }
   if (indicators && indicators.regime && indicators.regime.regime) {
     const r = indicators.regime;
-    const rmsg = r.regime === 'up' ? 'UPTREND (favours longs)'
-              : r.regime === 'down' ? 'DOWNTREND (favours shorts)'
-              : 'RANGE (both directions viable for ICT)';
-    ctxLines.push(`4H REGIME: ${rmsg}, confidence: ${r.confidence}`);
+    ctxLines.push(`4H regime: ${r.regime}, confidence ${r.confidence}`);
   }
   if (indicators && indicators.confluenceScore != null) {
-    const s = indicators.confluenceScore;
-    const q = s >= 70 ? 'HIGH' : s >= 50 ? 'medium' : 'WEAK — be skeptical';
-    ctxLines.push(`PRE-AI CONFLUENCE SCORE: ${s}/85 — ${q}`);
+    ctxLines.push(`PRE-AI CONFLUENCE SCORE: ${indicators.confluenceScore}/85`);
   }
 
   if (baseCandles.length >= 5) {
