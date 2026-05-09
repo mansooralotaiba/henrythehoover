@@ -20,9 +20,9 @@ const PROD = process.env.NODE_ENV === 'production';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').toLowerCase();
 // Anthropic model used everywhere (server-side AI + browser AI ANALYSE).
 // Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
-// Default below targets Opus 4.7 — adjust the date if Anthropic's latest snapshot
-// differs (the API will return 404 with the real ID in the error body).
-const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-opus-4-7-20260301';
+// Default below targets the latest Sonnet — adjust the date if Anthropic's latest
+// snapshot differs (the API will return 404 with the real ID in the error body).
+const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-7-20260301';
 const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
   ? 'sandbox-api.paddle.com'
   : 'api.paddle.com';
