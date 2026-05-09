@@ -1113,16 +1113,58 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
 // Performance dashboard data — aggregated breakdowns across all signals.
 // Used by /performance.html. Returns rich grouped data (by pair, trigger,
 // session, hour) plus cumulative R timeline + best/worst trades.
+// Debug helper: returns raw counts to diagnose why dashboard might be empty.
+// Hit /api/performance/debug from a browser tab while authenticated.
+app.get('/api/performance/debug', requireAuth, async (req, res) => {
+  try {
+    const { data: all, count: totalCount } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, user_id', { count: 'exact' })
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    const withOutcome = (all || []).filter(s => s.outcome != null);
+    res.json({
+      authenticatedUserId: req.user.id,
+      authenticatedEmail: req.user.email,
+      totalSignalsForUser: totalCount,
+      lastSignalsSample: (all || []).map(s => ({
+        id: s.id,
+        pair: s.pair,
+        direction: s.direction,
+        outcome: s.outcome,
+        outcome_rr: s.outcome_rr,
+        outcome_at: s.outcome_at,
+        created_at: s.created_at,
+        user_id_matches: s.user_id === req.user.id,
+      })),
+      signalsWithOutcome: withOutcome.length,
+    });
+  } catch (err) {
+    console.error('[performance debug]', err.message);
+    res.status(500).json({ error: 'debug_failed', detail: err.message });
+  }
+});
+
 app.get('/api/performance/dashboard', requireAuth, async (req, res) => {
   try {
+    // First, count ALL rows for this user (no filter) so we can debug missing outcomes
+    const { count: totalAllSignals } = await supaAdmin
+      .from('signals')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id);
     const { data, error } = await supaAdmin
       .from('signals')
       .select('pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, broker, timeframe, rr, confidence')
       .eq('user_id', req.user.id)
       .not('outcome', 'is', null)
       .order('outcome_at', { ascending: true });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      console.error('[dashboard query]', error.message);
+      return res.status(500).json({ error: error.message });
+    }
     const rows = data || [];
+    console.log('[dashboard]', req.user.email, 'total signals=' + (totalAllSignals || 0), 'with outcome=' + rows.length);
 
     // ── Helper: aggregate a row group into { tp, sl, be, total, winRate, totalR, expectancy } ──
     function agg(group) {

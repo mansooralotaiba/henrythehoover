@@ -3717,6 +3717,10 @@ function runTradeMonitor(){
     var cp=last.c;
     var e=parseFloat(pend.entry),sl=parseFloat(pend.sl),tp=parseFloat(pend.tp);
     var isLong=pend.direction==='LONG';
+    // When auto-mode is ON, the SERVER monitors the same trade and posts to Discord.
+    // We suppress browser-side Discord posts here to avoid duplicate alerts.
+    // Visual toast + push notification + sound still fire locally — only Discord is skipped.
+    var _suppressDiscord=autoMode;
 
     // ── ENTRY HIT alert ──
     // Limit-order fill: LONG fills when price drops to entry, SHORT when price rises to entry.
@@ -3728,7 +3732,8 @@ function runTradeMonitor(){
       triggerAlert(
         '🎯 ENTRY HIT',
         coin+' '+(isLong?'LONG':'SHORT')+' entry reached @ '+fp(e)+'. Limit order should be filled. Trade is now ACTIVE.',
-        'var(--cy)'
+        'var(--cy)',
+        _suppressDiscord
       );
     }
 
@@ -3752,7 +3757,8 @@ function runTradeMonitor(){
         triggerAlert(
           '⚑ MOVE SL TO BREAKEVEN',
           coin+' reached BE level at '+fp(bePrice)+'. Move SL to entry ('+fp(e)+') now to protect position.',
-          'var(--am)'
+          'var(--am)',
+          _suppressDiscord
         );
       }
     }
@@ -3762,7 +3768,7 @@ function runTradeMonitor(){
       var tpReached=isLong?(cp>=tp):(cp<=tp);
       if(tpReached&&!window._tpAlerted){
         window._tpAlerted=true;
-        triggerAlert('🎯 TP REACHED','Take profit hit on '+coin+' '+(isLong?'LONG':'SHORT')+' @ '+fp(tp),'var(--gr)');
+        triggerAlert('🎯 TP REACHED','Take profit hit on '+coin+' '+(isLong?'LONG':'SHORT')+' @ '+fp(tp),'var(--gr)',_suppressDiscord);
         logTrade('TP');
         return;
       }
@@ -3780,10 +3786,10 @@ function runTradeMonitor(){
     if(window._entryAlerted&&(slHit||beStopHit)&&!window._slAlerted){
       window._slAlerted=true;
       if(beStopHit||window._beAlerted){
-        triggerAlert('⚑ STOPPED AT BREAKEVEN',coin+' '+(isLong?'LONG':'SHORT')+' closed at entry. Auto-logged as BE.','var(--am)');
+        triggerAlert('⚑ STOPPED AT BREAKEVEN',coin+' '+(isLong?'LONG':'SHORT')+' closed at entry. Auto-logged as BE.','var(--am)',_suppressDiscord);
         logTrade('BE');
       } else {
-        triggerAlert('🛑 SL HIT',coin+' '+(isLong?'LONG':'SHORT')+' stopped out. Auto-logged as SL.','var(--re)');
+        triggerAlert('🛑 SL HIT',coin+' '+(isLong?'LONG':'SHORT')+' stopped out. Auto-logged as SL.','var(--re)',_suppressDiscord);
         logTrade('SL');
       }
       return;
@@ -3797,7 +3803,7 @@ function runTradeMonitor(){
       var maxMs=pend.expiry_candles*(tfMs[liqTF]||900000);
       if(elapsed>maxMs){
         window._expiryAlerted=true;
-        triggerAlert('⏱ SIGNAL EXPIRED','Cancel limit order — '+coin+' signal expired after '+pend.expiry_candles+' candles','var(--am)');
+        triggerAlert('⏱ SIGNAL EXPIRED','Cancel limit order — '+coin+' signal expired after '+pend.expiry_candles+' candles','var(--am)',_suppressDiscord);
         clrPend();
         return;
       }
