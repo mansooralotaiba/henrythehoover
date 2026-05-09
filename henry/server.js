@@ -1498,36 +1498,61 @@ function checkPortfolioHeat(sub, coin) {
 // ════════════════════════════════════════════════════════════════════════════
 // HARD VETOES — these BLOCK the trigger before any AI call
 // ════════════════════════════════════════════════════════════════════════════
-function runHardVetoes(opts) {
-  const { coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding } = opts;
 
-  // Portfolio heat (concurrency caps)
+// Strategy-aware default veto thresholds.
+//   • ICT works in ranging markets — ADX 15 is reasonable (not 20)
+//   • Price-action breakouts need trends — keep ADX 20
+//   • Volume requirements scale similarly: ICT structures need less vol confirmation
+function defaultVetoConfig(strategyMode) {
+  const m = (strategyMode || STRATEGY_MODE || 'ict').toLowerCase();
+  if (m === 'price-action') {
+    return { adxMin: 20, volMin: 2.0, divergenceVeto: true, fundingVeto: true };
+  }
+  if (m === 'hybrid') {
+    return { adxMin: 18, volMin: 1.75, divergenceVeto: true, fundingVeto: true };
+  }
+  // ict
+  return { adxMin: 15, volMin: 1.5, divergenceVeto: true, fundingVeto: true };
+}
+
+// Run vetoes. `vetoConfig` is optional — falls back to strategy-mode defaults.
+//   adxMin: 0 disables the ADX veto entirely
+//   volMin: 0 disables the volume veto
+//   divergenceVeto: false disables RSI divergence block
+//   fundingVeto: false disables crowded-funding block
+function runHardVetoes(opts) {
+  const { coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding, strategyMode } = opts;
+  const cfg = Object.assign({}, defaultVetoConfig(strategyMode), opts.vetoConfig || {});
+
+  // Portfolio heat (concurrency caps) — always on, prevents overexposure
   const heat = checkPortfolioHeat(sub, coin);
   if (heat.blocked) return heat;
 
-  // ADX < 20 → chop, no trend, signals fail in ranging markets
-  if (adx != null && adx < 20) {
-    return { blocked: true, code: 'adx', reason: `ADX=${adx.toFixed(1)} < 20 (choppy market — no trend)` };
+  // ADX → trend strength gate. Disabled when adxMin is 0.
+  if (cfg.adxMin > 0 && adx != null && adx < cfg.adxMin) {
+    return { blocked: true, code: 'adx', reason: `ADX=${adx.toFixed(1)} < ${cfg.adxMin} (chop)` };
   }
 
-  // Volume confirmation — trigger candle must show 2× avg volume
-  if (volRatio != null && volRatio < 2.0) {
-    return { blocked: true, code: 'volume', reason: `Trigger volume only ${volRatio.toFixed(2)}× avg (need ≥2× to confirm)` };
+  // Volume → confirmation gate. Disabled when volMin is 0.
+  if (cfg.volMin > 0 && volRatio != null && volRatio < cfg.volMin) {
+    return { blocked: true, code: 'volume', reason: `Trigger volume ${volRatio.toFixed(2)}× < ${cfg.volMin}× required` };
   }
 
   // Divergence opposing trigger direction
-  if (divergence === 'bearish' && trigDir === 'bull') {
-    return { blocked: true, code: 'divergence', reason: 'Bearish RSI divergence (price HH, RSI LH) — blocks long-side trigger' };
-  }
-  if (divergence === 'bullish' && trigDir === 'bear') {
-    return { blocked: true, code: 'divergence', reason: 'Bullish RSI divergence (price LL, RSI HL) — blocks short-side trigger' };
+  if (cfg.divergenceVeto !== false) {
+    if (divergence === 'bearish' && trigDir === 'bull') {
+      return { blocked: true, code: 'divergence', reason: 'Bearish RSI divergence — blocks long-side trigger' };
+    }
+    if (divergence === 'bullish' && trigDir === 'bear') {
+      return { blocked: true, code: 'divergence', reason: 'Bullish RSI divergence — blocks short-side trigger' };
+    }
   }
 
-  // Extreme funding + trigger trades WITH crowd → block (crowded position)
-  if (funding != null && Math.abs(funding) > 0.01 && trigDir) {
+  // Extreme funding + trigger trades WITH crowd → block
+  if (cfg.fundingVeto !== false && funding != null && Math.abs(funding) > 0.01 && trigDir) {
     const crowdDir = funding > 0 ? 'bull' : 'bear';
     if (trigDir === crowdDir) {
-      return { blocked: true, code: 'funding', reason: `Funding ${(funding * 100).toFixed(3)}% extreme + trigger aligns with crowded ${crowdDir} side` };
+      return { blocked: true, code: 'funding', reason: `Funding ${(funding * 100).toFixed(3)}% extreme + crowd-aligned ${crowdDir}` };
     }
   }
 
@@ -3484,7 +3509,7 @@ async function processPair(userId, sub, coin) {
   // Cache for AI prompt + later use
   ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding };
 
-  const veto = runHardVetoes({ coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding });
+  const veto = runHardVetoes({ coin, sub, candles, trigger, trigDir, adx, volRatio, divergence, funding, strategyMode: STRATEGY_MODE });
   if (veto.blocked) {
     console.log('[veto]', coin, '[' + veto.code + ']', veto.reason);
     ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
@@ -4028,8 +4053,13 @@ function simulateOutcome(signal, forwardCandles, tfMs, opts = {}) {
 app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req, res) => {
   // Quick estimate: fetches candles, counts triggers + pre-AI passes, no AI calls.
   try {
-    const { pair, broker, tf, days, preAiThreshold, strategy } = req.body || {};
+    const { pair, broker, tf, days, preAiThreshold, strategy, adxMin, volMin, divergenceVeto, fundingVeto } = req.body || {};
     const strategyMode = (strategy || STRATEGY_MODE).toLowerCase();
+    const vetoCfg = Object.assign({}, defaultVetoConfig(strategyMode));
+    if (adxMin !== null && adxMin !== undefined)             vetoCfg.adxMin = +adxMin;
+    if (volMin !== null && volMin !== undefined)             vetoCfg.volMin = +volMin;
+    if (divergenceVeto !== null && divergenceVeto !== undefined) vetoCfg.divergenceVeto = !!divergenceVeto;
+    if (fundingVeto !== null && fundingVeto !== undefined)   vetoCfg.fundingVeto = !!fundingVeto;
     const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
     const tfMs = TF_MS[tf];
     if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
@@ -4070,19 +4100,19 @@ app.post('/api/backtest/cost-estimate', requireAuth, express.json(), async (req,
       })();
       const fr = fundingAt(funding, ts);
 
-      // ── HARD VETOES (mirror live behavior, minus portfolio heat) ──
+      // ── HARD VETOES (use strategy-aware config + per-call overrides) ──
       const trigDir = inferTriggerDirection(trig);
       const adx = computeADX(window, 14);
-      if (adx != null && adx < 20) { vetoCounts.adx++; continue; }
+      if (vetoCfg.adxMin > 0 && adx != null && adx < vetoCfg.adxMin) { vetoCounts.adx++; continue; }
       const lastC = window[window.length - 1];
       const avgVol = window.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
       const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
-      if (volRatio != null && volRatio < 2.0) { vetoCounts.volume++; continue; }
+      if (vetoCfg.volMin > 0 && volRatio != null && volRatio < vetoCfg.volMin) { vetoCounts.volume++; continue; }
       const div = detectDivergence(window, Math.min(30, window.length - 14));
-      if ((div === 'bearish' && trigDir === 'bull') || (div === 'bullish' && trigDir === 'bear')) {
+      if (vetoCfg.divergenceVeto && ((div === 'bearish' && trigDir === 'bull') || (div === 'bullish' && trigDir === 'bear'))) {
         vetoCounts.divergence++; continue;
       }
-      if (fr != null && Math.abs(fr) > 0.01 && trigDir) {
+      if (vetoCfg.fundingVeto && fr != null && Math.abs(fr) > 0.01 && trigDir) {
         const crowdDir = fr > 0 ? 'bull' : 'bear';
         if (trigDir === crowdDir) { vetoCounts.funding++; continue; }
       }
@@ -4132,8 +4162,18 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       beStopEnabled = true,
       beTriggerPct = 0.5,
       directionFilter = 'both',  // 'both' | 'longs' | 'shorts'
+      adxMin = null,             // null = use strategy-aware default; 0 = disabled
+      volMin = null,             // null = use strategy-aware default; 0 = disabled
+      divergenceVeto = null,     // null = default, false = disabled
+      fundingVeto = null,        // null = default, false = disabled
     } = req.body || {};
     const strategyMode = (strategy || STRATEGY_MODE).toLowerCase();
+    // Build veto config — explicit values override strategy defaults
+    const vetoCfg = Object.assign({}, defaultVetoConfig(strategyMode));
+    if (adxMin !== null && adxMin !== undefined)             vetoCfg.adxMin = +adxMin;
+    if (volMin !== null && volMin !== undefined)             vetoCfg.volMin = +volMin;
+    if (divergenceVeto !== null && divergenceVeto !== undefined) vetoCfg.divergenceVeto = !!divergenceVeto;
+    if (fundingVeto !== null && fundingVeto !== undefined)   vetoCfg.fundingVeto = !!fundingVeto;
     const TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
     const tfMs = TF_MS[tf];
     if (!pair || !broker || !tf || !days || !tfMs) return res.status(400).json({ error: 'invalid_params' });
@@ -4182,7 +4222,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const btcSlice = btcCandles.slice(Math.max(0, btcEnd - 30), btcEnd);
       const fr = fundingAt(funding, ts);
 
-      // ── HARD VETOES (mirror live behavior — block before AI call) ──
+      // ── HARD VETOES (strategy-aware + per-call overrides) ──
       const trigDir = inferTriggerDirection(trig);
       const adx = computeADX(window, 14);
       const atr14 = computeATR(window, 14);
@@ -4191,22 +4231,22 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
       const volRatio = avgVol > 0 ? (lastC.v || 0) / avgVol : null;
       const divergence = detectDivergence(window, Math.min(30, window.length - 14));
 
-      if (adx != null && adx < 20) {
+      if (vetoCfg.adxMin > 0 && adx != null && adx < vetoCfg.adxMin) {
         vetoCounts.adx++;
         cooldownUntilIdx = i + cooldownCandles;
         continue;
       }
-      if (volRatio != null && volRatio < 2.0) {
+      if (vetoCfg.volMin > 0 && volRatio != null && volRatio < vetoCfg.volMin) {
         vetoCounts.volume++;
         cooldownUntilIdx = i + cooldownCandles;
         continue;
       }
-      if ((divergence === 'bearish' && trigDir === 'bull') || (divergence === 'bullish' && trigDir === 'bear')) {
+      if (vetoCfg.divergenceVeto && ((divergence === 'bearish' && trigDir === 'bull') || (divergence === 'bullish' && trigDir === 'bear'))) {
         vetoCounts.divergence++;
         cooldownUntilIdx = i + cooldownCandles;
         continue;
       }
-      if (fr != null && Math.abs(fr) > 0.01 && trigDir) {
+      if (vetoCfg.fundingVeto && fr != null && Math.abs(fr) > 0.01 && trigDir) {
         const crowdDir = fr > 0 ? 'bull' : 'bear';
         if (trigDir === crowdDir) {
           vetoCounts.funding++;
@@ -4296,7 +4336,7 @@ app.post('/api/backtest/run', requireAuth, express.json(), async (req, res) => {
     const totalVetoed = vetoCounts.adx + vetoCounts.volume + vetoCounts.divergence + vetoCounts.funding;
     const directionFilteredCount = trades.filter(t => t.directionFiltered).length;
     res.json({
-      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode, beStopEnabled, beTriggerPct, directionFilter },
+      config: { pair, broker, tf, days, preAiThreshold, cooldownCandles, skipAi, strategy: strategyMode, beStopEnabled, beTriggerPct, directionFilter, vetoCfg },
       directionFilteredCount,
       candlesProcessed: candles.length,
       triggers,

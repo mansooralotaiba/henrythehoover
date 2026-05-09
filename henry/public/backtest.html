@@ -151,6 +151,42 @@
         <option value="0.8">80% to TP (very few BE-stops)</option>
       </select>
     </div>
+    <div>
+      <label>ADX MIN VETO</label>
+      <select id="adxMin">
+        <option value="">Strategy default</option>
+        <option value="0">Disabled (no ADX veto)</option>
+        <option value="15">≥ 15 (loose, ICT-friendly)</option>
+        <option value="18">≥ 18 (medium)</option>
+        <option value="20">≥ 20 (strict)</option>
+        <option value="25">≥ 25 (very strict)</option>
+      </select>
+    </div>
+    <div>
+      <label>VOLUME MIN VETO</label>
+      <select id="volMin">
+        <option value="">Strategy default</option>
+        <option value="0">Disabled (no vol veto)</option>
+        <option value="1.2">≥ 1.2× avg</option>
+        <option value="1.5">≥ 1.5× avg (ICT default)</option>
+        <option value="1.75">≥ 1.75× avg</option>
+        <option value="2.0">≥ 2.0× avg (strict)</option>
+      </select>
+    </div>
+    <div>
+      <label>DIVERGENCE VETO</label>
+      <select id="divergenceVeto">
+        <option value="">Default (ON)</option>
+        <option value="false">OFF (allow counter-divergence)</option>
+      </select>
+    </div>
+    <div>
+      <label>FUNDING VETO</label>
+      <select id="fundingVeto">
+        <option value="">Default (ON)</option>
+        <option value="false">OFF (allow crowd-aligned trades)</option>
+      </select>
+    </div>
   </div>
   <div class="form-row">
     <button id="estimateBtn" class="ghost">📊 ESTIMATE COST (FREE)</button>
@@ -254,7 +290,11 @@ function pCol(o){return o==='TP'?'v-gr':o==='SL'?'v-re':o==='BE'?'v-am':'v-mu';}
 function shortDate(s){if(!s)return '—';try{return new Date(s).toISOString().slice(5,16).replace('T',' ');}catch(e){return '—';}}
 
 function getConfig(){
-  return {
+  const adxMinV = document.getElementById('adxMin').value;
+  const volMinV = document.getElementById('volMin').value;
+  const divV = document.getElementById('divergenceVeto').value;
+  const fundV = document.getElementById('fundingVeto').value;
+  const cfg = {
     pair: document.getElementById('pair').value,
     broker: document.getElementById('broker').value,
     tf: document.getElementById('tf').value,
@@ -266,6 +306,11 @@ function getConfig(){
     beStopEnabled: document.getElementById('beStopEnabled').value === 'true',
     beTriggerPct: parseFloat(document.getElementById('beTriggerPct').value),
   };
+  if (adxMinV !== '') cfg.adxMin = parseFloat(adxMinV);
+  if (volMinV !== '') cfg.volMin = parseFloat(volMinV);
+  if (divV === 'false') cfg.divergenceVeto = false;
+  if (fundV === 'false') cfg.fundingVeto = false;
+  return cfg;
 }
 
 document.getElementById('estimateBtn').onclick = async function() {
@@ -376,14 +421,19 @@ function renderResults(d) {
   // Show config summary
   const cfg = d.config || {};
   const cfgBits = [];
+  if (cfg.strategy)        cfgBits.push(`<span style="color:var(--cy)">Strategy: ${cfg.strategy}</span>`);
   if (cfg.directionFilter && cfg.directionFilter !== 'both') {
     const dropped = d.directionFilteredCount || 0;
-    cfgBits.push(`<span style="color:var(--am)">Direction filter: ${cfg.directionFilter} (${dropped} signals dropped)</span>`);
+    cfgBits.push(`<span style="color:var(--am)">Direction: ${cfg.directionFilter} (${dropped} dropped)</span>`);
   }
   if (cfg.beStopEnabled === false) {
-    cfgBits.push('<span style="color:var(--cy)">BE-stop sim: OFF</span>');
+    cfgBits.push('<span style="color:var(--cy)">BE-stop: OFF</span>');
   } else if (cfg.beTriggerPct && cfg.beTriggerPct !== 0.5) {
     cfgBits.push(`<span style="color:var(--cy)">BE trigger: ${Math.round(cfg.beTriggerPct * 100)}%</span>`);
+  }
+  if (cfg.vetoCfg) {
+    const v = cfg.vetoCfg;
+    cfgBits.push(`<span style="color:var(--mu)">Vetoes: ADX≥${v.adxMin || 'off'} · Vol≥${v.volMin || 'off'}× · Div ${v.divergenceVeto === false ? 'OFF' : 'on'} · Fund ${v.fundingVeto === false ? 'OFF' : 'on'}</span>`);
   }
   if (cfgBits.length) {
     const el = document.getElementById('r-trigger-types');
