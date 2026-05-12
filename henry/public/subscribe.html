@@ -66,12 +66,20 @@
   </div>
 
   <div class="pay-section">
-    <!-- Crypto (NowPayments) — primary -->
-    <button id="crypto-btn" class="crypto hidden">
-      ⚡ PAY WITH CRYPTO  →  $500 USDT / BTC / ETH / SOL
+    <!-- Whop — primary (card + crypto + Apple Pay, recurring) -->
+    <button id="whop-btn" class="primary hidden">
+      SUBSCRIBE — $500 / MONTH  →
+    </button>
+    <div id="whop-note" class="pay-note hidden">
+      Card · Crypto · Apple Pay · auto-recurring · cancel anytime · powered by <span class="accent">Whop</span>
+    </div>
+
+    <!-- NowPayments crypto — fallback, hidden by default -->
+    <button id="crypto-btn" class="crypto hidden" style="margin-top:14px">
+      OR PAY WITH CRYPTO ONE-OFF  →  $500
     </button>
     <div id="crypto-note" class="pay-note hidden">
-      30 days access · pay in any crypto · invoice via <span class="accent">NowPayments</span>
+      30 days access · one-off crypto via <span class="accent">NowPayments</span>
     </div>
 
     <!-- Card (Paddle) — secondary, hidden if not configured -->
@@ -92,9 +100,11 @@
 <!-- Paddle.js v2 — only initialised if Paddle is configured -->
 <script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
 <script>
-const cryptoBtn  = document.getElementById('crypto-btn');
+const whopBtn   = document.getElementById('whop-btn');
+const whopNote  = document.getElementById('whop-note');
+const cryptoBtn = document.getElementById('crypto-btn');
 const cryptoNote = document.getElementById('crypto-note');
-const paddleBtn  = document.getElementById('paddle-btn');
+const paddleBtn = document.getElementById('paddle-btn');
 const paddleSection = document.getElementById('paddle-section');
 const msg = document.getElementById('msg');
 
@@ -122,7 +132,19 @@ async function init(){
     }
   } catch (e) {}
 
-  // 2) Probe NowPayments — show crypto button if enabled
+  // 2) Whop — primary path
+  try {
+    const wr = await fetch('/api/whop/config');
+    if (wr.ok) {
+      const cfg = await wr.json();
+      if (cfg.enabled) {
+        whopBtn.classList.remove('hidden');
+        whopNote.classList.remove('hidden');
+      }
+    }
+  } catch (e) {}
+
+  // 3) NowPayments — fallback for one-off crypto (hidden by default)
   try {
     const cr = await fetch('/api/nowpayments/config');
     if (cr.ok) {
@@ -134,7 +156,7 @@ async function init(){
     }
   } catch (e) {}
 
-  // 3) Probe Paddle — show card button if a price ID exists
+  // 4) Paddle — fallback card if Whop isn't configured
   try {
     const pr = await fetch('/api/paddle/config');
     if (pr.ok) {
@@ -155,11 +177,38 @@ async function init(){
     }
   } catch (e) {}
 
-  // 4) Nothing enabled — surface a hint
-  if (cryptoBtn.classList.contains('hidden') && paddleSection.classList.contains('hidden')) {
+  // 5) Nothing enabled — surface a hint
+  if (whopBtn.classList.contains('hidden')
+      && cryptoBtn.classList.contains('hidden')
+      && paddleSection.classList.contains('hidden')) {
     showErr('No payment provider is configured. Contact support.');
   }
 }
+
+// Whop — call our server which builds the checkout URL with metadata, then redirect.
+whopBtn.addEventListener('click', async () => {
+  if (!cachedEmail) { window.location.href = '/login?next=subscribe'; return; }
+  whopBtn.disabled = true;
+  whopBtn.textContent = 'OPENING WHOP CHECKOUT…';
+  try {
+    const r = await fetch('/api/whop/checkout', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await r.json();
+    if (!r.ok || !data.checkoutUrl) {
+      showErr(data.error || 'Could not start Whop checkout. Try again.');
+      whopBtn.disabled = false;
+      whopBtn.textContent = 'SUBSCRIBE — $500 / MONTH  →';
+      return;
+    }
+    window.location.href = data.checkoutUrl;
+  } catch (err) {
+    showErr('Network error: ' + err.message);
+    whopBtn.disabled = false;
+    whopBtn.textContent = 'SUBSCRIBE — $500 / MONTH  →';
+  }
+});
 
 // Crypto — POST to server which calls NowPayments, returns hosted invoice URL
 cryptoBtn.addEventListener('click', async () => {

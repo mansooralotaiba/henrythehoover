@@ -752,6 +752,159 @@ app.post('/api/nowpayments/webhook', express.raw({ type: 'application/json' }), 
   res.json({ received: true });
 });
 
+// ── Whop (recurring subscriptions, no KYC required for sellers) ──────────
+// Flow: user clicks Subscribe → server hands back a Whop checkout URL with
+// supabase_uid encoded as metadata → user pays card/crypto/Apple Pay on
+// Whop's hosted checkout → Whop webhooks membership.went_valid back here →
+// we set subscription_status='active' + current_period_end = membership's
+// renewal_period_end. Whop handles all recurring billing automatically.
+const WHOP_API = 'https://api.whop.com/api/v5';
+const WHOP_CHECKOUT_URL = process.env.WHOP_CHECKOUT_URL || ''; // e.g. https://whop.com/checkout/plan_xxxxx/
+
+async function whopFetch(method, path, body = null) {
+  if (!process.env.WHOP_API_KEY) throw new Error('WHOP_API_KEY not set');
+  const r = await fetch(`${WHOP_API}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${process.env.WHOP_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return r.json();
+}
+
+// Whop signs webhook payloads with HMAC-SHA256 on the raw body using the
+// store's webhook secret. Header: `x-whop-signature` formatted as `sha256=<hex>`.
+function verifyWhopSignature(rawBody, signatureHeader, secret) {
+  if (!signatureHeader || !secret) return false;
+  try {
+    const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
+    const sig = String(signatureHeader).replace(/^sha256=/i, '');
+    const a = Buffer.from(expected, 'hex');
+    const b = Buffer.from(sig, 'hex');
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch { return false; }
+}
+
+// Public config — subscribe page checks `enabled` to know whether to show
+// the Whop button.
+app.get('/api/whop/config', (_req, res) => {
+  res.json({
+    enabled: !!WHOP_CHECKOUT_URL,
+    checkoutBase: WHOP_CHECKOUT_URL || null,
+  });
+});
+
+// Build the checkout URL with our Supabase user_id baked in as metadata so
+// the webhook can route the payment back to the right profile. Returns the
+// URL; the browser redirects to it.
+app.post('/api/whop/checkout', requireSession, async (req, res) => {
+  if (!WHOP_CHECKOUT_URL) {
+    return res.status(503).json({ error: 'whop_not_configured' });
+  }
+  try {
+    const uid = req.user.id;
+    const email = (req.user.email || '').toLowerCase();
+    const siteUrl = process.env.SITE_URL || `https://${req.headers.host || 'henrythehoover.com'}`;
+
+    // Append metadata + redirect to the checkout URL. Whop preserves the
+    // metadata fields through to the membership webhook payload.
+    const u = new URL(WHOP_CHECKOUT_URL);
+    u.searchParams.set('metadata[supabase_uid]', uid);
+    u.searchParams.set('metadata[email]', email);
+    u.searchParams.set('email', email); // pre-fills the checkout
+    u.searchParams.set('redirect_url', `${siteUrl}/subscribe/success`);
+
+    // Stash a marker on the profile so we can correlate even if Whop loses metadata
+    await supaAdmin.from('profiles').update({
+      whop_pending_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq('email', email).then(() => {}, () => {});
+
+    console.log('[whop/checkout]', email, '→', u.toString().slice(0, 120));
+    res.json({ checkoutUrl: u.toString() });
+  } catch (err) {
+    console.error('[whop/checkout]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Webhook (raw body required for signature verification). Events we care about:
+//   • membership.went_valid           → grant access, set period_end
+//   • membership.renewed              → extend period_end
+//   • membership.went_invalid         → revoke access (refund/chargeback/etc.)
+//   • membership.cancel_at_period_end_changed → flag cancelled but keep access
+app.post('/api/whop/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const rawBody = req.body.toString('utf8');
+  const sig = req.headers['x-whop-signature'];
+  const secret = process.env.WHOP_WEBHOOK_SECRET;
+  if (!verifyWhopSignature(rawBody, sig, secret)) {
+    console.error('[whop webhook] bad signature');
+    return res.status(400).send('Bad signature');
+  }
+  let event;
+  try { event = JSON.parse(rawBody); } catch { return res.status(400).send('Bad JSON'); }
+
+  const type = event.action || event.type || '';
+  const data = event.data || {};
+  const metadata = data.metadata || {};
+  const uid = metadata.supabase_uid || null;
+  const email = (metadata.email || '').toLowerCase();
+  const periodEndSec = data.renewal_period_end || data.expires_at || null;
+  const periodEndISO = periodEndSec ? new Date(periodEndSec * 1000).toISOString() : null;
+
+  console.log('[whop webhook]', type, 'uid=' + uid, 'email=' + email, 'periodEnd=' + periodEndISO);
+
+  // Identify the target profile row: prefer uid, fall back to email
+  const filterCol = uid ? 'user_id' : 'email';
+  const filterVal = uid || email;
+  if (!filterVal) {
+    console.warn('[whop webhook] no uid or email in metadata — dropping event');
+    return res.json({ received: true });
+  }
+
+  if (type === 'membership.went_valid' || type === 'membership.renewed' || type === 'membership_went_valid') {
+    const updates = {
+      subscription_status: 'active',
+      plan: 'monthly_whop',
+      whop_membership_id: data.id || null,
+      whop_user_id: data.user_id || null,
+      updated_at: new Date().toISOString(),
+    };
+    if (periodEndISO) updates.current_period_end = periodEndISO;
+    const { error } = await supaAdmin.from('profiles').update(updates).eq(filterCol, filterVal);
+    if (error) console.error('[whop webhook] supabase update failed:', error.message);
+    else console.log('[whop webhook] activated', filterVal, 'until', periodEndISO);
+    return res.json({ received: true });
+  }
+
+  if (type === 'membership.went_invalid' || type === 'membership_went_invalid') {
+    const { error } = await supaAdmin.from('profiles').update({
+      subscription_status: 'inactive',
+      updated_at: new Date().toISOString(),
+    }).eq(filterCol, filterVal);
+    if (error) console.error('[whop webhook] supabase revoke failed:', error.message);
+    else console.log('[whop webhook] revoked access for', filterVal);
+    return res.json({ received: true });
+  }
+
+  if (type === 'membership.cancel_at_period_end_changed') {
+    // User toggled auto-renew off. Keep them active until period_end.
+    const cancelAtEnd = !!data.cancel_at_period_end;
+    const status = cancelAtEnd ? 'cancelled' : 'active';
+    await supaAdmin.from('profiles').update({
+      subscription_status: status,
+      updated_at: new Date().toISOString(),
+    }).eq(filterCol, filterVal);
+    console.log('[whop webhook]', filterVal, cancelAtEnd ? 'set to cancel at period end' : 're-enabled auto-renew');
+    return res.json({ received: true });
+  }
+
+  // Other event types (payment.succeeded etc.) — log but don't act
+  res.json({ received: true });
+});
+
 // ── Discord proxies (server holds the webhook URLs) ────────────────────────
 async function forwardToDiscord(envKey, req, res) {
   const url = process.env[envKey];
@@ -5545,8 +5698,8 @@ app.listen(PORT, () => {
   if (!process.env.DISCORD_JOURNAL_WEBHOOK) console.warn('[warn] DISCORD_JOURNAL_WEBHOOK not set — trade journal posts disabled');
   if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
+  if (!process.env.WHOP_CHECKOUT_URL) console.warn('[warn] WHOP_CHECKOUT_URL not set — Whop subscriptions disabled');
+  if (!process.env.WHOP_WEBHOOK_SECRET) console.warn('[warn] WHOP_WEBHOOK_SECRET not set — webhook signature verification will reject');
   if (!process.env.PADDLE_API_KEY) console.warn('[warn] PADDLE_API_KEY not set — Paddle card payments disabled');
-  if (!process.env.PADDLE_PRICE_ID) console.warn('[warn] PADDLE_PRICE_ID not set');
-  if (!process.env.NOWPAYMENTS_API_KEY) console.warn('[warn] NOWPAYMENTS_API_KEY not set — crypto payments disabled');
-  if (!process.env.NOWPAYMENTS_IPN_SECRET) console.warn('[warn] NOWPAYMENTS_IPN_SECRET not set — webhook signature verification will reject');
+  if (!process.env.NOWPAYMENTS_API_KEY) console.warn('[warn] NOWPAYMENTS_API_KEY not set — NowPayments crypto disabled');
 });

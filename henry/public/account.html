@@ -62,7 +62,8 @@
     <div class="section-title">ACTIONS</div>
     <button class="primary" onclick="goTerminal()">← BACK TO TERMINAL</button>
     <!-- Renew / Subscribe — only visible to non-admin users -->
-    <button id="renew-btn" class="crypto" onclick="renewCrypto()" style="display:none">⚡ RENEW WITH CRYPTO — 30 DAYS</button>
+    <button id="renew-whop-btn" class="primary" onclick="renewWhop()" style="display:none">RENEW VIA WHOP — $500 / MONTH</button>
+    <button id="renew-btn" class="crypto" onclick="renewCrypto()" style="display:none">⚡ ONE-OFF CRYPTO RENEW (NOWPAYMENTS)</button>
     <button id="cancel-btn" class="danger" onclick="cancelSub()" style="display:none">CANCEL SUBSCRIPTION</button>
     <button onclick="doLogout()">LOG OUT</button>
   </div>
@@ -72,10 +73,15 @@
 <script>
 const msg = document.getElementById('msg');
 let _nowpayEnabled = false;
+let _whopEnabled = false;
 
 async function load() {
   try {
-    // Probe crypto config first so we know whether to show the Renew button
+    // Probe payment configs first so we know which renew buttons to show
+    try {
+      const wr = await fetch('/api/whop/config');
+      if (wr.ok) { const c = await wr.json(); _whopEnabled = !!c.enabled; }
+    } catch (e) {}
     try {
       const cr = await fetch('/api/nowpayments/config');
       if (cr.ok) { const c = await cr.json(); _nowpayEnabled = !!c.enabled; }
@@ -103,7 +109,8 @@ async function load() {
 
     // Pretty plan label
     const planRaw = (d.plan || 'none').toLowerCase();
-    planEl.textContent = planRaw === 'monthly'        ? 'PRO MONTHLY (CARD)'
+    planEl.textContent = planRaw === 'monthly_whop'   ? 'PRO MONTHLY (WHOP)'
+                      : planRaw === 'monthly'         ? 'PRO MONTHLY (CARD)'
                       : planRaw === 'monthly_crypto'  ? 'PRO MONTHLY (CRYPTO)'
                       : planRaw === 'lifetime'        ? 'LIFETIME'
                       : (planRaw || 'NONE').toUpperCase();
@@ -129,20 +136,54 @@ async function load() {
       daysEl.textContent   = '';
     }
 
-    // Show RENEW for everyone non-admin if crypto is enabled.
-    //   active  → "renew now to extend"
-    //   expired / cancelled / inactive → "subscribe again"
+    // Show renew buttons — Whop primary, NowPayments fallback
+    const whopBtn = document.getElementById('renew-whop-btn');
+    if (_whopEnabled) {
+      whopBtn.style.display = '';
+      if (st === 'active' && planRaw === 'monthly_whop') {
+        // Already auto-renewing via Whop — label changes to manage
+        whopBtn.textContent = 'MANAGE WHOP SUBSCRIPTION →';
+      } else if (st === 'active') {
+        whopBtn.textContent = 'SWITCH TO WHOP — $500 / MONTH';
+      } else {
+        whopBtn.textContent = 'SUBSCRIBE VIA WHOP — $500 / MONTH';
+      }
+    }
     if (_nowpayEnabled) {
       renewBtn.style.display = '';
       if (st === 'active') {
-        renewBtn.textContent = '⚡ RENEW WITH CRYPTO — +30 DAYS';
+        renewBtn.textContent = '⚡ ADD 30 DAYS (CRYPTO ONE-OFF)';
       } else {
-        renewBtn.textContent = '⚡ SUBSCRIBE WITH CRYPTO — 30 DAYS';
+        renewBtn.textContent = '⚡ SUBSCRIBE WITH CRYPTO ONE-OFF';
       }
     }
     if (st === 'active' && planRaw === 'monthly') cancelBtn.style.display = ''; // only Paddle subs can be cancelled mid-cycle
   } catch (e) {
     window.location.href = '/login';
+  }
+}
+
+// Whop renew — starts checkout via /api/whop/checkout which builds the URL with metadata.
+async function renewWhop() {
+  const btn = document.getElementById('renew-whop-btn');
+  btn.disabled = true; btn.textContent = 'OPENING WHOP…';
+  msg.className = ''; msg.textContent = '';
+  try {
+    const r = await fetch('/api/whop/checkout', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const d = await r.json();
+    if (!r.ok || !d.checkoutUrl) {
+      msg.className = 'msg err';
+      msg.textContent = d.error || 'Could not start Whop checkout. Try again.';
+      btn.disabled = false; load();
+      return;
+    }
+    window.location.href = d.checkoutUrl;
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Network error: ' + e.message;
+    btn.disabled = false; load();
   }
 }
 
