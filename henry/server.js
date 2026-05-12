@@ -4367,8 +4367,8 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     'DIRECTION RULES — READ CAREFULLY:',
     `LONG: entry < current_price, SL BELOW entry, TP ABOVE entry. Example: entry=${exLE}, sl=${exLS}, tp=${exLT}`,
     `SHORT: entry > current_price (or at current for market), SL ABOVE entry, TP BELOW entry. Example: entry=${exSE}, sl=${exSS}, tp=${exST}`,
-    'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.5.',
-    'STRICT RR FLOOR: if you cannot find a setup where RR >= 1.5, return direction "NO TRADE" — do not stretch TP or tighten SL artificially. A trade that backtests to 1.4R or lower will be auto-downgraded to NO TRADE on the server side anyway.',
+    'rr for LONG = (tp-entry)/(entry-sl). rr for SHORT = (entry-tp)/(sl-entry). BOTH must be positive numbers >= 1.3.',
+    'RR FLOOR: if you cannot find a setup where RR >= 1.3, return direction "NO TRADE" — do not stretch TP or tighten SL artificially. A trade with RR < 1.3 will be auto-downgraded to NO TRADE on the server side.',
     '',
     'STOP-LOSS PLACEMENT — ATR-BASED (CRITICAL):',
     '• Use the ATR value provided in the context block. The asset-class multiplier is also given.',
@@ -4526,19 +4526,23 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   const systemPrompt = buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose);
   const userMessage = `Analyse ${coin} on ${tf}. Auto trigger fired: ${trigger.type.toUpperCase()} — ${trigger.desc}. Output the signal JSON.`;
 
+  const preScore = indicators && indicators.confluenceScore != null ? indicators.confluenceScore : '?';
+  console.log(`[autoscan→AI] ${coin} ${tf} trigger=${trigger.type} preConf=${preScore}/85 — calling Claude...`);
+
   let signal = null;
   try {
     // 2000 max tokens — Sonnet 4.6 is more verbose than 4.0; truncation kills JSON parsing
     const text = await callAnthropicServer(systemPrompt, userMessage, 2000);
     signal = parseSignalJSONServer(text);
   } catch (e) {
-    console.error('[runServerAI call]', e.message);
+    console.error(`[autoscan→AI] ${coin} call failed: ${e.message}`);
     return null;
   }
-  if (!signal) { console.error('[runServerAI] no JSON parsed'); return null; }
+  if (!signal) { console.error(`[autoscan→AI] ${coin} no JSON parsed from Claude response`); return null; }
 
   // Validate levels — auto-retry once with explicit correction
   if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) {
+    console.warn(`[autoscan→AI] ${coin} invalid levels (dir=${signal.direction} entry=${signal.entry} SL=${signal.sl} TP=${signal.tp}), retrying once`);
     const correction = `Your previous output had invalid levels. Direction was ${signal.direction} but: entry=${signal.entry} SL=${signal.sl} TP=${signal.tp}. ` +
       (signal.direction === 'LONG' ? 'For LONG: SL must be BELOW entry, TP must be ABOVE entry.' : 'For SHORT: SL must be ABOVE entry, TP must be BELOW entry.') +
       ' Recalculate and output corrected JSON only.';
@@ -4546,25 +4550,31 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
       const retryText = await callAnthropicServer(systemPrompt, userMessage + '\n\n' + correction, 1500);
       const retried = parseSignalJSONServer(retryText);
       if (retried && validateSignalLevelsServer(retried)) signal = retried;
-    } catch (e) { console.error('[runServerAI retry]', e.message); }
+    } catch (e) { console.error(`[autoscan→AI] ${coin} retry call failed: ${e.message}`); }
   }
   if (signal.direction !== 'NO TRADE' && !validateSignalLevelsServer(signal)) {
-    console.error('[runServerAI] invalid levels after retry, aborting');
+    console.error(`[autoscan→AI] ${coin} still invalid after retry, aborting`);
     return null;
   }
 
-  // ── Hard floor on RR: any signal with computed RR < 1.5 is downgraded to NO TRADE ──
-  // Reason: poor RR setups skew the journal stats negative even when the AI thinks it's
-  // a valid pattern. Better to skip than enter a marginal trade autonomously.
+  // ── RR floor: any signal with computed RR < 1.3 is downgraded to NO TRADE ──
+  // Lowered from 1.5 → 1.3 (May 2026) so borderline-OK setups still surface to the
+  // user — they were previously being silently auto-downgraded. 1.3 is still a
+  // sane minimum (you're risking 1R to gain 1.3R, ~57% win rate breakeven).
+  const RR_FLOOR = 1.3;
   if (signal.direction !== 'NO TRADE' && signal.entry && signal.sl && signal.tp) {
     const e = parseFloat(signal.entry), sl = parseFloat(signal.sl), tp = parseFloat(signal.tp);
     const rr = signal.direction === 'LONG' ? (tp - e) / (e - sl) : (e - tp) / (sl - e);
-    if (isFinite(rr) && rr < 1.5) {
-      console.log('[runServerAI]', coin, 'RR', rr.toFixed(2), '< 1.5 → downgrading to NO TRADE');
+    if (isFinite(rr) && rr < RR_FLOOR) {
+      console.log(`[autoscan→AI] ${coin} ${signal.direction} RR ${rr.toFixed(2)} < ${RR_FLOOR} → downgrading to NO TRADE`);
       const origDir = signal.direction;
       signal.direction = 'NO TRADE';
-      signal.reasoning = `Auto-downgraded from ${origDir}: computed RR ${rr.toFixed(2)} below 1.5R minimum. ` + (signal.reasoning || '');
+      signal.reasoning = `Auto-downgraded from ${origDir}: computed RR ${rr.toFixed(2)} below ${RR_FLOOR}R minimum. ` + (signal.reasoning || '');
+    } else if (isFinite(rr)) {
+      console.log(`[autoscan→AI] ${coin} ${signal.direction} SIGNAL accepted: entry=${signal.entry} SL=${signal.sl} TP=${signal.tp} RR=${rr.toFixed(2)} conf=${signal.confidence || '?'}`);
     }
+  } else if (signal.direction === 'NO TRADE') {
+    console.log(`[autoscan→AI] ${coin} AI returned NO TRADE: ${(signal.reasoning || '').slice(0, 140)}`);
   }
 
   // NO TRADE — just push a notification, don't activate the monitor
