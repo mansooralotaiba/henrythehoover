@@ -76,10 +76,10 @@
   .quick-strip .item .v{color:var(--fg);font-weight:bold}
   .quick-strip .item .v.pos{color:var(--gr)}.quick-strip .item .v.neg{color:var(--re)}.quick-strip .item .v.am{color:var(--am)}
 
-  /* ═════════ MIDDLE BAND — KINGDOM ═════════ */
-  .middle-band{flex:1;min-height:440px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden}
+  /* ═════════ MIDDLE BAND — KINGDOM (custom SVG) ═════════ */
+  .middle-band{flex:1;min-height:560px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden}
   .kingdom-stage{position:absolute;inset:0}
-  .kingdom-stage svg.scene{width:100%;height:100%;display:block}
+  .scene-svg{position:absolute;inset:0;width:100%;height:100%;display:block}
 
   /* Sky gradient layers — UTC-driven, transitions smoothly */
   .kingdom-stage::before{
@@ -92,105 +92,94 @@
   .kingdom-stage[data-sky="dusk"]::before{background:linear-gradient(180deg,#1a1232 0%,#4a2030 35%,#6e2a36 70%,#1a0e18 100%)}
   .kingdom-stage[data-sky="killzone"]::before{background:linear-gradient(180deg,#1a1838 0%,#3d1838 35%,#5a1f3c 70%,#1c0e1f 100%)}
 
-  /* Stars (night) — small flickering dots overlay */
+  /* Stars overlay */
   .stars{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity 2s ease}
   .kingdom-stage[data-sky="night"] .stars{opacity:1}
   .stars .star{position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;animation:twinkle 3s ease-in-out infinite}
   @keyframes twinkle{0%,100%{opacity:0.3}50%{opacity:1}}
 
-  /* Floating clouds */
-  .clouds{position:absolute;inset:0;pointer-events:none;opacity:0.6}
-  .cloud{position:absolute;background:rgba(255,255,255,0.04);border-radius:50%;filter:blur(8px);animation:cloud-drift 60s linear infinite}
+  .clouds{position:absolute;inset:0;pointer-events:none;opacity:0.5}
+  .cloud{position:absolute;background:rgba(255,255,255,0.04);border-radius:50%;filter:blur(10px);animation:cloud-drift 80s linear infinite}
   @keyframes cloud-drift{from{transform:translateX(-200px)}to{transform:translateX(calc(100vw + 200px))}}
 
-  /* Kingdom UI overlays */
-  .kingdom-ui{position:absolute;inset:0;pointer-events:none}
-  .kingdom-ui > *{pointer-events:auto}
+  /* SVG element animations */
+  @keyframes castle-aura{0%,100%{opacity:0.35}50%{opacity:0.75}}
+  .castle-aura{animation:castle-aura 4s ease-in-out infinite;transform-origin:center}
+  @keyframes window-pulse{0%,100%{opacity:0.25}50%{opacity:1}}
+  .advisor-window{animation:window-pulse 2.6s ease-in-out infinite}
+  .advisor-window.w0{animation-delay:0s}.advisor-window.w1{animation-delay:0.2s}.advisor-window.w2{animation-delay:0.4s}
+  .advisor-window.w3{animation-delay:0.6s}.advisor-window.w4{animation-delay:0.8s}.advisor-window.w5{animation-delay:1.0s}
+  .advisor-window.w6{animation-delay:1.2s}.advisor-window.w7{animation-delay:1.4s}.advisor-window.w8{animation-delay:1.6s}
+  .advisor-window.w9{animation-delay:1.8s}.advisor-window.w10{animation-delay:2.0s}
 
-  /* AI Castle (center) */
-  .ai-castle{position:absolute;top:14%;left:50%;transform:translateX(-50%);width:280px;text-align:center}
-  .ai-castle .battlements{font-size:48px;color:#2a3344;text-shadow:0 0 20px rgba(0,212,255,0.4);line-height:1;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.6))}
-  .ai-castle .windows{margin-top:-26px;display:flex;justify-content:center;gap:3px;flex-wrap:wrap;width:170px;margin-left:auto;margin-right:auto}
-  .ai-castle .window{width:8px;height:8px;background:rgba(255,184,48,0.3);border-radius:1px;animation:advisor-pulse 2.5s ease-in-out infinite}
-  .ai-castle .window:nth-child(1){animation-delay:0s}.ai-castle .window:nth-child(2){animation-delay:0.2s}
-  .ai-castle .window:nth-child(3){animation-delay:0.4s}.ai-castle .window:nth-child(4){animation-delay:0.6s}
-  .ai-castle .window:nth-child(5){animation-delay:0.8s}.ai-castle .window:nth-child(6){animation-delay:1.0s}
-  .ai-castle .window:nth-child(7){animation-delay:1.2s}.ai-castle .window:nth-child(8){animation-delay:1.4s}
-  .ai-castle .window:nth-child(9){animation-delay:1.6s}.ai-castle .window:nth-child(10){animation-delay:1.8s}
-  .ai-castle .window:nth-child(11){animation-delay:2.0s}
-  @keyframes advisor-pulse{0%,100%{background:rgba(255,184,48,0.25);box-shadow:0 0 0 rgba(255,184,48,0)}50%{background:rgba(255,184,48,0.9);box-shadow:0 0 6px rgba(255,184,48,0.6)}}
-  .ai-castle .castle-label{margin-top:8px;font-size:9px;letter-spacing:.2em;color:rgba(255,255,255,0.5)}
-  .ai-castle .castle-sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:.1em;margin-top:2px}
-  /* AI sun behind castle — pulsing glow */
-  .ai-aura{position:absolute;top:5%;left:50%;transform:translateX(-50%);width:340px;height:340px;border-radius:50%;background:radial-gradient(circle,rgba(0,212,255,0.12) 0%,transparent 60%);animation:aura-pulse 4s ease-in-out infinite}
-  @keyframes aura-pulse{0%,100%{opacity:0.4;transform:translateX(-50%) scale(1)}50%{opacity:0.8;transform:translateX(-50%) scale(1.1)}}
+  @keyframes flag-wave-svg{0%,100%{transform:skewX(-4deg)}50%{transform:skewX(4deg)}}
+  .flag-cloth{transform-origin:left top;animation:flag-wave-svg 2.4s ease-in-out infinite}
 
-  /* Treasury (bottom-right) */
-  .treasury{position:absolute;right:14px;bottom:14px;width:200px;background:linear-gradient(180deg,rgba(255,184,48,0.08) 0%,rgba(255,184,48,0.02) 100%);border:1px solid rgba(255,184,48,0.3);border-radius:6px;padding:10px 12px}
-  .treasury .door{font-size:32px;text-align:center;line-height:1;text-shadow:0 0 12px rgba(255,184,48,0.5)}
-  .treasury .lbl{font-size:8px;letter-spacing:.2em;color:rgba(255,184,48,0.7);text-align:center;margin-top:6px}
-  .treasury .total-r{font-size:20px;font-weight:bold;color:#ffb830;text-align:center;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,184,48,0.4)}
-  .treasury .coins{display:flex;justify-content:center;gap:1px;margin-top:6px;flex-wrap:wrap;max-width:170px;margin-left:auto;margin-right:auto}
-  .treasury .coin{font-size:9px;animation:coin-shine 3s ease-in-out infinite;animation-delay:var(--d,0s)}
-  @keyframes coin-shine{0%,100%{opacity:0.6;filter:none}50%{opacity:1;filter:drop-shadow(0 0 3px gold)}}
+  @keyframes coin-shine-svg{0%,100%{opacity:0.7}50%{opacity:1}}
+  .coin{animation:coin-shine-svg 3s ease-in-out infinite}
 
-  /* Calendar tower (top-left) */
-  .cal-tower{position:absolute;left:14px;top:14px;width:140px;text-align:center}
-  .cal-tower .tower{font-size:32px;line-height:1;color:#4a5260;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.5))}
-  .cal-tower .bell{font-size:16px;margin-top:-8px}
-  .cal-tower .clock{font-size:9px;color:rgba(255,255,255,0.4);letter-spacing:.1em;margin-top:4px}
-  .cal-tower .event{font-size:9px;color:rgba(255,184,48,0.6);margin-top:2px;letter-spacing:.05em}
-  .cal-tower.warn .tower{color:#ffb830;animation:warn-pulse 1s ease-in-out infinite}
-  .cal-tower.imminent .tower{color:#ff4466;animation:warn-pulse 0.4s ease-in-out infinite}
-  @keyframes warn-pulse{0%,100%{filter:drop-shadow(0 4px 8px rgba(0,0,0,0.5))}50%{filter:drop-shadow(0 0 14px currentColor)}}
-  .cal-tower.imminent::after{
-    content:'';position:absolute;top:-10px;left:50%;transform:translateX(-50%);width:50px;height:50px;
-    background:radial-gradient(circle,rgba(255,68,102,0.5) 0%,transparent 60%);
-    animation:lightning 0.6s ease-in-out infinite;
-  }
-  @keyframes lightning{0%,100%{opacity:0}40%,60%{opacity:1}}
+  @keyframes bell-swing{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}
+  .cal-tower-svg.warn .bell{animation:bell-swing 1.4s ease-in-out infinite;transform-origin:50% 0%}
+  .cal-tower-svg.imminent .bell{animation:bell-swing 0.5s ease-in-out infinite;transform-origin:50% 0%}
+  .lightning-bolt{opacity:0;transition:opacity 0.1s}
+  .cal-tower-svg.imminent .lightning-bolt{animation:lightning-flash 0.6s ease-in-out infinite}
+  @keyframes lightning-flash{0%,100%{opacity:0}40%,60%{opacity:1}}
 
-  /* Discord raven (top-right) */
-  .raven-perch{position:absolute;right:14px;top:14px;width:60px;text-align:center}
-  .raven{font-size:24px;display:inline-block;transition:transform 0.2s;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6))}
-  .raven.flying{animation:raven-fly 2s ease-out forwards}
-  @keyframes raven-fly{
+  /* Discord raven */
+  .raven-svg{transition:transform 0.2s;transform-origin:50% 50%;cursor:pointer}
+  .raven-svg.flying{animation:raven-fly-svg 2s ease-out forwards}
+  @keyframes raven-fly-svg{
     0%{transform:translate(0,0) scale(1) rotate(0deg)}
-    20%{transform:translate(-20px,-30px) scale(0.9) rotate(-15deg)}
-    50%{transform:translate(-180px,-80px) scale(0.7) rotate(-10deg)}
-    100%{transform:translate(-500px,-120px) scale(0.4) rotate(0deg);opacity:0}
+    20%{transform:translate(-40px,-30px) scale(0.95) rotate(-12deg)}
+    55%{transform:translate(-300px,-100px) scale(0.7) rotate(-8deg);opacity:1}
+    100%{transform:translate(-700px,-160px) scale(0.4) rotate(0deg);opacity:0}
   }
-  .raven-perch .lbl{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:.15em;margin-top:2px}
+  @keyframes wing-flap{0%,100%{transform:scaleY(1)}50%{transform:scaleY(0.4)}}
+  .raven-svg.flying .wing-l,.raven-svg.flying .wing-r{animation:wing-flap 0.15s ease-in-out infinite;transform-origin:bottom}
 
-  /* Pair territories — bottom row */
-  .territories{position:absolute;left:14px;right:230px;bottom:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;max-height:50%;overflow:hidden}
-  .territory{position:relative;flex:0 0 calc(20% - 5px);min-width:96px;max-width:130px;background:rgba(0,0,0,0.3);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;font-size:9px;transition:all 0.4s ease}
-  .territory[data-state="scanning"]{background:linear-gradient(180deg,rgba(0,229,160,0.05) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(0,229,160,0.25)}
-  .territory[data-state="waiting"]{background:linear-gradient(180deg,rgba(255,184,48,0.08) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(255,184,48,0.4)}
-  .territory[data-state="in-trade"]{background:linear-gradient(180deg,rgba(0,212,255,0.15) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(0,212,255,0.6);box-shadow:0 0 12px rgba(0,212,255,0.2)}
-  .territory[data-state="cooldown"]{background:linear-gradient(180deg,rgba(255,255,255,0.03) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(255,255,255,0.1);opacity:0.7}
-  .territory[data-state="paused"]{background:linear-gradient(180deg,rgba(255,68,102,0.08) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(255,68,102,0.4);animation:pause-flicker 2s ease-in-out infinite}
-  @keyframes pause-flicker{0%,100%{box-shadow:0 0 8px rgba(255,68,102,0.1)}50%{box-shadow:0 0 14px rgba(255,68,102,0.4)}}
+  @keyframes treasury-glow{0%,100%{filter:drop-shadow(0 0 8px rgba(255,184,48,0.3))}50%{filter:drop-shadow(0 0 16px rgba(255,184,48,0.6))}}
+  .treasury-svg .vault{animation:treasury-glow 4s ease-in-out infinite}
+
+  /* HTML text overlays on top of SVG */
+  .scene-overlay{position:absolute;inset:0;pointer-events:none}
+  .scene-overlay > *{pointer-events:auto}
+  .overlay-text{position:absolute;color:#e8eaf0;font-family:var(--mn);text-align:center;text-shadow:0 1px 3px rgba(0,0,0,0.8)}
+
+  .cal-clock-label{left:6%;top:24%;font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:.15em}
+  .cal-event-label{left:2%;top:30%;width:18%;font-size:9px;color:rgba(255,184,48,0.7);letter-spacing:.05em}
+  .castle-label{left:50%;top:54%;transform:translateX(-50%);font-size:10px;letter-spacing:.25em;color:rgba(255,255,255,0.55);font-weight:bold}
+  .castle-sub-label{left:50%;top:58%;transform:translateX(-50%);font-size:9px;letter-spacing:.1em;color:rgba(255,255,255,0.35)}
+  .raven-label{right:3%;top:25%;font-size:9px;color:rgba(255,255,255,0.5);letter-spacing:.2em}
+  .treasury-r{right:11%;bottom:18%;font-size:22px;font-weight:bold;color:#ffb830;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,184,48,0.5),0 0 2px rgba(0,0,0,0.9);width:180px}
+  .treasury-label{right:11%;bottom:14%;font-size:8px;letter-spacing:.25em;color:rgba(255,184,48,0.7);width:180px}
+
+  /* Pair territories — bigger, centered row */
+  .territories{position:absolute;left:18%;right:18%;bottom:5%;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:flex-end;max-height:50%;overflow:visible;pointer-events:auto}
+  .territory{position:relative;flex:0 1 145px;min-width:120px;max-width:160px;background:rgba(0,0,0,0.45);backdrop-filter:blur(4px);border:1.5px solid var(--b1);border-radius:6px;padding:8px 10px;font-size:10px;transition:all 0.4s ease;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
+  .territory[data-state="scanning"]{background:linear-gradient(180deg,rgba(0,229,160,0.08) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(0,229,160,0.35)}
+  .territory[data-state="waiting"]{background:linear-gradient(180deg,rgba(255,184,48,0.12) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(255,184,48,0.5)}
+  .territory[data-state="in-trade"]{background:linear-gradient(180deg,rgba(0,212,255,0.2) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(0,212,255,0.7);box-shadow:0 0 18px rgba(0,212,255,0.35),0 4px 12px rgba(0,0,0,0.4)}
+  .territory[data-state="cooldown"]{background:linear-gradient(180deg,rgba(255,255,255,0.04) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(255,255,255,0.12);opacity:0.65}
+  .territory[data-state="paused"]{background:linear-gradient(180deg,rgba(255,68,102,0.12) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(255,68,102,0.5);animation:pause-flicker 2s ease-in-out infinite}
+  @keyframes pause-flicker{0%,100%{box-shadow:0 0 10px rgba(255,68,102,0.15),0 4px 12px rgba(0,0,0,0.4)}50%{box-shadow:0 0 20px rgba(255,68,102,0.5),0 4px 12px rgba(0,0,0,0.4)}}
   .territory[data-state="in-trade"]{animation:trade-pulse 1.8s ease-in-out infinite}
-  @keyframes trade-pulse{0%,100%{box-shadow:0 0 10px rgba(0,212,255,0.15)}50%{box-shadow:0 0 22px rgba(0,212,255,0.4)}}
-  .territory .biome{font-size:22px;text-align:center;line-height:1;margin-bottom:2px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5))}
-  .territory .name{font-weight:bold;font-size:10px;letter-spacing:.05em;text-align:center;color:var(--fg)}
-  .territory .state-tag{font-size:7px;color:var(--mu);text-align:center;letter-spacing:.1em;margin-top:1px}
+  @keyframes trade-pulse{0%,100%{box-shadow:0 0 14px rgba(0,212,255,0.2),0 4px 12px rgba(0,0,0,0.4)}50%{box-shadow:0 0 32px rgba(0,212,255,0.55),0 4px 12px rgba(0,0,0,0.4)}}
+  .territory .biome-svg{width:100%;height:46px;display:block;margin-bottom:4px}
+  .territory .name{font-weight:bold;font-size:11px;letter-spacing:.06em;text-align:center;color:var(--fg)}
+  .territory .state-tag{font-size:8px;color:var(--mu);text-align:center;letter-spacing:.12em;margin-top:2px}
   .territory[data-state="in-trade"] .state-tag{color:var(--cy)}
   .territory[data-state="waiting"] .state-tag{color:var(--am)}
   .territory[data-state="paused"] .state-tag{color:var(--re)}
   .territory[data-state="scanning"] .state-tag{color:var(--gr)}
-  .territory .price{font-size:9px;color:var(--mu);text-align:center;margin-top:2px}
-  /* Boss HP bar — visible only in-trade */
-  .territory .boss-hp{margin-top:4px;height:3px;background:rgba(255,68,102,0.2);border-radius:2px;overflow:hidden;display:none}
+  .territory .price{font-size:9px;color:var(--mu);text-align:center;margin-top:3px;letter-spacing:.04em}
+  .territory .boss-hp{margin-top:6px;height:4px;background:rgba(255,68,102,0.2);border-radius:2px;overflow:hidden;display:none}
   .territory[data-state="in-trade"] .boss-hp{display:block}
   .territory .boss-hp .fill{height:100%;background:linear-gradient(90deg,#ff4466 0%,#ffb830 50%,#00e5a0 100%);transition:width 0.6s ease}
-  .territory .pos-flag{position:absolute;top:-6px;right:-6px;font-size:14px;animation:flag-wave 1.5s ease-in-out infinite}
-  @keyframes flag-wave{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(5deg)}}
+  .territory .pos-flag{position:absolute;top:-8px;right:-8px;width:18px;height:22px}
 
-  /* Empty kingdom hint */
-  .kingdom-empty{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.3);font-size:11px;letter-spacing:.15em;text-align:center}
-  .kingdom-empty .crown{font-size:36px;margin-bottom:8px;opacity:0.5}
+  .kingdom-empty{position:absolute;top:62%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.32);font-size:11px;letter-spacing:.18em;text-align:center;pointer-events:none}
+  .kingdom-empty .label{margin-bottom:4px}
+  .kingdom-empty .sub{font-size:9px;color:rgba(255,255,255,0.2)}
 
   /* BOTTOM BAND */
   .bottom-band{min-height:280px;display:flex;flex-direction:column;gap:8px}
@@ -309,68 +298,301 @@
 <div class="middle-band">
   <div class="kingdom-stage" id="stage" data-sky="day">
 
-    <!-- Animated stars (visible at night) -->
     <div class="stars" id="stars"></div>
-
-    <!-- Floating clouds (visible during day) -->
     <div class="clouds" id="clouds"></div>
 
-    <!-- AI aura behind the castle -->
-    <div class="ai-aura"></div>
+    <!-- ═════════ MAIN SCENE SVG ═════════ -->
+    <svg class="scene-svg" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMid slice" aria-label="Henry kingdom scene">
+      <defs>
+        <!-- Stone tower gradient -->
+        <linearGradient id="stoneGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#3a4257"/>
+          <stop offset="100%" stop-color="#1c2230"/>
+        </linearGradient>
+        <linearGradient id="stoneGradLit" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#4a5571"/>
+          <stop offset="100%" stop-color="#252b3a"/>
+        </linearGradient>
+        <linearGradient id="roofGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#5a3038"/>
+          <stop offset="100%" stop-color="#311b22"/>
+        </linearGradient>
+        <linearGradient id="goldGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#ffd470"/>
+          <stop offset="100%" stop-color="#c08410"/>
+        </linearGradient>
+        <linearGradient id="vaultGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#604530"/>
+          <stop offset="100%" stop-color="#2e1d12"/>
+        </linearGradient>
+        <radialGradient id="castleAuraGrad">
+          <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.35"/>
+          <stop offset="60%" stop-color="#00d4ff" stop-opacity="0.05"/>
+          <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="windowGlow">
+          <stop offset="0%" stop-color="#ffb830"/>
+          <stop offset="80%" stop-color="#c08410"/>
+          <stop offset="100%" stop-color="#704508"/>
+        </radialGradient>
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
 
-    <div class="kingdom-ui">
+      <!-- ── Distant mountains silhouette ── -->
+      <g opacity="0.55">
+        <path d="M 0 460 L 80 380 L 180 420 L 280 350 L 400 410 L 520 360 L 640 400 L 760 340 L 900 390 L 1060 360 L 1180 410 L 1300 370 L 1450 400 L 1600 380 L 1600 600 L 0 600 Z" fill="#0a0e1a"/>
+      </g>
+      <!-- ── Mid-ground hills ── -->
+      <g opacity="0.7">
+        <path d="M 0 510 L 120 460 L 280 490 L 420 450 L 600 480 L 780 460 L 960 490 L 1140 470 L 1320 485 L 1500 465 L 1600 480 L 1600 600 L 0 600 Z" fill="#0b1019"/>
+      </g>
+      <!-- ── Ground plane ── -->
+      <rect x="0" y="535" width="1600" height="65" fill="#0a0c14"/>
+      <!-- ── Stone path connecting castle to territories ── -->
+      <path d="M 700 510 Q 800 540 900 510 L 920 600 L 680 600 Z" fill="rgba(255,255,255,0.025)"/>
 
-      <!-- Calendar tower top-left -->
-      <div class="cal-tower" id="cal-tower">
-        <div class="tower">🏛️</div>
-        <div class="bell">🔔</div>
-        <div class="clock" id="cal-clock">--:-- UTC</div>
-        <div class="event" id="cal-event">scanning…</div>
-      </div>
+      <!-- ═══ CALENDAR TOWER (top-left) ═══ -->
+      <g class="cal-tower-svg" id="cal-tower-svg" transform="translate(80,40)">
+        <!-- Tower stack: base, mid, top -->
+        <rect x="20" y="190" width="80" height="60" fill="url(#stoneGrad)" rx="2"/>
+        <rect x="28" y="110" width="64" height="80" fill="url(#stoneGradLit)" rx="2"/>
+        <rect x="34" y="50" width="52" height="60" fill="url(#stoneGrad)" rx="2"/>
+        <!-- Crenellations on top -->
+        <g fill="#2a3344">
+          <rect x="34" y="42" width="10" height="10"/>
+          <rect x="50" y="42" width="10" height="10"/>
+          <rect x="66" y="42" width="10" height="10"/>
+          <rect x="76" y="42" width="10" height="10"/>
+        </g>
+        <!-- Conical bell roof -->
+        <polygon points="34,50 60,18 86,50" fill="url(#roofGrad)"/>
+        <polygon points="34,50 60,22 86,50" fill="#1a0c12" opacity="0.4"/>
+        <!-- Bell housing -->
+        <rect x="50" y="30" width="20" height="14" fill="#2a3344" rx="1"/>
+        <!-- Bell (animates) -->
+        <g class="bell">
+          <path d="M 56 36 L 64 36 L 66 46 L 54 46 Z" fill="url(#goldGrad)"/>
+          <circle cx="60" cy="48" r="1.5" fill="#c08410"/>
+        </g>
+        <!-- Clock face -->
+        <circle cx="60" cy="142" r="14" fill="#1a1f2e" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+        <circle cx="60" cy="142" r="10" fill="#0e1117"/>
+        <!-- Clock hands rotate via JS — placeholder static -->
+        <line x1="60" y1="142" x2="60" y2="136" stroke="rgba(255,255,255,0.5)" stroke-width="1.2" id="clock-hour"/>
+        <line x1="60" y1="142" x2="60" y2="134" stroke="rgba(0,212,255,0.7)" stroke-width="1" id="clock-min"/>
+        <circle cx="60" cy="142" r="1.2" fill="#00d4ff"/>
+        <!-- Tower base (entryway) -->
+        <rect x="50" y="225" width="20" height="25" fill="#0a0e1a"/>
+        <path d="M 50 235 Q 60 225 70 235 L 70 250 L 50 250 Z" fill="#0a0e1a"/>
+        <!-- Stone texture lines -->
+        <g stroke="rgba(0,0,0,0.3)" stroke-width="1" fill="none">
+          <line x1="34" y1="80" x2="86" y2="80"/>
+          <line x1="28" y1="140" x2="92" y2="140"/>
+          <line x1="20" y1="220" x2="100" y2="220"/>
+        </g>
+        <!-- Lightning bolts (visible when imminent) -->
+        <g class="lightning-bolt" stroke="#fff" stroke-width="2" fill="none" filter="url(#glow)">
+          <polyline points="40,10 30,30 50,32 38,55 60,52 48,72" stroke="rgba(255,184,48,0.9)"/>
+          <polyline points="90,12 100,32 80,30 92,52 70,50 82,70" stroke="rgba(255,68,102,0.9)"/>
+        </g>
+      </g>
 
-      <!-- AI Castle center -->
-      <div class="ai-castle">
-        <div class="battlements">🏰</div>
-        <div class="windows" id="windows" title="11 data-source advisors">
-          <div class="window" title="Trigger detection"></div>
-          <div class="window" title="Multi-timeframe (1H + 4H)"></div>
-          <div class="window" title="BTC correlation / DXY"></div>
-          <div class="window" title="Funding rate"></div>
-          <div class="window" title="Open interest"></div>
-          <div class="window" title="Liquidity heatmap"></div>
-          <div class="window" title="Order flow / footprint"></div>
-          <div class="window" title="CVD trend"></div>
-          <div class="window" title="Cross-broker check"></div>
-          <div class="window" title="News headlines"></div>
-          <div class="window" title="Economic calendar"></div>
-        </div>
-        <div class="castle-label">HENRY'S CASTLE</div>
-        <div class="castle-sub" id="castle-sub">11 advisors · idle</div>
-      </div>
+      <!-- ═══ AI CASTLE (center) ═══ -->
+      <g class="castle-svg" transform="translate(520,80)">
+        <!-- Aura behind -->
+        <circle cx="280" cy="240" r="280" fill="url(#castleAuraGrad)" class="castle-aura"/>
 
-      <!-- Discord raven top-right -->
-      <div class="raven-perch">
-        <div class="raven" id="raven" title="Discord raven">🦅</div>
-        <div class="lbl">DISCORD</div>
-      </div>
+        <!-- Curtain wall connecting towers (back layer) -->
+        <rect x="40" y="280" width="480" height="120" fill="url(#stoneGrad)"/>
+        <!-- Wall crenellations -->
+        <g fill="#1c2230">
+          <rect x="40" y="270" width="20" height="14"/>
+          <rect x="70" y="270" width="20" height="14"/>
+          <rect x="100" y="270" width="20" height="14"/>
+          <rect x="130" y="270" width="20" height="14"/>
+          <rect x="160" y="270" width="20" height="14"/>
+          <rect x="370" y="270" width="20" height="14"/>
+          <rect x="400" y="270" width="20" height="14"/>
+          <rect x="430" y="270" width="20" height="14"/>
+          <rect x="460" y="270" width="20" height="14"/>
+          <rect x="490" y="270" width="20" height="14"/>
+        </g>
 
-      <!-- Treasury bottom-right -->
-      <div class="treasury">
-        <div class="door">🏛️</div>
-        <div class="lbl">CUMULATIVE TREASURY</div>
-        <div class="total-r" id="treasury-r">+0.00R</div>
-        <div class="coins" id="treasury-coins"></div>
-      </div>
+        <!-- Left tower -->
+        <rect x="20" y="180" width="80" height="220" fill="url(#stoneGrad)" rx="2"/>
+        <g fill="#1c2230">
+          <rect x="20" y="170" width="14" height="14"/>
+          <rect x="40" y="170" width="14" height="14"/>
+          <rect x="60" y="170" width="14" height="14"/>
+          <rect x="86" y="170" width="14" height="14"/>
+        </g>
+        <polygon points="20,180 60,130 100,180" fill="url(#roofGrad)"/>
+        <!-- Left tower flag pole -->
+        <line x1="60" y1="130" x2="60" y2="100" stroke="#2a3344" stroke-width="2"/>
+        <g transform="translate(60,100)">
+          <path class="flag-cloth" d="M 0 0 L 22 4 L 18 12 L 22 20 L 0 16 Z" fill="#00d4ff"/>
+        </g>
 
-      <!-- Pair territories bottom -->
+        <!-- Right tower -->
+        <rect x="460" y="180" width="80" height="220" fill="url(#stoneGrad)" rx="2"/>
+        <g fill="#1c2230">
+          <rect x="460" y="170" width="14" height="14"/>
+          <rect x="480" y="170" width="14" height="14"/>
+          <rect x="500" y="170" width="14" height="14"/>
+          <rect x="526" y="170" width="14" height="14"/>
+        </g>
+        <polygon points="460,180 500,130 540,180" fill="url(#roofGrad)"/>
+        <line x1="500" y1="130" x2="500" y2="100" stroke="#2a3344" stroke-width="2"/>
+        <g transform="translate(500,100)">
+          <path class="flag-cloth" d="M 0 0 L 22 4 L 18 12 L 22 20 L 0 16 Z" fill="#00e5a0"/>
+        </g>
+
+        <!-- Central keep (tallest) -->
+        <rect x="200" y="80" width="160" height="320" fill="url(#stoneGradLit)" rx="2"/>
+        <g fill="#1c2230">
+          <rect x="200" y="70" width="20" height="14"/>
+          <rect x="226" y="70" width="20" height="14"/>
+          <rect x="252" y="70" width="20" height="14"/>
+          <rect x="278" y="70" width="20" height="14"/>
+          <rect x="304" y="70" width="20" height="14"/>
+          <rect x="330" y="70" width="20" height="14"/>
+          <rect x="340" y="70" width="20" height="14"/>
+        </g>
+        <polygon points="200,80 280,20 360,80" fill="url(#roofGrad)"/>
+        <polygon points="200,80 280,28 360,80" fill="#1a0c12" opacity="0.4"/>
+        <!-- Central spire flag -->
+        <line x1="280" y1="20" x2="280" y2="-12" stroke="#2a3344" stroke-width="2"/>
+        <circle cx="280" cy="-14" r="3" fill="url(#goldGrad)"/>
+        <g transform="translate(280,-12)">
+          <path class="flag-cloth" d="M 0 0 L 28 6 L 22 14 L 28 24 L 0 18 Z" fill="#ff4466"/>
+        </g>
+
+        <!-- 11 advisor windows on the keep (3-4-4 layout) -->
+        <g>
+          <!-- Row 1 (3 windows) -->
+          <rect class="advisor-window w0" x="230" y="120" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Trigger detection</title></rect>
+          <rect class="advisor-window w1" x="270" y="120" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Multi-timeframe HTF</title></rect>
+          <rect class="advisor-window w2" x="310" y="120" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>BTC correlation / DXY</title></rect>
+          <!-- Row 2 (4 windows) -->
+          <rect class="advisor-window w3" x="218" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Funding rate</title></rect>
+          <rect class="advisor-window w4" x="252" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Open interest</title></rect>
+          <rect class="advisor-window w5" x="288" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Liquidity heatmap</title></rect>
+          <rect class="advisor-window w6" x="322" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Order flow / footprint</title></rect>
+          <!-- Row 3 (4 windows) -->
+          <rect class="advisor-window w7" x="218" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>CVD trend</title></rect>
+          <rect class="advisor-window w8" x="252" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Cross-broker check</title></rect>
+          <rect class="advisor-window w9" x="288" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>News headlines</title></rect>
+          <rect class="advisor-window w10" x="322" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Economic calendar</title></rect>
+        </g>
+        <!-- Castle gate -->
+        <path d="M 250 400 L 250 340 Q 280 314 310 340 L 310 400 Z" fill="#0a0e1a"/>
+        <line x1="280" y1="340" x2="280" y2="400" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <!-- Stone joint lines -->
+        <g stroke="rgba(0,0,0,0.35)" stroke-width="1" fill="none">
+          <line x1="200" y1="160" x2="360" y2="160"/>
+          <line x1="200" y1="210" x2="360" y2="210"/>
+          <line x1="200" y1="260" x2="360" y2="260"/>
+          <line x1="200" y1="320" x2="360" y2="320"/>
+          <line x1="20" y1="240" x2="100" y2="240"/>
+          <line x1="20" y1="300" x2="100" y2="300"/>
+          <line x1="460" y1="240" x2="540" y2="240"/>
+          <line x1="460" y1="300" x2="540" y2="300"/>
+        </g>
+      </g>
+
+      <!-- ═══ RAVEN PERCH (top-right) ═══ -->
+      <g transform="translate(1380,60)">
+        <!-- Stone perch with banner -->
+        <rect x="60" y="50" width="80" height="12" fill="#2a3344" rx="2"/>
+        <line x1="100" y1="62" x2="100" y2="110" stroke="#2a3344" stroke-width="3"/>
+        <!-- Banner -->
+        <path class="flag-cloth" d="M 80 80 L 120 84 L 116 92 L 120 100 L 80 96 Z" fill="rgba(255,68,102,0.15)" stroke="rgba(255,68,102,0.5)" stroke-width="1"/>
+        <!-- Raven -->
+        <g class="raven-svg" id="raven-svg" transform="translate(80,30)">
+          <!-- Body -->
+          <ellipse cx="20" cy="14" rx="14" ry="9" fill="#0a0d18" stroke="#1c2230" stroke-width="1"/>
+          <!-- Head -->
+          <circle cx="34" cy="8" r="6" fill="#0a0d18" stroke="#1c2230" stroke-width="1"/>
+          <!-- Beak -->
+          <polygon points="40,8 46,9 40,11" fill="#1a1f2e"/>
+          <!-- Eye -->
+          <circle cx="35" cy="7" r="1.4" fill="#ff4466"/>
+          <circle cx="35.4" cy="6.6" r="0.4" fill="#fff"/>
+          <!-- Tail -->
+          <polygon points="6,14 0,10 0,18" fill="#0a0d18"/>
+          <!-- Wings (animate when flying) -->
+          <path class="wing-l" d="M 12 8 Q 6 -2 18 4 Q 22 10 12 8" fill="#1a1f2e"/>
+          <path class="wing-r" d="M 22 8 Q 28 -2 18 4 Q 16 10 22 8" fill="#1a1f2e" opacity="0.7"/>
+          <!-- Talons on perch -->
+          <line x1="14" y1="22" x2="14" y2="26" stroke="#1c2230" stroke-width="1"/>
+          <line x1="22" y1="22" x2="22" y2="26" stroke="#1c2230" stroke-width="1"/>
+        </g>
+      </g>
+
+      <!-- ═══ TREASURY VAULT (bottom-right) ═══ -->
+      <g class="treasury-svg" transform="translate(1240,360)">
+        <!-- Stone arch frame -->
+        <path d="M 0 200 L 0 80 Q 0 0 100 0 L 200 0 Q 300 0 300 80 L 300 200 Z" fill="url(#stoneGrad)"/>
+        <!-- Inner arch (vault recess) -->
+        <path d="M 20 200 L 20 88 Q 20 20 100 20 L 200 20 Q 280 20 280 88 L 280 200 Z" fill="#0a0e1a"/>
+        <!-- Vault door (circular) -->
+        <g class="vault">
+          <circle cx="150" cy="120" r="72" fill="url(#vaultGrad)" stroke="#3a2818" stroke-width="3"/>
+          <circle cx="150" cy="120" r="60" fill="none" stroke="#1a0e08" stroke-width="2"/>
+          <!-- Vault bolts -->
+          <g fill="url(#goldGrad)">
+            <circle cx="150" cy="56" r="3"/>
+            <circle cx="200" cy="78" r="3"/>
+            <circle cx="218" cy="120" r="3"/>
+            <circle cx="200" cy="162" r="3"/>
+            <circle cx="150" cy="184" r="3"/>
+            <circle cx="100" cy="162" r="3"/>
+            <circle cx="82" cy="120" r="3"/>
+            <circle cx="100" cy="78" r="3"/>
+          </g>
+          <!-- Vault wheel handle -->
+          <circle cx="150" cy="120" r="14" fill="#2e1d12" stroke="#604530" stroke-width="2"/>
+          <g stroke="url(#goldGrad)" stroke-width="3" fill="none">
+            <line x1="138" y1="120" x2="162" y2="120"/>
+            <line x1="150" y1="108" x2="150" y2="132"/>
+          </g>
+          <!-- Engraved R panel -->
+          <rect x="100" y="92" width="100" height="20" fill="rgba(0,0,0,0.55)" rx="2"/>
+        </g>
+        <!-- Gold coin pile in front -->
+        <g id="coin-pile" transform="translate(60,200)">
+          <!-- Coins drawn dynamically via JS in updateTreasury -->
+        </g>
+        <!-- Crown atop the arch -->
+        <g transform="translate(150,8)">
+          <polygon points="-22,8 -16,-2 -10,6 -4,-6 0,8 4,-6 10,6 16,-2 22,8" fill="url(#goldGrad)"/>
+          <circle cx="0" cy="6" r="2" fill="#c08410"/>
+        </g>
+      </g>
+
+    </svg>
+    <!-- ═════════ END SCENE SVG ═════════ -->
+
+    <!-- HTML overlays on top of the SVG (dynamic text) -->
+    <div class="scene-overlay">
+      <div class="overlay-text cal-clock-label" id="cal-clock">--:-- UTC</div>
+      <div class="overlay-text cal-event-label" id="cal-event">scanning…</div>
+      <div class="overlay-text castle-label">HENRY'S CASTLE</div>
+      <div class="overlay-text castle-sub-label" id="castle-sub">11 advisors · idle</div>
+      <div class="overlay-text raven-label">DISCORD</div>
+      <div class="overlay-text treasury-r" id="treasury-r">+0.00R</div>
+      <div class="overlay-text treasury-label">CUMULATIVE TREASURY</div>
+
+      <!-- Pair territories — bigger, centered -->
       <div class="territories" id="territories">
         <div class="kingdom-empty">
-          <div class="crown">♛</div>
-          <div>SCAN INACTIVE</div>
-          <div style="font-size:9px;color:rgba(255,255,255,0.2);margin-top:4px">Start auto-scan from the terminal to populate the kingdom</div>
+          <div class="label">SCAN INACTIVE</div>
+          <div class="sub">Start auto-scan from the terminal to populate the kingdom</div>
         </div>
       </div>
-
     </div>
   </div>
 </div>
@@ -700,7 +922,9 @@ function fetchPaneCandles(coin){
 // Sky cycle: maps UTC hour to a sky preset. Kill zones (London 07-10, NY 12-17)
 // get extra glow. Dead zone 22-06 is night.
 function updateSky(){
-  var h=new Date().getUTCHours();
+  var now=new Date();
+  var h=now.getUTCHours();
+  var m=now.getUTCMinutes();
   var stage=document.getElementById('stage');
   var sky;
   if(h>=22||h<5)sky='night';
@@ -711,12 +935,19 @@ function updateSky(){
   else sky='day';
   stage.dataset.sky=sky;
 
-  // Update clock in calendar tower
+  // Clock label in calendar tower
   var clk=document.getElementById('cal-clock');
-  if(clk){
-    var hh=String(h).padStart(2,'0');
-    var mm=String(new Date().getUTCMinutes()).padStart(2,'0');
-    clk.textContent=hh+':'+mm+' UTC';
+  if(clk)clk.textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' UTC';
+
+  // Animate the SVG clock hands on the tower face
+  var hHand=document.getElementById('clock-hour');
+  var mHand=document.getElementById('clock-min');
+  if(hHand&&mHand){
+    var hAngle=((h%12)+m/60)*30; // 360/12
+    var mAngle=m*6; // 360/60
+    // Center is (60, 142), hand length 6 for hour, 8 for minute
+    hHand.setAttribute('transform','rotate('+hAngle+' 60 142)');
+    mHand.setAttribute('transform','rotate('+mAngle+' 60 142)');
   }
 }
 
@@ -752,14 +983,107 @@ function buildClouds(){
   }
 }
 
-// Biome icon picker by state
-function biomeIcon(state, direction){
-  if(state==='in-trade')return direction==='LONG'?'⚔️':'🗡️';
-  if(state==='waiting')return '⏳';
-  if(state==='cooldown')return '🛌';
-  if(state==='paused')return '🛡️';
-  if(state==='scanning')return '🌲';
-  return '🏘️';
+// Custom SVG biome illustrations per state — drawn into the territory card.
+// Each returns an <svg> string sized to 100% × 46px.
+function biomeSvg(state, direction){
+  var c={
+    stone:'#3a4257',stoneL:'#525d76',shadow:'#1a1f2e',
+    leaf:'#1d6948',leafL:'#2a8f63',
+    sword:'#9aa0a6',hilt:'#604530',gold:'#ffb830',
+    fire:'#ff4466',wood:'#5d4536',
+    shield:'#4a5571',shieldL:'#7080a0',red:'#ff4466',
+    tent:'#5a3038',tentL:'#7d4250',
+  };
+  if(state==='scanning'){
+    // Pine forest cluster
+    return '<svg class="biome-svg" viewBox="0 0 100 46">'
+      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
+      +'<polygon points="20,38 26,12 32,38" fill="'+c.leaf+'"/>'
+      +'<polygon points="20,34 26,8 32,34" fill="'+c.leafL+'"/>'
+      +'<rect x="24" y="38" width="4" height="4" fill="'+c.wood+'"/>'
+      +'<polygon points="46,38 54,4 62,38" fill="'+c.leaf+'"/>'
+      +'<polygon points="46,33 54,0 62,33" fill="'+c.leafL+'"/>'
+      +'<rect x="52" y="38" width="4" height="4" fill="'+c.wood+'"/>'
+      +'<polygon points="70,38 76,14 82,38" fill="'+c.leaf+'"/>'
+      +'<polygon points="70,34 76,10 82,34" fill="'+c.leafL+'"/>'
+      +'<rect x="74" y="38" width="4" height="4" fill="'+c.wood+'"/>'
+      +'</svg>';
+  }
+  if(state==='waiting'){
+    // Training camp tent
+    return '<svg class="biome-svg" viewBox="0 0 100 46">'
+      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
+      +'<polygon points="30,38 50,8 70,38" fill="'+c.tent+'"/>'
+      +'<polygon points="30,38 50,12 70,38" fill="'+c.tentL+'"/>'
+      +'<polygon points="44,38 50,26 56,38 50,38" fill="'+c.shadow+'"/>'
+      +'<line x1="50" y1="8" x2="50" y2="2" stroke="'+c.wood+'" stroke-width="1.5"/>'
+      +'<path d="M 50 2 L 58 4 L 56 8 L 58 12 L 50 10 Z" fill="'+c.gold+'"/>'
+      +'<rect x="20" y="36" width="8" height="6" fill="'+c.wood+'" opacity="0.6"/>'
+      +'<rect x="74" y="36" width="6" height="6" fill="'+c.wood+'" opacity="0.6"/>'
+      +'</svg>';
+  }
+  if(state==='in-trade'){
+    // Crossed swords with banner
+    var bColor=direction==='LONG'?'#00e5a0':'#ff4466';
+    return '<svg class="biome-svg" viewBox="0 0 100 46">'
+      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
+      +'<rect x="48" y="6" width="2" height="32" fill="'+c.wood+'"/>'
+      +'<path d="M 50 6 L 70 10 L 64 16 L 70 22 L 50 18 Z" fill="'+bColor+'" class="flag-cloth"/>'
+      +'<g transform="translate(50,30) rotate(-30)">'
+        +'<rect x="-2" y="-20" width="4" height="24" fill="'+c.sword+'"/>'
+        +'<polygon points="0,-24 -2,-20 2,-20" fill="'+c.sword+'"/>'
+        +'<rect x="-7" y="2" width="14" height="3" fill="'+c.hilt+'"/>'
+        +'<rect x="-2" y="4" width="4" height="6" fill="'+c.hilt+'"/>'
+      +'</g>'
+      +'<g transform="translate(50,30) rotate(30)">'
+        +'<rect x="-2" y="-20" width="4" height="24" fill="'+c.sword+'"/>'
+        +'<polygon points="0,-24 -2,-20 2,-20" fill="'+c.sword+'"/>'
+        +'<rect x="-7" y="2" width="14" height="3" fill="'+c.hilt+'"/>'
+        +'<rect x="-2" y="4" width="4" height="6" fill="'+c.hilt+'"/>'
+      +'</g>'
+      +'</svg>';
+  }
+  if(state==='cooldown'){
+    // Closed gate with bars
+    return '<svg class="biome-svg" viewBox="0 0 100 46">'
+      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
+      +'<rect x="20" y="6" width="60" height="32" fill="'+c.stone+'"/>'
+      +'<path d="M 20 14 Q 50 -2 80 14 L 80 6 L 20 6 Z" fill="'+c.shadow+'"/>'
+      +'<g stroke="'+c.stoneL+'" stroke-width="2" fill="none">'
+        +'<line x1="32" y1="14" x2="32" y2="36"/>'
+        +'<line x1="42" y1="14" x2="42" y2="36"/>'
+        +'<line x1="52" y1="14" x2="52" y2="36"/>'
+        +'<line x1="62" y1="14" x2="62" y2="36"/>'
+        +'<line x1="72" y1="14" x2="72" y2="36"/>'
+        +'<line x1="20" y1="20" x2="80" y2="20"/>'
+        +'<line x1="20" y1="32" x2="80" y2="32"/>'
+      +'</g>'
+      +'<circle cx="14" cy="22" r="3" fill="'+c.stoneL+'"/>'
+      +'<rect x="14" y="22" width="6" height="2" fill="'+c.stoneL+'"/>'
+      +'</svg>';
+  }
+  if(state==='paused'){
+    // Force field shield
+    return '<svg class="biome-svg" viewBox="0 0 100 46">'
+      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
+      +'<g opacity="0.5">'
+        +'<polygon points="50,6 80,18 76,38 50,42 24,38 20,18" fill="none" stroke="'+c.red+'" stroke-width="1.5"/>'
+        +'<polygon points="50,12 72,22 70,36 50,38 30,36 28,22" fill="none" stroke="'+c.red+'" stroke-width="1" opacity="0.6"/>'
+      +'</g>'
+      +'<path d="M 50 16 L 64 22 L 62 34 L 50 38 L 38 34 L 36 22 Z" fill="'+c.stone+'" opacity="0.6"/>'
+      +'<g stroke="'+c.red+'" stroke-width="2" fill="none">'
+        +'<line x1="44" y1="22" x2="56" y2="32"/>'
+        +'<line x1="56" y1="22" x2="44" y2="32"/>'
+      +'</g>'
+      +'</svg>';
+  }
+  return '';
+}
+
+// Build a small flag SVG for in-trade territories
+function flagSvg(direction){
+  var color=direction==='LONG'?'#00e5a0':'#ff4466';
+  return '<svg viewBox="0 0 18 22" width="18" height="22"><line x1="3" y1="2" x2="3" y2="22" stroke="#604530" stroke-width="1.5"/><path d="M 3 2 L 16 5 L 12 10 L 16 16 L 3 13 Z" fill="'+color+'" class="flag-cloth"/></svg>';
 }
 
 // Determine territory state for a pair from /api/kingdom/summary openPositions + scan state.
@@ -800,7 +1124,7 @@ function renderTerritories(){
   var box=document.getElementById('territories');
   var coins=Object.keys(_pairStateCache);
   if(!coins.length){
-    box.innerHTML='<div class="kingdom-empty"><div class="crown">♛</div><div>SCAN INACTIVE</div><div style="font-size:9px;color:rgba(255,255,255,0.2);margin-top:4px">Start auto-scan from the terminal to populate the kingdom</div></div>';
+    box.innerHTML='<div class="kingdom-empty"><div class="label">SCAN INACTIVE</div><div class="sub">Start auto-scan from the terminal to populate the kingdom</div></div>';
     return;
   }
   // Sort: in-trade first, then waiting, then scanning, then cooldown, then paused
@@ -811,7 +1135,6 @@ function renderTerritories(){
   Array.from(box.querySelectorAll('.territory')).forEach(function(el){
     if(coins.indexOf(el.dataset.coin)<0)el.remove();
   });
-  // Drop the empty placeholder if present
   var ph=box.querySelector('.kingdom-empty');if(ph)ph.remove();
 
   coins.forEach(function(coin){
@@ -822,63 +1145,81 @@ function renderTerritories(){
       el.className='territory';
       el.dataset.coin=coin;
       el.innerHTML=
-        '<div class="biome" data-role="biome"></div>'
+        '<div data-role="biome"></div>'
         +'<div class="name">'+shortCoin(coin)+'</div>'
         +'<div class="state-tag" data-role="tag"></div>'
         +'<div class="price" data-role="price"></div>'
         +'<div class="boss-hp"><div class="fill" data-role="hp"></div></div>';
       box.appendChild(el);
     }
-    if(el.dataset.state!==s.state){
+    var prevState=el.dataset.state;
+    if(prevState!==s.state){
       el.dataset.state=s.state;
-      // Plant a flag on state change to in-trade
-      if(s.state==='in-trade'&&!el.querySelector('.pos-flag')){
-        var flag=document.createElement('div');
-        flag.className='pos-flag';
-        flag.textContent=s.direction==='LONG'?'🚩':'🏴';
-        el.appendChild(flag);
-      } else if(s.state!=='in-trade'){
-        var f=el.querySelector('.pos-flag');if(f)f.remove();
+      // Plant/remove flag on state transition
+      var flag=el.querySelector('.pos-flag');
+      if(s.state==='in-trade'){
+        if(!flag){
+          flag=document.createElement('div');
+          flag.className='pos-flag';
+          el.appendChild(flag);
+        }
+        flag.innerHTML=flagSvg(s.direction);
+      } else if(flag){
+        flag.remove();
       }
     }
-    el.querySelector('[data-role="biome"]').textContent=biomeIcon(s.state,s.direction);
+    var biomeBox=el.querySelector('[data-role="biome"]');
+    var newBiome=biomeSvg(s.state,s.direction);
+    if(biomeBox.dataset.cached!==s.state+(s.direction||'')){
+      biomeBox.innerHTML=newBiome;
+      biomeBox.dataset.cached=s.state+(s.direction||'');
+    }
     el.querySelector('[data-role="tag"]').textContent=s.beAlerted?'BE MOVED':s.state.toUpperCase();
     el.querySelector('[data-role="price"]').textContent=s.price!=null?fmtPx(s.price):'—';
     var hp=el.querySelector('[data-role="hp"]');
-    if(s.state==='in-trade'&&s.pctToTp!=null){
-      hp.style.width=s.pctToTp+'%';
-    } else {
-      hp.style.width='0%';
-    }
+    hp.style.width=(s.state==='in-trade'&&s.pctToTp!=null)?(s.pctToTp+'%'):'0%';
   });
 }
 
-// Treasury — engrave Total R, scatter gold coins proportional to value
+// Treasury — engrave Total R on the vault door + scatter gold coin SVG
+// circles in front of it. One coin per +2R, capped at 22.
 function updateTreasury(totalR){
   var el=document.getElementById('treasury-r');
   if(!el)return;
   el.textContent=fmtR(totalR);
   el.style.color=totalR>=0?'#ffb830':'#ff4466';
-  // Gold coin pile: one coin per +1R, capped at 24, with stagger
-  var coinsBox=document.getElementById('treasury-coins');
-  if(!coinsBox)return;
-  coinsBox.innerHTML='';
-  var n=Math.min(Math.max(Math.floor(totalR/2),0),24);
-  for(var i=0;i<n;i++){
-    var c=document.createElement('div');
-    c.className='coin';
-    c.style.setProperty('--d',(Math.random()*3)+'s');
-    c.textContent='🪙';
-    coinsBox.appendChild(c);
+
+  var pile=document.getElementById('coin-pile');
+  if(!pile)return;
+  pile.innerHTML='';
+  var n=Math.min(Math.max(Math.floor(Math.abs(totalR)/2),0),22);
+  // Draw coins in three rows of stacked golden disks
+  // Pile coordinates are inside the treasury's <g transform="translate(1240,360)">, with the pile at translate(60,200)
+  // So coordinates inside the pile group are relative to that origin.
+  var positions=[];
+  // Bottom row (10 coins)
+  for(var i=0;i<10;i++)positions.push({x:i*16+4,y:0,r:7});
+  // Mid row (7 coins offset)
+  for(var i=0;i<7;i++)positions.push({x:i*16+12,y:-10,r:7});
+  // Top row (5 coins)
+  for(var i=0;i<5;i++)positions.push({x:i*16+28,y:-20,r:7});
+  for(var i=0;i<n&&i<positions.length;i++){
+    var p=positions[i];
+    var delay=(Math.random()*3).toFixed(2);
+    var c='<g class="coin" style="animation-delay:'+delay+'s">'
+      +'<ellipse cx="'+p.x+'" cy="'+p.y+'" rx="'+p.r+'" ry="'+(p.r*0.55)+'" fill="url(#goldGrad)" stroke="#c08410" stroke-width="0.5"/>'
+      +'<ellipse cx="'+p.x+'" cy="'+(p.y-1.5)+'" rx="'+(p.r*0.7)+'" ry="'+(p.r*0.35)+'" fill="#ffe890" opacity="0.5"/>'
+      +'</g>';
+    pile.insertAdjacentHTML('beforeend',c);
   }
 }
 
-// Calendar tower — pulse / flash near a high-impact event
+// Calendar tower — class swap drives bell-swing + lightning animations
 function updateCalTower(nextEvent){
-  var tower=document.getElementById('cal-tower');
+  var towerSvg=document.getElementById('cal-tower-svg');
   var ev=document.getElementById('cal-event');
-  if(!tower||!ev)return;
-  tower.classList.remove('warn','imminent');
+  if(!towerSvg||!ev)return;
+  towerSvg.classList.remove('warn','imminent');
   if(!nextEvent){
     ev.textContent='No high-impact event';
     return;
@@ -886,25 +1227,22 @@ function updateCalTower(nextEvent){
   var m=nextEvent.inMinutes;
   var when=m<60?(m+'m'):Math.floor(m/60)+'h'+(m%60).toString().padStart(2,'0');
   ev.textContent=nextEvent.name.slice(0,16)+' · '+when;
-  if(m<=5)tower.classList.add('imminent');
-  else if(m<=60)tower.classList.add('warn');
+  if(m<=5)towerSvg.classList.add('imminent');
+  else if(m<=60)towerSvg.classList.add('warn');
 }
 
-// Discord raven — fly off, then respawn
+// Discord raven — fly off, then respawn back on the perch
 var _ravenLastFlight=0;
 function flyRaven(){
-  // Cooldown so we don't spam if multiple webhooks fire in quick succession
   if(Date.now()-_ravenLastFlight<3000)return;
   _ravenLastFlight=Date.now();
-  var r=document.getElementById('raven');
+  var r=document.getElementById('raven-svg');
   if(!r)return;
   r.classList.remove('flying');
-  void r.offsetWidth; // restart animation
+  void r.getBoundingClientRect();
   r.classList.add('flying');
   setTimeout(function(){
     r.classList.remove('flying');
-    r.style.opacity='1';
-    r.style.transform='';
   },2100);
 }
 
@@ -960,7 +1298,7 @@ setInterval(refreshPairStates,5000);
 setInterval(updateSky,60000);
 
 // Click raven to test fly animation
-document.getElementById('raven').addEventListener('click',flyRaven);
+document.getElementById('raven-svg').addEventListener('click',flyRaven);
 </script>
 
 </body>
