@@ -56,6 +56,7 @@
   .month-bignum.neg .val{color:var(--re)}
   .month-bignum.zero .val{color:var(--mu)}
   .month-chart-wrap{height:120px;background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:6px 4px}
+  .month-chart-wrap svg{width:100%;height:100%;display:block;overflow:visible}
 
   /* Card 3: Open positions */
   .openpos-count{position:absolute;top:12px;right:12px;font-size:11px;font-weight:bold;color:var(--cy)}
@@ -75,24 +76,121 @@
   .quick-strip .item .v{color:var(--fg);font-weight:bold}
   .quick-strip .item .v.pos{color:var(--gr)}.quick-strip .item .v.neg{color:var(--re)}.quick-strip .item .v.am{color:var(--am)}
 
-  /* MIDDLE BAND placeholder for kingdom */
-  .middle-band{flex:1;min-height:380px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
-  .middle-band .placeholder{text-align:center;color:var(--di);font-size:11px;letter-spacing:.15em}
-  .middle-band .placeholder .crown{font-size:36px;margin-bottom:10px;opacity:0.5}
-  .middle-band .placeholder .label{margin-bottom:4px}
-  .middle-band .placeholder .hint{color:var(--di);font-size:9px;letter-spacing:.05em;opacity:0.6}
-  /* Subtle animated dotted grid as a hint of the kingdom to come */
-  .middle-band::before{
-    content:'';position:absolute;inset:0;
-    background-image:
-      radial-gradient(circle at 20% 30%, rgba(0,212,255,0.04), transparent 35%),
-      radial-gradient(circle at 80% 70%, rgba(0,229,160,0.04), transparent 35%),
-      linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
-    background-size:auto, auto, 24px 24px, 24px 24px;
-    animation:drift 30s linear infinite;
+  /* ═════════ MIDDLE BAND — KINGDOM ═════════ */
+  .middle-band{flex:1;min-height:440px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden}
+  .kingdom-stage{position:absolute;inset:0}
+  .kingdom-stage svg.scene{width:100%;height:100%;display:block}
+
+  /* Sky gradient layers — UTC-driven, transitions smoothly */
+  .kingdom-stage::before{
+    content:'';position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(180deg,#0a0d18 0%,#0e1224 35%,#101830 70%,#0e1117 100%);
+    transition:background 4s ease;
   }
-  @keyframes drift{from{background-position:0 0, 0 0, 0 0, 0 0}to{background-position:0 0, 0 0, 24px 24px, 24px 24px}}
+  .kingdom-stage[data-sky="dawn"]::before{background:linear-gradient(180deg,#1a1838 0%,#3a2542 35%,#5d3050 70%,#1d1224 100%)}
+  .kingdom-stage[data-sky="day"]::before{background:linear-gradient(180deg,#15243d 0%,#1f3b5d 35%,#2a4d7a 70%,#142036 100%)}
+  .kingdom-stage[data-sky="dusk"]::before{background:linear-gradient(180deg,#1a1232 0%,#4a2030 35%,#6e2a36 70%,#1a0e18 100%)}
+  .kingdom-stage[data-sky="killzone"]::before{background:linear-gradient(180deg,#1a1838 0%,#3d1838 35%,#5a1f3c 70%,#1c0e1f 100%)}
+
+  /* Stars (night) — small flickering dots overlay */
+  .stars{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity 2s ease}
+  .kingdom-stage[data-sky="night"] .stars{opacity:1}
+  .stars .star{position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;animation:twinkle 3s ease-in-out infinite}
+  @keyframes twinkle{0%,100%{opacity:0.3}50%{opacity:1}}
+
+  /* Floating clouds */
+  .clouds{position:absolute;inset:0;pointer-events:none;opacity:0.6}
+  .cloud{position:absolute;background:rgba(255,255,255,0.04);border-radius:50%;filter:blur(8px);animation:cloud-drift 60s linear infinite}
+  @keyframes cloud-drift{from{transform:translateX(-200px)}to{transform:translateX(calc(100vw + 200px))}}
+
+  /* Kingdom UI overlays */
+  .kingdom-ui{position:absolute;inset:0;pointer-events:none}
+  .kingdom-ui > *{pointer-events:auto}
+
+  /* AI Castle (center) */
+  .ai-castle{position:absolute;top:14%;left:50%;transform:translateX(-50%);width:280px;text-align:center}
+  .ai-castle .battlements{font-size:48px;color:#2a3344;text-shadow:0 0 20px rgba(0,212,255,0.4);line-height:1;filter:drop-shadow(0 4px 10px rgba(0,0,0,0.6))}
+  .ai-castle .windows{margin-top:-26px;display:flex;justify-content:center;gap:3px;flex-wrap:wrap;width:170px;margin-left:auto;margin-right:auto}
+  .ai-castle .window{width:8px;height:8px;background:rgba(255,184,48,0.3);border-radius:1px;animation:advisor-pulse 2.5s ease-in-out infinite}
+  .ai-castle .window:nth-child(1){animation-delay:0s}.ai-castle .window:nth-child(2){animation-delay:0.2s}
+  .ai-castle .window:nth-child(3){animation-delay:0.4s}.ai-castle .window:nth-child(4){animation-delay:0.6s}
+  .ai-castle .window:nth-child(5){animation-delay:0.8s}.ai-castle .window:nth-child(6){animation-delay:1.0s}
+  .ai-castle .window:nth-child(7){animation-delay:1.2s}.ai-castle .window:nth-child(8){animation-delay:1.4s}
+  .ai-castle .window:nth-child(9){animation-delay:1.6s}.ai-castle .window:nth-child(10){animation-delay:1.8s}
+  .ai-castle .window:nth-child(11){animation-delay:2.0s}
+  @keyframes advisor-pulse{0%,100%{background:rgba(255,184,48,0.25);box-shadow:0 0 0 rgba(255,184,48,0)}50%{background:rgba(255,184,48,0.9);box-shadow:0 0 6px rgba(255,184,48,0.6)}}
+  .ai-castle .castle-label{margin-top:8px;font-size:9px;letter-spacing:.2em;color:rgba(255,255,255,0.5)}
+  .ai-castle .castle-sub{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:.1em;margin-top:2px}
+  /* AI sun behind castle — pulsing glow */
+  .ai-aura{position:absolute;top:5%;left:50%;transform:translateX(-50%);width:340px;height:340px;border-radius:50%;background:radial-gradient(circle,rgba(0,212,255,0.12) 0%,transparent 60%);animation:aura-pulse 4s ease-in-out infinite}
+  @keyframes aura-pulse{0%,100%{opacity:0.4;transform:translateX(-50%) scale(1)}50%{opacity:0.8;transform:translateX(-50%) scale(1.1)}}
+
+  /* Treasury (bottom-right) */
+  .treasury{position:absolute;right:14px;bottom:14px;width:200px;background:linear-gradient(180deg,rgba(255,184,48,0.08) 0%,rgba(255,184,48,0.02) 100%);border:1px solid rgba(255,184,48,0.3);border-radius:6px;padding:10px 12px}
+  .treasury .door{font-size:32px;text-align:center;line-height:1;text-shadow:0 0 12px rgba(255,184,48,0.5)}
+  .treasury .lbl{font-size:8px;letter-spacing:.2em;color:rgba(255,184,48,0.7);text-align:center;margin-top:6px}
+  .treasury .total-r{font-size:20px;font-weight:bold;color:#ffb830;text-align:center;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,184,48,0.4)}
+  .treasury .coins{display:flex;justify-content:center;gap:1px;margin-top:6px;flex-wrap:wrap;max-width:170px;margin-left:auto;margin-right:auto}
+  .treasury .coin{font-size:9px;animation:coin-shine 3s ease-in-out infinite;animation-delay:var(--d,0s)}
+  @keyframes coin-shine{0%,100%{opacity:0.6;filter:none}50%{opacity:1;filter:drop-shadow(0 0 3px gold)}}
+
+  /* Calendar tower (top-left) */
+  .cal-tower{position:absolute;left:14px;top:14px;width:140px;text-align:center}
+  .cal-tower .tower{font-size:32px;line-height:1;color:#4a5260;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.5))}
+  .cal-tower .bell{font-size:16px;margin-top:-8px}
+  .cal-tower .clock{font-size:9px;color:rgba(255,255,255,0.4);letter-spacing:.1em;margin-top:4px}
+  .cal-tower .event{font-size:9px;color:rgba(255,184,48,0.6);margin-top:2px;letter-spacing:.05em}
+  .cal-tower.warn .tower{color:#ffb830;animation:warn-pulse 1s ease-in-out infinite}
+  .cal-tower.imminent .tower{color:#ff4466;animation:warn-pulse 0.4s ease-in-out infinite}
+  @keyframes warn-pulse{0%,100%{filter:drop-shadow(0 4px 8px rgba(0,0,0,0.5))}50%{filter:drop-shadow(0 0 14px currentColor)}}
+  .cal-tower.imminent::after{
+    content:'';position:absolute;top:-10px;left:50%;transform:translateX(-50%);width:50px;height:50px;
+    background:radial-gradient(circle,rgba(255,68,102,0.5) 0%,transparent 60%);
+    animation:lightning 0.6s ease-in-out infinite;
+  }
+  @keyframes lightning{0%,100%{opacity:0}40%,60%{opacity:1}}
+
+  /* Discord raven (top-right) */
+  .raven-perch{position:absolute;right:14px;top:14px;width:60px;text-align:center}
+  .raven{font-size:24px;display:inline-block;transition:transform 0.2s;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6))}
+  .raven.flying{animation:raven-fly 2s ease-out forwards}
+  @keyframes raven-fly{
+    0%{transform:translate(0,0) scale(1) rotate(0deg)}
+    20%{transform:translate(-20px,-30px) scale(0.9) rotate(-15deg)}
+    50%{transform:translate(-180px,-80px) scale(0.7) rotate(-10deg)}
+    100%{transform:translate(-500px,-120px) scale(0.4) rotate(0deg);opacity:0}
+  }
+  .raven-perch .lbl{font-size:8px;color:rgba(255,255,255,0.3);letter-spacing:.15em;margin-top:2px}
+
+  /* Pair territories — bottom row */
+  .territories{position:absolute;left:14px;right:230px;bottom:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;max-height:50%;overflow:hidden}
+  .territory{position:relative;flex:0 0 calc(20% - 5px);min-width:96px;max-width:130px;background:rgba(0,0,0,0.3);border:1px solid var(--b1);border-radius:4px;padding:6px 8px;font-size:9px;transition:all 0.4s ease}
+  .territory[data-state="scanning"]{background:linear-gradient(180deg,rgba(0,229,160,0.05) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(0,229,160,0.25)}
+  .territory[data-state="waiting"]{background:linear-gradient(180deg,rgba(255,184,48,0.08) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(255,184,48,0.4)}
+  .territory[data-state="in-trade"]{background:linear-gradient(180deg,rgba(0,212,255,0.15) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(0,212,255,0.6);box-shadow:0 0 12px rgba(0,212,255,0.2)}
+  .territory[data-state="cooldown"]{background:linear-gradient(180deg,rgba(255,255,255,0.03) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(255,255,255,0.1);opacity:0.7}
+  .territory[data-state="paused"]{background:linear-gradient(180deg,rgba(255,68,102,0.08) 0%,rgba(0,0,0,0.3) 100%);border-color:rgba(255,68,102,0.4);animation:pause-flicker 2s ease-in-out infinite}
+  @keyframes pause-flicker{0%,100%{box-shadow:0 0 8px rgba(255,68,102,0.1)}50%{box-shadow:0 0 14px rgba(255,68,102,0.4)}}
+  .territory[data-state="in-trade"]{animation:trade-pulse 1.8s ease-in-out infinite}
+  @keyframes trade-pulse{0%,100%{box-shadow:0 0 10px rgba(0,212,255,0.15)}50%{box-shadow:0 0 22px rgba(0,212,255,0.4)}}
+  .territory .biome{font-size:22px;text-align:center;line-height:1;margin-bottom:2px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5))}
+  .territory .name{font-weight:bold;font-size:10px;letter-spacing:.05em;text-align:center;color:var(--fg)}
+  .territory .state-tag{font-size:7px;color:var(--mu);text-align:center;letter-spacing:.1em;margin-top:1px}
+  .territory[data-state="in-trade"] .state-tag{color:var(--cy)}
+  .territory[data-state="waiting"] .state-tag{color:var(--am)}
+  .territory[data-state="paused"] .state-tag{color:var(--re)}
+  .territory[data-state="scanning"] .state-tag{color:var(--gr)}
+  .territory .price{font-size:9px;color:var(--mu);text-align:center;margin-top:2px}
+  /* Boss HP bar — visible only in-trade */
+  .territory .boss-hp{margin-top:4px;height:3px;background:rgba(255,68,102,0.2);border-radius:2px;overflow:hidden;display:none}
+  .territory[data-state="in-trade"] .boss-hp{display:block}
+  .territory .boss-hp .fill{height:100%;background:linear-gradient(90deg,#ff4466 0%,#ffb830 50%,#00e5a0 100%);transition:width 0.6s ease}
+  .territory .pos-flag{position:absolute;top:-6px;right:-6px;font-size:14px;animation:flag-wave 1.5s ease-in-out infinite}
+  @keyframes flag-wave{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(5deg)}}
+
+  /* Empty kingdom hint */
+  .kingdom-empty{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.3);font-size:11px;letter-spacing:.15em;text-align:center}
+  .kingdom-empty .crown{font-size:36px;margin-bottom:8px;opacity:0.5}
 
   /* BOTTOM BAND */
   .bottom-band{min-height:280px;display:flex;flex-direction:column;gap:8px}
@@ -207,12 +305,73 @@
   <div class="item"><span class="l">NEXT EVENT</span><span class="v am" id="q-next">—</span></div>
 </div>
 
-<!-- ═══ MIDDLE BAND — Kingdom (placeholder) ═══ -->
+<!-- ═══ MIDDLE BAND — KINGDOM ═══ -->
 <div class="middle-band">
-  <div class="placeholder">
-    <div class="crown">♛</div>
-    <div class="label">THE KINGDOM</div>
-    <div class="hint">isometric world coming in the next round</div>
+  <div class="kingdom-stage" id="stage" data-sky="day">
+
+    <!-- Animated stars (visible at night) -->
+    <div class="stars" id="stars"></div>
+
+    <!-- Floating clouds (visible during day) -->
+    <div class="clouds" id="clouds"></div>
+
+    <!-- AI aura behind the castle -->
+    <div class="ai-aura"></div>
+
+    <div class="kingdom-ui">
+
+      <!-- Calendar tower top-left -->
+      <div class="cal-tower" id="cal-tower">
+        <div class="tower">🏛️</div>
+        <div class="bell">🔔</div>
+        <div class="clock" id="cal-clock">--:-- UTC</div>
+        <div class="event" id="cal-event">scanning…</div>
+      </div>
+
+      <!-- AI Castle center -->
+      <div class="ai-castle">
+        <div class="battlements">🏰</div>
+        <div class="windows" id="windows" title="11 data-source advisors">
+          <div class="window" title="Trigger detection"></div>
+          <div class="window" title="Multi-timeframe (1H + 4H)"></div>
+          <div class="window" title="BTC correlation / DXY"></div>
+          <div class="window" title="Funding rate"></div>
+          <div class="window" title="Open interest"></div>
+          <div class="window" title="Liquidity heatmap"></div>
+          <div class="window" title="Order flow / footprint"></div>
+          <div class="window" title="CVD trend"></div>
+          <div class="window" title="Cross-broker check"></div>
+          <div class="window" title="News headlines"></div>
+          <div class="window" title="Economic calendar"></div>
+        </div>
+        <div class="castle-label">HENRY'S CASTLE</div>
+        <div class="castle-sub" id="castle-sub">11 advisors · idle</div>
+      </div>
+
+      <!-- Discord raven top-right -->
+      <div class="raven-perch">
+        <div class="raven" id="raven" title="Discord raven">🦅</div>
+        <div class="lbl">DISCORD</div>
+      </div>
+
+      <!-- Treasury bottom-right -->
+      <div class="treasury">
+        <div class="door">🏛️</div>
+        <div class="lbl">CUMULATIVE TREASURY</div>
+        <div class="total-r" id="treasury-r">+0.00R</div>
+        <div class="coins" id="treasury-coins"></div>
+      </div>
+
+      <!-- Pair territories bottom -->
+      <div class="territories" id="territories">
+        <div class="kingdom-empty">
+          <div class="crown">♛</div>
+          <div>SCAN INACTIVE</div>
+          <div style="font-size:9px;color:rgba(255,255,255,0.2);margin-top:4px">Start auto-scan from the terminal to populate the kingdom</div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </div>
 
@@ -366,32 +525,47 @@ function drawMonthChart(daily){
   var cW=W-PL-PR,cH=H-PT-PB;
   var maxR=Math.max.apply(null,daily.map(function(p){return p.r;}));
   var minR=Math.min.apply(null,daily.map(function(p){return p.r;}));
-  if(maxR<0)maxR=0; if(minR>0)minR=0;
+  if(maxR<=0)maxR=1; if(minR>0)minR=0;
   var rng=(maxR-minR)||1;
   var bw=cW/daily.length;
   function y(v){return PT+cH-(v-minR)/rng*cH;}
-  // Zero line
   var zy=y(0);
+  // Today index (for highlight)
+  var today=new Date().getUTCDate();
+  // Zero line
   svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+zy+'" y2="'+zy+'" stroke="rgba(255,255,255,0.1)" stroke-dasharray="2,3"/>';
   // Y labels
   svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+8)+'" fill="#5a5f7a" text-anchor="end" font-size="8">'+maxR.toFixed(1)+'R</text>';
   svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(zy+3)+'" fill="#5a5f7a" text-anchor="end" font-size="8">0</text>';
   if(minR<0)svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+cH-2)+'" fill="#5a5f7a" text-anchor="end" font-size="8">'+minR.toFixed(1)+'R</text>';
-  // Bars
+
+  // Daily baseline ticks — thin grey marks for every day, so the chart
+  // structure is visible even when most days have 0 R. Highlights today.
   daily.forEach(function(p,i){
-    var x=PL+i*bw+1;
-    var w=Math.max(bw-2,2);
-    var bh,by,fill;
-    if(p.r>=0){by=y(p.r);bh=zy-by;fill='#00e5a0';}
-    else{by=zy;bh=y(p.r)-zy;fill='#ff4466';}
-    if(bh<1&&p.r!==0)bh=1.5;
-    svg.innerHTML+='<rect x="'+x+'" y="'+by+'" width="'+w+'" height="'+bh+'" fill="'+fill+'" opacity="0.85"><title>Day '+p.day+': '+fmtR(p.r)+'</title></rect>';
+    var x=PL+i*bw+bw/2;
+    var isToday=p.day===today;
+    var col=isToday?'rgba(0,212,255,0.5)':'rgba(255,255,255,0.04)';
+    svg.innerHTML+='<line x1="'+x+'" x2="'+x+'" y1="'+(PT+cH-1)+'" y2="'+(PT+cH+2)+'" stroke="'+col+'" stroke-width="'+(isToday?2:1)+'"/>';
   });
-  // X labels (every 5 days)
+
+  // Bars — proportional width across full chart. Min visible height for
+  // tiny non-zero values so they don't disappear.
   daily.forEach(function(p,i){
-    if(p.day%5===0||p.day===1){
+    if(p.r===0)return;
+    var w=Math.max(bw-4,3);
+    var x=PL+i*bw+(bw-w)/2;
+    var bh,by,fill;
+    if(p.r>0){by=y(p.r);bh=Math.max(zy-by,2);fill='#00e5a0';}
+    else{by=zy;bh=Math.max(y(p.r)-zy,2);fill='#ff4466';}
+    svg.innerHTML+='<rect x="'+x+'" y="'+by+'" width="'+w+'" height="'+bh+'" rx="1" fill="'+fill+'" opacity="0.88"><title>Day '+p.day+': '+fmtR(p.r)+'</title></rect>';
+  });
+  // X labels (every 5 days + today)
+  daily.forEach(function(p,i){
+    if(p.day%5===0||p.day===1||p.day===today){
       var x=PL+i*bw+bw/2;
-      svg.innerHTML+='<text x="'+x+'" y="'+(H-4)+'" fill="#5a5f7a" text-anchor="middle" font-size="8">'+p.day.toString().padStart(2,'0')+'</text>';
+      var col=p.day===today?'#00d4ff':'#5a5f7a';
+      var weight=p.day===today?'bold':'normal';
+      svg.innerHTML+='<text x="'+x+'" y="'+(H-4)+'" fill="'+col+'" text-anchor="middle" font-size="8" font-weight="'+weight+'">'+p.day.toString().padStart(2,'0')+'</text>';
     }
   });
 }
@@ -520,8 +694,240 @@ function fetchPaneCandles(coin){
 }
 
 // ─────────────────────────────────────────────────────────────
+// KINGDOM — sky cycle, territories, treasury, calendar tower, raven
+// ─────────────────────────────────────────────────────────────
+
+// Sky cycle: maps UTC hour to a sky preset. Kill zones (London 07-10, NY 12-17)
+// get extra glow. Dead zone 22-06 is night.
+function updateSky(){
+  var h=new Date().getUTCHours();
+  var stage=document.getElementById('stage');
+  var sky;
+  if(h>=22||h<5)sky='night';
+  else if(h===5||h===6)sky='dawn';
+  else if((h>=7&&h<10)||(h>=12&&h<17))sky='killzone';
+  else if(h>=17&&h<21)sky='dusk';
+  else if(h===21)sky='dusk';
+  else sky='day';
+  stage.dataset.sky=sky;
+
+  // Update clock in calendar tower
+  var clk=document.getElementById('cal-clock');
+  if(clk){
+    var hh=String(h).padStart(2,'0');
+    var mm=String(new Date().getUTCMinutes()).padStart(2,'0');
+    clk.textContent=hh+':'+mm+' UTC';
+  }
+}
+
+// Generate stars once (only visible at night via CSS)
+function buildStars(){
+  var box=document.getElementById('stars');
+  if(!box||box.children.length)return;
+  for(var i=0;i<60;i++){
+    var s=document.createElement('div');
+    s.className='star';
+    s.style.left=Math.random()*100+'%';
+    s.style.top=Math.random()*70+'%';
+    s.style.animationDelay=(Math.random()*3)+'s';
+    s.style.animationDuration=(2+Math.random()*3)+'s';
+    box.appendChild(s);
+  }
+}
+
+// Spawn drifting clouds
+function buildClouds(){
+  var box=document.getElementById('clouds');
+  if(!box||box.children.length)return;
+  for(var i=0;i<4;i++){
+    var c=document.createElement('div');
+    c.className='cloud';
+    var w=80+Math.random()*120;
+    c.style.width=w+'px';
+    c.style.height=(20+Math.random()*30)+'px';
+    c.style.top=(5+Math.random()*30)+'%';
+    c.style.animationDuration=(60+Math.random()*60)+'s';
+    c.style.animationDelay=(-Math.random()*60)+'s';
+    box.appendChild(c);
+  }
+}
+
+// Biome icon picker by state
+function biomeIcon(state, direction){
+  if(state==='in-trade')return direction==='LONG'?'⚔️':'🗡️';
+  if(state==='waiting')return '⏳';
+  if(state==='cooldown')return '🛌';
+  if(state==='paused')return '🛡️';
+  if(state==='scanning')return '🌲';
+  return '🏘️';
+}
+
+// Determine territory state for a pair from /api/kingdom/summary openPositions + scan state.
+// We don't get full per-pair state in the summary, so combine what we have:
+//  - if pair is in openPositions.details with entered=true → in-trade
+//  - if pair is in openPositions.details with entered=false → waiting
+//  - else → scanning (we'll cross-check via /api/scan/all-pairs to fill cooldown/paused)
+var _pairStateCache={};
+function refreshPairStates(){
+  fetch('/api/scan/all-pairs',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){
+      if(!d||!d.pairs)return;
+      var map={};
+      d.pairs.forEach(function(p){
+        var st;
+        if(p.hasSignal&&p.entryAlerted)st='in-trade';
+        else if(p.hasSignal)st='waiting';
+        else if(p.pauseRemaining>0)st='paused';
+        else if(p.cooldownRemaining>0)st='cooldown';
+        else st='scanning';
+        map[p.coin]={state:st,price:p.lastPrice,direction:p.signal?p.signal.direction:null,pctToTp:null,beAlerted:!!p.beAlerted};
+        // Compute pct-to-TP for boss HP bar
+        if(p.hasSignal&&p.entryAlerted&&p.lastPrice!=null&&p.signal){
+          var e=parseFloat(p.signal.entry),tp=parseFloat(p.signal.tp);
+          if(e&&tp&&e!==tp){
+            map[p.coin].pctToTp=Math.max(0,Math.min(100,Math.abs(p.lastPrice-e)/Math.abs(tp-e)*100));
+          }
+        }
+      });
+      _pairStateCache=map;
+      renderTerritories();
+    })
+    .catch(function(){});
+}
+
+function renderTerritories(){
+  var box=document.getElementById('territories');
+  var coins=Object.keys(_pairStateCache);
+  if(!coins.length){
+    box.innerHTML='<div class="kingdom-empty"><div class="crown">♛</div><div>SCAN INACTIVE</div><div style="font-size:9px;color:rgba(255,255,255,0.2);margin-top:4px">Start auto-scan from the terminal to populate the kingdom</div></div>';
+    return;
+  }
+  // Sort: in-trade first, then waiting, then scanning, then cooldown, then paused
+  var order={'in-trade':0,'waiting':1,'scanning':2,'cooldown':3,'paused':4};
+  coins.sort(function(a,b){return (order[_pairStateCache[a].state]||5)-(order[_pairStateCache[b].state]||5);});
+
+  // Reconcile DOM: remove any not in current set
+  Array.from(box.querySelectorAll('.territory')).forEach(function(el){
+    if(coins.indexOf(el.dataset.coin)<0)el.remove();
+  });
+  // Drop the empty placeholder if present
+  var ph=box.querySelector('.kingdom-empty');if(ph)ph.remove();
+
+  coins.forEach(function(coin){
+    var s=_pairStateCache[coin];
+    var el=box.querySelector('.territory[data-coin="'+coin+'"]');
+    if(!el){
+      el=document.createElement('div');
+      el.className='territory';
+      el.dataset.coin=coin;
+      el.innerHTML=
+        '<div class="biome" data-role="biome"></div>'
+        +'<div class="name">'+shortCoin(coin)+'</div>'
+        +'<div class="state-tag" data-role="tag"></div>'
+        +'<div class="price" data-role="price"></div>'
+        +'<div class="boss-hp"><div class="fill" data-role="hp"></div></div>';
+      box.appendChild(el);
+    }
+    if(el.dataset.state!==s.state){
+      el.dataset.state=s.state;
+      // Plant a flag on state change to in-trade
+      if(s.state==='in-trade'&&!el.querySelector('.pos-flag')){
+        var flag=document.createElement('div');
+        flag.className='pos-flag';
+        flag.textContent=s.direction==='LONG'?'🚩':'🏴';
+        el.appendChild(flag);
+      } else if(s.state!=='in-trade'){
+        var f=el.querySelector('.pos-flag');if(f)f.remove();
+      }
+    }
+    el.querySelector('[data-role="biome"]').textContent=biomeIcon(s.state,s.direction);
+    el.querySelector('[data-role="tag"]').textContent=s.beAlerted?'BE MOVED':s.state.toUpperCase();
+    el.querySelector('[data-role="price"]').textContent=s.price!=null?fmtPx(s.price):'—';
+    var hp=el.querySelector('[data-role="hp"]');
+    if(s.state==='in-trade'&&s.pctToTp!=null){
+      hp.style.width=s.pctToTp+'%';
+    } else {
+      hp.style.width='0%';
+    }
+  });
+}
+
+// Treasury — engrave Total R, scatter gold coins proportional to value
+function updateTreasury(totalR){
+  var el=document.getElementById('treasury-r');
+  if(!el)return;
+  el.textContent=fmtR(totalR);
+  el.style.color=totalR>=0?'#ffb830':'#ff4466';
+  // Gold coin pile: one coin per +1R, capped at 24, with stagger
+  var coinsBox=document.getElementById('treasury-coins');
+  if(!coinsBox)return;
+  coinsBox.innerHTML='';
+  var n=Math.min(Math.max(Math.floor(totalR/2),0),24);
+  for(var i=0;i<n;i++){
+    var c=document.createElement('div');
+    c.className='coin';
+    c.style.setProperty('--d',(Math.random()*3)+'s');
+    c.textContent='🪙';
+    coinsBox.appendChild(c);
+  }
+}
+
+// Calendar tower — pulse / flash near a high-impact event
+function updateCalTower(nextEvent){
+  var tower=document.getElementById('cal-tower');
+  var ev=document.getElementById('cal-event');
+  if(!tower||!ev)return;
+  tower.classList.remove('warn','imminent');
+  if(!nextEvent){
+    ev.textContent='No high-impact event';
+    return;
+  }
+  var m=nextEvent.inMinutes;
+  var when=m<60?(m+'m'):Math.floor(m/60)+'h'+(m%60).toString().padStart(2,'0');
+  ev.textContent=nextEvent.name.slice(0,16)+' · '+when;
+  if(m<=5)tower.classList.add('imminent');
+  else if(m<=60)tower.classList.add('warn');
+}
+
+// Discord raven — fly off, then respawn
+var _ravenLastFlight=0;
+function flyRaven(){
+  // Cooldown so we don't spam if multiple webhooks fire in quick succession
+  if(Date.now()-_ravenLastFlight<3000)return;
+  _ravenLastFlight=Date.now();
+  var r=document.getElementById('raven');
+  if(!r)return;
+  r.classList.remove('flying');
+  void r.offsetWidth; // restart animation
+  r.classList.add('flying');
+  setTimeout(function(){
+    r.classList.remove('flying');
+    r.style.opacity='1';
+    r.style.transform='';
+  },2100);
+}
+
+// Castle sub label — show what's currently happening in the AI tower
+function updateCastleSub(summary){
+  var sub=document.getElementById('castle-sub');
+  if(!sub||!summary)return;
+  var scan=summary.scanState||{};
+  var op=summary.openPositions||{};
+  if(op.totalCount>0){
+    sub.textContent='11 advisors · '+op.totalCount+' active trade'+(op.totalCount>1?'s':'');
+  } else if(scan.active){
+    sub.textContent='11 advisors · scanning '+scan.watchlistSize+' pair'+(scan.watchlistSize===1?'':'s');
+  } else {
+    sub.textContent='11 advisors · standby';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // MAIN POLL LOOP
 // ─────────────────────────────────────────────────────────────
+var _lastTotalCount=0;
+var _lastDiscordTrigger=null;
 function pollSummary(){
   fetch('/api/kingdom/summary',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
@@ -529,11 +935,32 @@ function pollSummary(){
       if(!d)return;
       renderSummary(d);
       renderBottomBand(d);
+      updateTreasury((d.allTime&&d.allTime.totalR)||0);
+      updateCalTower(d.nextEvent);
+      updateCastleSub(d);
+
+      // Detect new trade events → raven fly
+      var totalCount=(d.openPositions&&d.openPositions.totalCount)||0;
+      if(totalCount>_lastTotalCount){flyRaven();}
+      _lastTotalCount=totalCount;
     })
     .catch(function(){});
 }
+
+// Initial setup
+buildStars();
+buildClouds();
+updateSky();
 pollSummary();
+refreshPairStates();
+
+// Polling intervals
 setInterval(pollSummary,5000);
+setInterval(refreshPairStates,5000);
+setInterval(updateSky,60000);
+
+// Click raven to test fly animation
+document.getElementById('raven').addEventListener('click',flyRaven);
 </script>
 
 </body>
