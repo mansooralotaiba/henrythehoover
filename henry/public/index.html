@@ -4034,14 +4034,17 @@ function runAI(){
     if(lp)livePrice=lp;
     var btn=document.getElementById('aibtn'),area=document.getElementById('sigarea');
     btn.disabled=true;btn.textContent='LOADING...';
-    area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>FETCHING LIVE CANDLES FROM WEEX...</div>';
+    // Source label depends on the pair: gold lives on Binance spot PAXG (Polygon
+    // fallback), everything else on the active futures broker.
+    var _isGold=(coin==='GOLD'||coin==='XAUUSD');
+    var _sourceLabel=_isGold?'BINANCE SPOT (PAXG)':(activeBroker==='binance'?'BINANCE':activeBroker==='hyperliquid'?'HYPERLIQUID':'WEEX');
+    area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>FETCHING LIVE CANDLES FROM '+_sourceLabel+'...</div>';
     // Prefetch daily/weekly, article, and journal context in parallel (non-blocking)
     fetchDailyWeeklyContext(coin).catch(function(){});
     fetchTopArticleContent().catch(function(){});
     try{computeJournalLearning();}catch(e){}
     // Fetch ALL context in parallel: candles, trades, MTF, BTC, sentiment, correlation
-    var brokerLabel=activeBroker==='binance'?'Binance':activeBroker==='hyperliquid'?'Hyperliquid':'Weex';
-    area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>FETCHING FROM '+(multiMode?'ALL BROKERS':''+brokerLabel)+'...</div>';
+    area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>FETCHING FROM '+(multiMode&&!_isGold?'ALL BROKERS':_sourceLabel)+'...</div>';
     Promise.all([
       multiMode?fetchAllBrokerCandles(coin,liqTF,100):Promise.resolve(null),
       multiMode?fetchAllBrokerTrades(coin):Promise.resolve(null),
@@ -4092,7 +4095,7 @@ function runAI(){
         livePrice=last.c.toString();
         var disp=last.c>=1000?last.c.toFixed(2):last.c>=10?last.c.toFixed(4):last.c.toFixed(6);
         document.getElementById('priceinput').value=disp;
-        document.getElementById('pricesrc').textContent='✓ Weex';
+        document.getElementById('pricesrc').textContent='✓ '+(_isGold?'PAXG':(activeBroker==='binance'?'Binance':activeBroker==='hyperliquid'?'Hyperliquid':'Weex'));
         document.getElementById('pricesrc').style.color='var(--gr)';
       }
       area.innerHTML='<div class="thinking"><div class="dots"><span></span><span></span><span></span></div>HENRY ANALYSING'+(multiMode?' CROSS-BROKER +':'')+' ALL TIMEFRAMES + ORDER FLOW...</div>';
