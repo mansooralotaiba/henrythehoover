@@ -755,7 +755,7 @@ app.post('/api/nowpayments/webhook', express.raw({ type: 'application/json' }), 
 // ── Whop (recurring subscriptions, no KYC required for sellers) ──────────
 // Flow: user clicks Subscribe → server hands back a Whop checkout URL with
 // supabase_uid encoded as metadata → user pays card/crypto/Apple Pay on
-// Whop's hosted checkout → Whop webhooks membership.went_valid back here →
+// Whop's hosted checkout → Whop webhooks membership_activated back here →
 // we set subscription_status='active' + current_period_end = membership's
 // renewal_period_end. Whop handles all recurring billing automatically.
 const WHOP_API = 'https://api.whop.com/api/v5';
@@ -830,11 +830,11 @@ app.post('/api/whop/checkout', requireSession, async (req, res) => {
   }
 });
 
-// Webhook (raw body required for signature verification). Events we care about:
-//   • membership.went_valid           → grant access, set period_end
-//   • membership.renewed              → extend period_end
-//   • membership.went_invalid         → revoke access (refund/chargeback/etc.)
-//   • membership.cancel_at_period_end_changed → flag cancelled but keep access
+// Webhook (raw body required for signature verification). Whop V1 events we subscribe to:
+//   • membership_activated   → grant access, set period_end (new sub OR reactivation)
+//   • membership_deactivated → revoke access (expired/cancelled/refunded/chargeback)
+//   • invoice_paid           → extend period_end on each successful renewal charge
+// Note: V1 uses underscored event names. The `action` field on the envelope carries the event type.
 app.post('/api/whop/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const rawBody = req.body.toString('utf8');
   const sig = req.headers['x-whop-signature'];
@@ -850,58 +850,58 @@ app.post('/api/whop/webhook', express.raw({ type: 'application/json' }), async (
   const data = event.data || {};
   const metadata = data.metadata || {};
   const uid = metadata.supabase_uid || null;
-  const email = (metadata.email || '').toLowerCase();
-  const periodEndSec = data.renewal_period_end || data.expires_at || null;
+  const email = (metadata.email || data.email || data.user_email || '').toLowerCase();
+  // Whop sends unix seconds for renewal_period_end / expires_at; invoice_paid uses period_end_at
+  const periodEndSec = data.renewal_period_end || data.expires_at || data.period_end_at || null;
   const periodEndISO = periodEndSec ? new Date(periodEndSec * 1000).toISOString() : null;
+  // For invoice_paid, the membership reference lives on the invoice
+  const membershipId = data.membership_id || data.membership || data.id || null;
 
-  console.log('[whop webhook]', type, 'uid=' + uid, 'email=' + email, 'periodEnd=' + periodEndISO);
+  console.log('[whop webhook]', type, 'uid=' + uid, 'email=' + email, 'membership=' + membershipId, 'periodEnd=' + periodEndISO);
 
-  // Identify the target profile row: prefer uid, fall back to email
-  const filterCol = uid ? 'user_id' : 'email';
-  const filterVal = uid || email;
+  // Find the target profile: prefer metadata uid, then email, then whop_membership_id
+  let filterCol = null, filterVal = null;
+  if (uid) { filterCol = 'user_id'; filterVal = uid; }
+  else if (email) { filterCol = 'email'; filterVal = email; }
+  else if (membershipId) { filterCol = 'whop_membership_id'; filterVal = membershipId; }
+
   if (!filterVal) {
-    console.warn('[whop webhook] no uid or email in metadata — dropping event');
+    console.warn('[whop webhook] no uid/email/membership — dropping event');
     return res.json({ received: true });
   }
 
-  if (type === 'membership.went_valid' || type === 'membership.renewed' || type === 'membership_went_valid') {
+  // membership_activated fires on first activation and reactivation.
+  // invoice_paid fires on every successful charge (initial + renewals) — treat as activation/extension.
+  if (type === 'membership_activated' || type === 'invoice_paid'
+      || type === 'membership.went_valid' || type === 'membership.renewed'
+      || type === 'membership_went_valid') {
     const updates = {
       subscription_status: 'active',
       plan: 'monthly_whop',
-      whop_membership_id: data.id || null,
-      whop_user_id: data.user_id || null,
       updated_at: new Date().toISOString(),
     };
+    if (membershipId && type !== 'invoice_paid') updates.whop_membership_id = membershipId;
+    if (data.user_id) updates.whop_user_id = data.user_id;
     if (periodEndISO) updates.current_period_end = periodEndISO;
     const { error } = await supaAdmin.from('profiles').update(updates).eq(filterCol, filterVal);
     if (error) console.error('[whop webhook] supabase update failed:', error.message);
-    else console.log('[whop webhook] activated', filterVal, 'until', periodEndISO);
+    else console.log('[whop webhook] activated/extended', filterCol + '=' + filterVal, 'until', periodEndISO);
     return res.json({ received: true });
   }
 
-  if (type === 'membership.went_invalid' || type === 'membership_went_invalid') {
+  if (type === 'membership_deactivated'
+      || type === 'membership.went_invalid' || type === 'membership_went_invalid') {
     const { error } = await supaAdmin.from('profiles').update({
       subscription_status: 'inactive',
       updated_at: new Date().toISOString(),
     }).eq(filterCol, filterVal);
     if (error) console.error('[whop webhook] supabase revoke failed:', error.message);
-    else console.log('[whop webhook] revoked access for', filterVal);
+    else console.log('[whop webhook] revoked access for', filterCol + '=' + filterVal);
     return res.json({ received: true });
   }
 
-  if (type === 'membership.cancel_at_period_end_changed') {
-    // User toggled auto-renew off. Keep them active until period_end.
-    const cancelAtEnd = !!data.cancel_at_period_end;
-    const status = cancelAtEnd ? 'cancelled' : 'active';
-    await supaAdmin.from('profiles').update({
-      subscription_status: status,
-      updated_at: new Date().toISOString(),
-    }).eq(filterCol, filterVal);
-    console.log('[whop webhook]', filterVal, cancelAtEnd ? 'set to cancel at period end' : 're-enabled auto-renew');
-    return res.json({ received: true });
-  }
-
-  // Other event types (payment.succeeded etc.) — log but don't act
+  // Other event types — log but don't act
+  console.log('[whop webhook] unhandled event type:', type);
   res.json({ received: true });
 });
 
