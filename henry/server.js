@@ -762,39 +762,22 @@ const POLY_TF = {
 app.get('/api/gold/candles', requireAuth, async (req, res) => {
   try {
     const interval = String(req.query.interval || '15m');
-    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
-    const tf = POLY_TF[interval] || POLY_TF['15m'];
-    // Widen the window so we have enough bars after slicing — Polygon returns
-    // sparse data for spot gold (forex hours, holidays, low-vol periods).
-    const start = Date.now() - tf.ms * limit * 4;
-    const from = new Date(start).toISOString().split('T')[0];
-    const to = new Date().toISOString().split('T')[0];
-    const data = await polyFetch(
-      `/v2/aggs/ticker/C:XAUUSD/range/${tf.multiplier}/${tf.timespan}/${from}/${to}`,
-      { adjusted: 'true', sort: 'asc', limit: Math.min(limit * 4, 5000) }
-    );
-    if (!data || !Array.isArray(data.results)) {
-      console.warn('[gold/candles] no results from Polygon:', interval, JSON.stringify(data).slice(0, 300));
-      return res.json({ candles: [], reason: 'polygon_empty' });
+    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+    // Binance spot PAXG/USDT — see getGoldSpot() for the rationale.
+    const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d' };
+    const ival = tfMap[interval] || '15m';
+    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${ival}&limit=${limit}`);
+    if (!r.ok) {
+      console.warn('[gold/candles] PAXG fetch failed:', interval, r.status);
+      return res.json({ candles: [], reason: 'paxg_unavailable' });
     }
-    // Map + filter out malformed entries (missing OHLC) + dedupe by timestamp + sort ascending
-    const seen = new Set();
-    const candles = data.results
-      .map(r => ({
-        time: Math.floor(r.t / 1000),
-        o: +r.o, h: +r.h, l: +r.l, c: +r.c, v: +(r.v || 0),
-      }))
-      .filter(c => {
-        if (!isFinite(c.time) || c.time <= 0) return false;
-        if (!isFinite(c.o) || !isFinite(c.h) || !isFinite(c.l) || !isFinite(c.c)) return false;
-        if (c.h < c.l) return false; // sanity
-        if (seen.has(c.time)) return false;
-        seen.add(c.time);
-        return true;
-      })
-      .sort((a, b) => a.time - b.time)
-      .slice(-limit);
-    console.log('[gold/candles]', interval, 'returned', candles.length, 'bars (Polygon had', data.results.length, ')');
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return res.json({ candles: [], reason: 'paxg_empty' });
+    const candles = arr.map(c => ({
+      time: Math.floor(+c[0] / 1000),
+      o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5],
+    }));
+    console.log('[gold/candles]', interval, 'returned', candles.length, 'PAXG bars');
     res.json({ candles });
   } catch (err) {
     console.error('[gold/candles]', err);
@@ -802,15 +785,34 @@ app.get('/api/gold/candles', requireAuth, async (req, res) => {
   }
 });
 
+// Gold spot price — uses Binance PAXG/USDT spot.
+// Polygon's /v2/snapshot/locale/global/markets/forex/tickers was returning
+// stale data (e.g. 4764 when real gold was 4683 — $80 off) on the user's
+// plan. Pax Gold (PAXG) is a 1:1 tokenised gold contract trading on
+// Binance with real-time ticker and full intraday data, tracks XAUUSD
+// within ~$5. Falls back to Polygon only if Binance is unreachable.
 async function getGoldSpot() {
-  // Snapshot endpoint works for forex; /v2/last/trade is stocks-only.
-  const data = await polyFetch('/v2/snapshot/locale/global/markets/forex/tickers', { tickers: 'C:XAUUSD' });
-  const t = data.tickers && data.tickers[0];
-  if (!t) return null;
-  const ask = t.lastQuote?.a;
-  const bid = t.lastQuote?.b;
-  if (ask && bid) return (ask + bid) / 2;
-  return ask || bid || t.day?.c || t.prevDay?.c || null;
+  try {
+    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT');
+    if (r.ok) {
+      const d = await r.json();
+      const p = parseFloat(d.price);
+      if (isFinite(p) && p > 0) return p;
+    }
+  } catch (e) {
+    console.warn('[getGoldSpot] PAXG fetch failed, falling back to Polygon:', e.message);
+  }
+  // Fallback: Polygon snapshot. Less accurate on the user's tier but better
+  // than nothing if Binance is down.
+  try {
+    const data = await polyFetch('/v2/snapshot/locale/global/markets/forex/tickers', { tickers: 'C:XAUUSD' });
+    const t = data.tickers && data.tickers[0];
+    if (!t) return null;
+    const ask = t.lastQuote?.a;
+    const bid = t.lastQuote?.b;
+    if (ask && bid) return (ask + bid) / 2;
+    return ask || bid || t.day?.c || t.prevDay?.c || null;
+  } catch { return null; }
 }
 
 app.get('/api/gold/price', requireAuth, async (_req, res) => {
@@ -2833,15 +2835,20 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
 async function fetchCandlesServer(coin, tf, limit, broker) {
   try {
     if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
-      const tfDef = POLY_TF[tf] || POLY_TF['15m'];
-      const start = Date.now() - tfDef.ms * limit * 2;
-      const from = new Date(start).toISOString().split('T')[0];
-      const to = new Date().toISOString().split('T')[0];
-      const data = await polyFetch(
-        `/v2/aggs/ticker/C:XAUUSD/range/${tfDef.multiplier}/${tfDef.timespan}/${from}/${to}`,
-        { adjusted: 'true', sort: 'asc', limit }
-      );
-      return (data.results || []).slice(-limit).map(r => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v || 0 }));
+      // Use Binance spot PAXG/USDT — Polygon's gold aggregates were both
+      // sparse (only 24 bars vs the requested 80) and stale (last bar 14h
+      // behind real-time). PAXG is tokenised gold trading on Binance with
+      // full intraday depth and real-time bars. Tracks XAUUSD within ~$5.
+      const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d' };
+      const interval = tfMap[tf] || '15m';
+      const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=${limit}`);
+      if (!r.ok) {
+        console.warn('[fetchCandlesServer] PAXG fetch failed:', coin, tf, r.status);
+        return [];
+      }
+      const arr = await r.json();
+      if (!Array.isArray(arr)) return [];
+      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
     }
     if (broker === 'binance') {
       const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${limit}`);
@@ -4549,15 +4556,14 @@ async function fetchHistoricalCandles(coin, tf, broker, totalCount) {
   const lim = Math.min(totalCount, 1500);
   try {
     if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
-      const tfDef = POLY_TF[tf] || POLY_TF['15m'];
-      const start = Date.now() - tfDef.ms * lim * 1.1;
-      const from = new Date(start).toISOString().split('T')[0];
-      const to = new Date().toISOString().split('T')[0];
-      const data = await polyFetch(
-        `/v2/aggs/ticker/C:XAUUSD/range/${tfDef.multiplier}/${tfDef.timespan}/${from}/${to}`,
-        { adjusted: 'true', sort: 'asc', limit: lim }
-      );
-      return (data.results || []).slice(-lim).map(r => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v || 0 }));
+      // Use Binance spot PAXG/USDT instead of Polygon (sparse + stale data)
+      const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d' };
+      const interval = tfMap[tf] || '15m';
+      const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=${lim}`);
+      if (!r.ok) return [];
+      const arr = await r.json();
+      if (!Array.isArray(arr)) return [];
+      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
     }
     if (broker === 'binance') {
       const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${lim}`);
