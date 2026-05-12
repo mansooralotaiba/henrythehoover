@@ -147,8 +147,6 @@
 
   .cal-clock-label{left:6%;top:24%;font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:.15em}
   .cal-event-label{left:2%;top:30%;width:18%;font-size:9px;color:rgba(255,184,48,0.7);letter-spacing:.05em}
-  .castle-label{left:50%;top:54%;transform:translateX(-50%);font-size:10px;letter-spacing:.25em;color:rgba(255,255,255,0.55);font-weight:bold}
-  .castle-sub-label{left:50%;top:58%;transform:translateX(-50%);font-size:9px;letter-spacing:.1em;color:rgba(255,255,255,0.35)}
   .raven-label{right:3%;top:25%;font-size:9px;color:rgba(255,255,255,0.5);letter-spacing:.2em}
   .treasury-r{right:11%;bottom:18%;font-size:22px;font-weight:bold;color:#ffb830;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,184,48,0.5),0 0 2px rgba(0,0,0,0.9);width:180px}
   .treasury-label{right:11%;bottom:14%;font-size:8px;letter-spacing:.25em;color:rgba(255,184,48,0.7);width:180px}
@@ -204,44 +202,56 @@
   .wizard .staff-orb{animation:orb-pulse 1.6s ease-in-out infinite;transform-origin:center}
   @keyframes orb-pulse{0%,100%{filter:brightness(0.9)}50%{filter:brightness(1.4)}}
 
-  /* Patrol routes — 4 wizards, different paths and speeds */
-  .wizard.w1{animation:patrol-1 28s linear infinite}
-  .wizard.w2{animation:patrol-2 36s linear infinite;animation-delay:-9s}
-  .wizard.w3{animation:patrol-3 32s linear infinite;animation-delay:-18s}
-  .wizard.w4{animation:patrol-4 40s linear infinite;animation-delay:-27s}
+  /* Patrol routes — 5 keyframes the 11 wizards rotate through (with
+   * randomized animation-delay and duration so they spread out). Each
+   * keyframe only animates `left` and `transform: scaleX` — vertical
+   * position is set per-wizard via inline `top` so wizards walk at
+   * slightly different y-levels for depth.
+   */
+  .wizard.w1{animation-name:patrol-1}
+  .wizard.w2{animation-name:patrol-2}
+  .wizard.w3{animation-name:patrol-3}
+  .wizard.w4{animation-name:patrol-4}
+  .wizard.w5{animation-name:patrol-5}
+  .wizard{animation-timing-function:linear;animation-iteration-count:infinite}
+
   @keyframes patrol-1{
-    0%{left:22%;top:56%}
-    24%{left:70%;top:58%}
-    25%{left:70%;top:58%;transform:scaleX(-1)}
-    49%{left:22%;top:56%;transform:scaleX(-1)}
-    50%{left:22%;top:56%;transform:scaleX(1)}
-    74%{left:60%;top:62%;transform:scaleX(1)}
-    75%{left:60%;top:62%;transform:scaleX(-1)}
-    99%{left:22%;top:56%;transform:scaleX(-1)}
-    100%{left:22%;top:56%;transform:scaleX(1)}
+    0%{left:18%;transform:scaleX(1)}
+    48%{left:78%;transform:scaleX(1)}
+    50%{left:78%;transform:scaleX(-1)}
+    98%{left:18%;transform:scaleX(-1)}
+    100%{left:18%;transform:scaleX(1)}
   }
   @keyframes patrol-2{
-    0%{left:78%;top:60%;transform:scaleX(-1)}
-    48%{left:34%;top:58%;transform:scaleX(-1)}
-    50%{left:34%;top:58%;transform:scaleX(1)}
-    98%{left:78%;top:60%;transform:scaleX(1)}
-    100%{left:78%;top:60%;transform:scaleX(-1)}
+    0%{left:80%;transform:scaleX(-1)}
+    48%{left:22%;transform:scaleX(-1)}
+    50%{left:22%;transform:scaleX(1)}
+    98%{left:80%;transform:scaleX(1)}
+    100%{left:80%;transform:scaleX(-1)}
   }
+  /* Castle-center patrol (mid-range, around the castle gate area) */
   @keyframes patrol-3{
-    0%{left:40%;top:54%}
-    30%{left:65%;top:56%}
-    32%{left:65%;top:56%;transform:scaleX(-1)}
-    62%{left:25%;top:58%;transform:scaleX(-1)}
-    64%{left:25%;top:58%;transform:scaleX(1)}
-    100%{left:40%;top:54%;transform:scaleX(1)}
+    0%{left:42%;transform:scaleX(1)}
+    48%{left:62%;transform:scaleX(1)}
+    50%{left:62%;transform:scaleX(-1)}
+    98%{left:42%;transform:scaleX(-1)}
+    100%{left:42%;transform:scaleX(1)}
   }
+  /* Left-wing patrol (calendar tower side) */
   @keyframes patrol-4{
-    0%{left:55%;top:62%;transform:scaleX(-1)}
-    35%{left:18%;top:60%;transform:scaleX(-1)}
-    37%{left:18%;top:60%;transform:scaleX(1)}
-    72%{left:75%;top:58%;transform:scaleX(1)}
-    74%{left:75%;top:58%;transform:scaleX(-1)}
-    100%{left:55%;top:62%;transform:scaleX(-1)}
+    0%{left:14%;transform:scaleX(1)}
+    48%{left:42%;transform:scaleX(1)}
+    50%{left:42%;transform:scaleX(-1)}
+    98%{left:14%;transform:scaleX(-1)}
+    100%{left:14%;transform:scaleX(1)}
+  }
+  /* Right-wing patrol (treasury side) */
+  @keyframes patrol-5{
+    0%{left:60%;transform:scaleX(1)}
+    48%{left:84%;transform:scaleX(1)}
+    50%{left:84%;transform:scaleX(-1)}
+    98%{left:60%;transform:scaleX(-1)}
+    100%{left:60%;transform:scaleX(1)}
   }
 
   /* Wizard casting state: pauses patrol, raises staff, glows */
@@ -480,6 +490,15 @@
           <stop offset="0%" stop-color="#604530"/>
           <stop offset="100%" stop-color="#2e1d12"/>
         </linearGradient>
+        <linearGradient id="pathGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#3a3328"/>
+          <stop offset="55%" stop-color="#262018"/>
+          <stop offset="100%" stop-color="#15110a"/>
+        </linearGradient>
+        <linearGradient id="pathEdge" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="rgba(255,255,255,0.06)"/>
+          <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+        </linearGradient>
         <radialGradient id="castleAuraGrad">
           <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.35"/>
           <stop offset="60%" stop-color="#00d4ff" stop-opacity="0.05"/>
@@ -506,8 +525,70 @@
       </g>
       <!-- ── Ground plane ── -->
       <rect x="0" y="535" width="1600" height="65" fill="#0a0c14"/>
-      <!-- ── Stone path connecting castle to territories ── -->
-      <path d="M 700 510 Q 800 540 900 510 L 920 600 L 680 600 Z" fill="rgba(255,255,255,0.025)"/>
+
+      <!-- ═══ WALKWAYS — real cobblestone paths ═══ -->
+      <g class="walkways">
+        <!-- Main horizontal road (the wizard patrol corridor) -->
+        <path d="M 40 458 Q 800 446 1560 454 L 1560 498 Q 800 504 40 494 Z" fill="url(#pathGrad)"/>
+        <!-- Top highlight on main road -->
+        <path d="M 40 458 Q 800 446 1560 454 L 1560 463 Q 800 451 40 463 Z" fill="url(#pathEdge)"/>
+
+        <!-- Castle approach (gate to road) — slight perspective taper -->
+        <path d="M 740 408 L 860 408 L 894 462 L 706 462 Z" fill="url(#pathGrad)"/>
+        <path d="M 740 408 L 860 408 L 866 416 L 734 416 Z" fill="url(#pathEdge)"/>
+
+        <!-- Calendar tower diagonal walkway -->
+        <path d="M 110 292 L 178 292 L 250 460 L 60 480 Z" fill="url(#pathGrad)"/>
+        <path d="M 110 292 L 178 292 L 184 304 L 116 304 Z" fill="url(#pathEdge)"/>
+
+        <!-- Treasury connector (road merges into vault arch) -->
+        <path d="M 1340 460 L 1490 432 L 1540 480 L 1340 488 Z" fill="url(#pathGrad)"/>
+
+        <!-- Cobblestone accents on main road -->
+        <g fill="rgba(0,0,0,0.45)">
+          <rect x="80"  y="475" width="6" height="3" rx="1"/>
+          <rect x="130" y="478" width="5" height="3" rx="1"/>
+          <rect x="180" y="476" width="6" height="3" rx="1"/>
+          <rect x="230" y="480" width="5" height="3" rx="1"/>
+          <rect x="285" y="475" width="6" height="3" rx="1"/>
+          <rect x="340" y="478" width="5" height="3" rx="1"/>
+          <rect x="395" y="476" width="6" height="3" rx="1"/>
+          <rect x="450" y="480" width="5" height="3" rx="1"/>
+          <rect x="510" y="475" width="6" height="3" rx="1"/>
+          <rect x="570" y="478" width="5" height="3" rx="1"/>
+          <rect x="630" y="476" width="6" height="3" rx="1"/>
+          <rect x="690" y="480" width="5" height="3" rx="1"/>
+          <rect x="900" y="475" width="6" height="3" rx="1"/>
+          <rect x="960" y="478" width="5" height="3" rx="1"/>
+          <rect x="1020" y="476" width="6" height="3" rx="1"/>
+          <rect x="1080" y="480" width="5" height="3" rx="1"/>
+          <rect x="1140" y="475" width="6" height="3" rx="1"/>
+          <rect x="1200" y="478" width="5" height="3" rx="1"/>
+          <rect x="1260" y="476" width="6" height="3" rx="1"/>
+          <rect x="1320" y="480" width="5" height="3" rx="1"/>
+          <rect x="1380" y="475" width="6" height="3" rx="1"/>
+          <rect x="1440" y="478" width="5" height="3" rx="1"/>
+          <!-- Castle approach accents -->
+          <rect x="755" y="425" width="5" height="3" rx="1"/>
+          <rect x="800" y="430" width="6" height="3" rx="1"/>
+          <rect x="840" y="436" width="5" height="3" rx="1"/>
+          <rect x="775" y="448" width="6" height="3" rx="1"/>
+          <rect x="820" y="452" width="5" height="3" rx="1"/>
+          <!-- Calendar tower diagonal accents -->
+          <rect x="120" y="320" width="5" height="3" rx="1"/>
+          <rect x="138" y="358" width="5" height="3" rx="1"/>
+          <rect x="158" y="402" width="6" height="3" rx="1"/>
+          <rect x="180" y="436" width="5" height="3" rx="1"/>
+          <rect x="208" y="455" width="6" height="3" rx="1"/>
+        </g>
+        <!-- Lantern poles along the road (small dots of warm glow at intervals) -->
+        <g>
+          <circle cx="240" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="500" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="1100" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="1350" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+        </g>
+      </g>
 
       <!-- ═══ CALENDAR TOWER (top-left) ═══ -->
       <g class="cal-tower-svg" id="cal-tower-svg" transform="translate(80,40)">
@@ -555,8 +636,8 @@
         </g>
       </g>
 
-      <!-- ═══ AI CASTLE (center) ═══ -->
-      <g class="castle-svg" transform="translate(520,80)">
+      <!-- ═══ AI CASTLE (center, scaled to 80%) ═══ -->
+      <g class="castle-svg" transform="translate(576,88) scale(0.8)">
         <!-- Aura behind -->
         <circle cx="280" cy="240" r="280" fill="url(#castleAuraGrad)" class="castle-aura"/>
 
@@ -779,19 +860,13 @@
       <div class="torch" style="left:43%;top:54%"></div>
       <div class="torch" style="left:56%;top:54%"></div>
 
-      <!-- 4 walking wizards — sprites built by JS -->
-      <div class="wizard w1" id="wiz1"></div>
-      <div class="wizard w2" id="wiz2"></div>
-      <div class="wizard w3" id="wiz3"></div>
-      <div class="wizard w4" id="wiz4"></div>
+      <!-- 11 walking wizards — sprites built by JS in spawnWizards() -->
     </div>
 
     <!-- HTML overlays on top of the SVG (dynamic text) -->
     <div class="scene-overlay">
       <div class="overlay-text cal-clock-label" id="cal-clock">--:-- UTC</div>
       <div class="overlay-text cal-event-label" id="cal-event">scanning…</div>
-      <div class="overlay-text castle-label">HENRY'S CASTLE</div>
-      <div class="overlay-text castle-sub-label" id="castle-sub">11 advisors · idle</div>
       <div class="overlay-text raven-label">DISCORD</div>
       <div class="overlay-text treasury-r" id="treasury-r">+0.00R</div>
       <div class="overlay-text treasury-label">CUMULATIVE TREASURY</div>
@@ -1133,14 +1208,20 @@ function fetchPaneCandles(coin){
 // WIZARDS — sprites + spell casting
 // ─────────────────────────────────────────────────────────────
 
-// Wizard archetype configs — one per major ICT/S&D pattern. Each has a
-// distinct robe color, hat band, and staff-orb tint that becomes the
-// signature color of their spell when they cast.
+// 11 advisor wizards — one per data source. Each has a distinct robe color
+// and staff-orb tint that signs their spell when they cast.
 var WIZARD_TYPES=[
-  {name:'mss',     robe:'#8a2a3a', dark:'#4a1620', orb:'#ff4466', label:'MSS+disp'},
-  {name:'fvg',     robe:'#4a2a8a', dark:'#2a1a5a', orb:'#a070ff', label:'FVG retest'},
-  {name:'sweep',   robe:'#1f4a8a', dark:'#102e5a', orb:'#00d4ff', label:'Sweep+reclaim'},
-  {name:'pin',     robe:'#1f5a3a', dark:'#103a25', orb:'#00e5a0', label:'Pin/Hammer'},
+  {name:'trigger',  robe:'#a52030', dark:'#5a101a', orb:'#ff4466', label:'Trigger detection'},
+  {name:'htf',      robe:'#1e6a8a', dark:'#0e3848', orb:'#00d4ff', label:'HTF (1H+4H)'},
+  {name:'btc',      robe:'#b86820', dark:'#7a3a08', orb:'#ff8a30', label:'BTC corr / DXY'},
+  {name:'funding',  robe:'#a07c1c', dark:'#5a4408', orb:'#ffd700', label:'Funding rate'},
+  {name:'oi',       robe:'#5a2ea0', dark:'#2a1858', orb:'#a070ff', label:'Open interest'},
+  {name:'liq',      robe:'#9c3a6c', dark:'#581a38', orb:'#ff70a0', label:'Liquidity heatmap'},
+  {name:'flow',     robe:'#5a7a20', dark:'#2a4008', orb:'#a0e030', label:'Order flow'},
+  {name:'cvd',      robe:'#1f6a4a', dark:'#0e3825', orb:'#00e5a0', label:'CVD trend'},
+  {name:'broker',   robe:'#2e4ea0', dark:'#102458', orb:'#4080ff', label:'Cross-broker'},
+  {name:'news',     robe:'#6a6e7a', dark:'#3a3a45', orb:'#c0c8d0', label:'News headlines'},
+  {name:'calendar', robe:'#9a3818', dark:'#561808', orb:'#e05030', label:'Economic calendar'},
 ];
 
 function wizardSvg(cfg){
@@ -1204,15 +1285,33 @@ function wizardSvg(cfg){
 }
 
 function spawnWizards(){
-  for(var i=0;i<4;i++){
-    var el=document.getElementById('wiz'+(i+1));
-    if(!el)continue;
-    var cfg=WIZARD_TYPES[i];
-    el.innerHTML=wizardSvg(cfg);
-    el.dataset.type=cfg.name;
-    el.dataset.label=cfg.label;
-    el.title=cfg.label+' wizard';
-  }
+  var ambient=document.getElementById('ambient');
+  if(!ambient)return;
+  // Wipe any prior wizards (idempotent — safe to call multiple times)
+  ambient.querySelectorAll('.wizard').forEach(function(w){w.remove();});
+
+  WIZARD_TYPES.forEach(function(cfg,i){
+    var w=document.createElement('div');
+    // 5 patrol patterns × 11 wizards → cycles through w1..w5
+    var patrolN=(i%5)+1;
+    w.className='wizard w'+patrolN;
+    w.id='wiz-'+cfg.name;
+    w.dataset.type=cfg.name;
+    w.dataset.label=cfg.label;
+    w.title=cfg.label;
+    // Randomize timing so they don't all step in sync
+    var duration=(24+Math.random()*22).toFixed(1)+'s';
+    var delay=(-Math.random()*36).toFixed(1)+'s';
+    w.style.animationDuration=duration;
+    w.style.animationDelay=delay;
+    // Stagger vertical position across the walkway band (60% to 70% of stage)
+    // so wizards in front appear larger relative to those further back.
+    w.style.top=(60+(i*0.9))+'%';
+    // Slightly vary z-order: wizards lower on screen (closer) on top
+    w.style.zIndex=String(5+i);
+    w.innerHTML=wizardSvg(cfg);
+    ambient.appendChild(w);
+  });
 }
 
 // Spell-burst element creator. Positioned in scene-relative coords (px).
@@ -1500,12 +1599,13 @@ function fireSpellOnTerritory(coin,direction){
     // Spell burst at the territory's top-center
     var xPct=((cardRect.left+cardRect.width/2)-stage.left)/stage.width*100;
     var yPct=((cardRect.top-stage.top)/stage.height*100)-2;
-    // Pick wizard based on direction: LONG = green pin, SHORT = red MSS
-    var preferred=direction==='LONG'?'pin':'mss';
+    // Pick wizard based on direction: LONG = green CVD, SHORT = red Trigger
+    var preferred=direction==='LONG'?'cvd':'trigger';
     var wiz=document.querySelector('.wizard[data-type="'+preferred+'"]');
     if(!wiz)wiz=document.querySelector('.wizard');
     if(!wiz)return;
-    var color=WIZARD_TYPES.find(function(w){return w.name===preferred;}).orb;
+    var cfgMatch=WIZARD_TYPES.find(function(w){return w.name===preferred;});
+    var color=cfgMatch?cfgMatch.orb:'#00d4ff';
     spawnSpellBurst(xPct,yPct,color);
     if(!wiz._casting)wizardCast(wiz);
     // Second smaller burst 400ms later for emphasis
@@ -1639,21 +1739,6 @@ function flyRaven(){
   },2100);
 }
 
-// Castle sub label — show what's currently happening in the AI tower
-function updateCastleSub(summary){
-  var sub=document.getElementById('castle-sub');
-  if(!sub||!summary)return;
-  var scan=summary.scanState||{};
-  var op=summary.openPositions||{};
-  if(op.totalCount>0){
-    sub.textContent='11 advisors · '+op.totalCount+' active trade'+(op.totalCount>1?'s':'');
-  } else if(scan.active){
-    sub.textContent='11 advisors · scanning '+scan.watchlistSize+' pair'+(scan.watchlistSize===1?'':'s');
-  } else {
-    sub.textContent='11 advisors · standby';
-  }
-}
-
 // ─────────────────────────────────────────────────────────────
 // MAIN POLL LOOP
 // ─────────────────────────────────────────────────────────────
@@ -1668,7 +1753,6 @@ function pollSummary(){
       renderBottomBand(d);
       updateTreasury((d.allTime&&d.allTime.totalR)||0);
       updateCalTower(d.nextEvent);
-      updateCastleSub(d);
 
       // Detect new trade events → raven fly
       var totalCount=(d.openPositions&&d.openPositions.totalCount)||0;
