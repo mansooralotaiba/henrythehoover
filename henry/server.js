@@ -2770,12 +2770,26 @@ async function fetchCandlesServer(coin, tf, limit, broker) {
       const arr = await r.json();
       return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
     }
-    // weex (default)
+    // weex (default) — they changed the API: granularity now takes string
+    // suffixes ("15m" instead of "900") and the timestamp is returned in
+    // MILLISECONDS, not seconds. The old format silently returned HTTP 400
+    // with code 40020 ("参数granularity错误") and our parser swallowed the
+    // error, leaving lastPrice=null and no triggers ever firing.
     const fsym = FUTURES_SYM_SERVER[coin] || ('cmt_' + coin.toLowerCase());
-    const tfMap = { '1m': '60', '5m': '300', '15m': '900', '1h': '3600', '4h': '14400', '1d': '86400' };
-    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${tfMap[tf] || '900'}&limit=${limit}`);
-    const arr = await r.json();
-    return (Array.isArray(arr) ? arr : []).map(c => ({ t: +c[0] * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+    const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '12h': '12h', '1d': '1d', '1w': '1w' };
+    const gran = tfMap[tf] || '15m';
+    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${gran}&limit=${limit}`);
+    const raw = await r.json();
+    if (!Array.isArray(raw)) {
+      // Weex error object — log so it surfaces in Railway instead of silent failure
+      console.warn('[fetchCandlesServer] weex non-array:', coin, gran, JSON.stringify(raw).slice(0, 200));
+      return [];
+    }
+    return raw.map(c => {
+      const t = +c[0];
+      // Auto-detect units: > 1e12 means ms already, else seconds
+      return { t: t > 1e12 ? t : t * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] };
+    });
   } catch (e) {
     console.error('[fetchCandlesServer]', e.message);
     return [];
@@ -4486,13 +4500,17 @@ async function fetchHistoricalCandles(coin, tf, broker, totalCount) {
       if (!Array.isArray(arr)) return [];
       return arr.map(c => ({ t: c.t, o: +c.o, h: +c.h, l: +c.l, c: +c.c, v: +c.v }));
     }
-    // weex
+    // weex — same fix as fetchCandlesServer: new granularity format + ms timestamps
     const fsym = FUTURES_SYM_SERVER[coin] || ('cmt_' + coin.toLowerCase());
-    const tfMap = { '1m': '60', '5m': '300', '15m': '900', '1h': '3600', '4h': '14400', '1d': '86400' };
-    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${tfMap[tf] || '900'}&limit=${lim}`);
+    const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '12h': '12h', '1d': '1d', '1w': '1w' };
+    const gran = tfMap[tf] || '15m';
+    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${gran}&limit=${lim}`);
     const arr = await r.json();
     if (!Array.isArray(arr)) return [];
-    return arr.map(c => ({ t: +c[0] * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+    return arr.map(c => {
+      const t = +c[0];
+      return { t: t > 1e12 ? t : t * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] };
+    });
   } catch (e) {
     console.error('[backtest fetch]', e.message);
     return [];
