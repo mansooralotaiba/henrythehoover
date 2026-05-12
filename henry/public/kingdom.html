@@ -665,7 +665,6 @@ function refreshPairStates(){
       d.pairs.forEach(function(p){
         var st;
         if(p.hasSignal&&p.entryAlerted)st='in-trade';
-        else if(p.hasSignal&&p.awaitingConfirmation)st='waiting-confirm';
         else if(p.hasSignal)st='waiting';
         else if(p.pauseRemaining>0)st='paused';
         else if(p.cooldownRemaining>0)st='cooldown';
