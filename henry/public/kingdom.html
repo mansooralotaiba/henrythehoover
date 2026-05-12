@@ -485,8 +485,12 @@ function buildPanel(coin){
 }
 
 function _brokerFor(coin){
-  if(coin==='GOLD')return 'gold';
-  // Public Binance Futures kline endpoint works for most pairs without auth
+  // GOLD uses Binance spot PAXG/USDT — Pax Gold tokenises real gold 1:1 and
+  // trades within ~$1 of XAUUSD spot, with full real-time intraday bars.
+  // Polygon's free-tier forex aggregates lag many hours behind and were
+  // showing a stale chart cut off at the prior day's data.
+  if(coin==='GOLD')return 'paxg';
+  // Public Binance Futures kline endpoint works for all other pairs without auth
   return 'binance';
 }
 
@@ -495,16 +499,17 @@ function fetchPanelCandles(coin){
   // Use the actual scan timeframe so the chart's candles match the structure
   // the AI analysed (entry/SL/TP levels were sized for these bars).
   var tf=_scanTF||'15m';
-  if(broker==='gold'){
-    return fetch('/api/gold/candles?interval='+tf+'&limit=80',{credentials:'same-origin'})
-      .then(function(r){return r.ok?r.json():null;})
-      .then(function(d){
-        if(!d||!Array.isArray(d.candles))return[];
-        return d.candles.map(function(k){return{time:Math.floor(k.time),open:+k.o,high:+k.h,low:+k.l,close:+k.c};});
+  if(broker==='paxg'){
+    // Binance SPOT endpoint (not futures) — PAXG isn't on perp futures
+    return fetch('https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval='+tf+'&limit=80')
+      .then(function(r){return r.json();})
+      .then(function(arr){
+        if(!Array.isArray(arr))return[];
+        return arr.map(function(k){return{time:Math.floor(parseInt(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]};});
       })
       .catch(function(){return[];});
   }
-  // Binance Futures public
+  // Binance Futures public for all other pairs
   return fetch('https://fapi.binance.com/fapi/v1/klines?symbol='+coin+'&interval='+tf+'&limit=80')
     .then(function(r){return r.json();})
     .then(function(arr){
