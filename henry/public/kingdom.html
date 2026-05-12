@@ -15,7 +15,7 @@
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
-  body{background:var(--bg);color:var(--fg);font-family:var(--mn);font-size:12px;line-height:1.5;padding:12px;display:flex;flex-direction:column;gap:12px;min-height:100vh}
+  body{background:var(--bg);color:var(--fg);font-family:var(--mn);font-size:12px;line-height:1.5;padding:8px;display:flex;flex-direction:column;gap:8px;min-height:100vh}
 
   /* HEADER */
   header{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--b1);padding-bottom:10px}
@@ -77,7 +77,7 @@
   .quick-strip .item .v.pos{color:var(--gr)}.quick-strip .item .v.neg{color:var(--re)}.quick-strip .item .v.am{color:var(--am)}
 
   /* ═════════ MIDDLE BAND — KINGDOM (custom SVG) ═════════ */
-  .middle-band{flex:1;min-height:560px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden}
+  .middle-band{flex:1;min-height:380px;max-height:42vh;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden}
   .kingdom-stage{position:absolute;inset:0}
   .scene-svg{position:absolute;inset:0;width:100%;height:100%;display:block}
 
@@ -151,29 +151,31 @@
   .treasury-r{right:11%;bottom:18%;font-size:22px;font-weight:bold;color:#ffb830;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,184,48,0.5),0 0 2px rgba(0,0,0,0.9);width:180px}
   .treasury-label{right:11%;bottom:14%;font-size:8px;letter-spacing:.25em;color:rgba(255,184,48,0.7);width:180px}
 
-  /* Pair territories — bigger, centered row */
-  .territories{position:absolute;left:18%;right:18%;bottom:5%;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:flex-end;max-height:50%;overflow:visible;pointer-events:auto}
-  .territory{position:relative;flex:0 1 145px;min-width:120px;max-width:160px;background:rgba(0,0,0,0.45);backdrop-filter:blur(4px);border:1.5px solid var(--b1);border-radius:6px;padding:8px 10px;font-size:10px;transition:all 0.4s ease;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
-  .territory[data-state="scanning"]{background:linear-gradient(180deg,rgba(0,229,160,0.08) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(0,229,160,0.35)}
-  .territory[data-state="waiting"]{background:linear-gradient(180deg,rgba(255,184,48,0.12) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(255,184,48,0.5)}
-  .territory[data-state="in-trade"]{background:linear-gradient(180deg,rgba(0,212,255,0.2) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(0,212,255,0.7);box-shadow:0 0 18px rgba(0,212,255,0.35),0 4px 12px rgba(0,0,0,0.4)}
-  .territory[data-state="cooldown"]{background:linear-gradient(180deg,rgba(255,255,255,0.04) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(255,255,255,0.12);opacity:0.65}
-  .territory[data-state="paused"]{background:linear-gradient(180deg,rgba(255,68,102,0.12) 0%,rgba(0,0,0,0.5) 100%);border-color:rgba(255,68,102,0.5);animation:pause-flicker 2s ease-in-out infinite}
-  @keyframes pause-flicker{0%,100%{box-shadow:0 0 10px rgba(255,68,102,0.15),0 4px 12px rgba(0,0,0,0.4)}50%{box-shadow:0 0 20px rgba(255,68,102,0.5),0 4px 12px rgba(0,0,0,0.4)}}
+  /* Pair territories — minimal chrome, blend into world */
+  .territories{position:absolute;left:14%;right:14%;bottom:4%;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:flex-end;overflow:visible;pointer-events:auto}
+  .territory{position:relative;flex:0 1 118px;min-width:100px;max-width:135px;padding:4px 8px 6px;font-size:10px;transition:all 0.4s ease}
+  /* Scanning (idle) — no card chrome, just the biome + name + price float on the world */
+  .territory[data-state="scanning"]{background:transparent;border:none;box-shadow:none}
+  /* Active states keep a subtle card */
+  .territory[data-state="waiting"]{background:linear-gradient(180deg,rgba(255,184,48,0.12) 0%,rgba(0,0,0,0.4) 100%);border:1px solid rgba(255,184,48,0.4);border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35)}
+  .territory[data-state="in-trade"]{background:linear-gradient(180deg,rgba(0,212,255,0.18) 0%,rgba(0,0,0,0.4) 100%);border:1px solid rgba(0,212,255,0.6);border-radius:5px;box-shadow:0 0 16px rgba(0,212,255,0.3),0 2px 8px rgba(0,0,0,0.35)}
+  .territory[data-state="cooldown"]{background:transparent;border:1px dashed rgba(255,255,255,0.1);border-radius:5px;opacity:0.55}
+  .territory[data-state="paused"]{background:linear-gradient(180deg,rgba(255,68,102,0.12) 0%,rgba(0,0,0,0.4) 100%);border:1px solid rgba(255,68,102,0.5);border-radius:5px;animation:pause-flicker 2s ease-in-out infinite}
+  @keyframes pause-flicker{0%,100%{box-shadow:0 0 8px rgba(255,68,102,0.15)}50%{box-shadow:0 0 18px rgba(255,68,102,0.5)}}
   .territory[data-state="in-trade"]{animation:trade-pulse 1.8s ease-in-out infinite}
-  @keyframes trade-pulse{0%,100%{box-shadow:0 0 14px rgba(0,212,255,0.2),0 4px 12px rgba(0,0,0,0.4)}50%{box-shadow:0 0 32px rgba(0,212,255,0.55),0 4px 12px rgba(0,0,0,0.4)}}
-  .territory .biome-svg{width:100%;height:46px;display:block;margin-bottom:4px}
-  .territory .name{font-weight:bold;font-size:11px;letter-spacing:.06em;text-align:center;color:var(--fg)}
-  .territory .state-tag{font-size:8px;color:var(--mu);text-align:center;letter-spacing:.12em;margin-top:2px}
+  @keyframes trade-pulse{0%,100%{box-shadow:0 0 14px rgba(0,212,255,0.22),0 2px 8px rgba(0,0,0,0.35)}50%{box-shadow:0 0 28px rgba(0,212,255,0.55),0 2px 8px rgba(0,0,0,0.35)}}
+  .territory .biome-svg{width:100%;height:38px;display:block;margin-bottom:2px}
+  .territory .name{font-weight:bold;font-size:10.5px;letter-spacing:.06em;text-align:center;color:var(--fg);text-shadow:0 1px 3px rgba(0,0,0,0.95)}
+  .territory .state-tag{font-size:8px;color:var(--mu);text-align:center;letter-spacing:.12em;margin-top:1px;text-shadow:0 1px 2px rgba(0,0,0,0.9)}
   .territory[data-state="in-trade"] .state-tag{color:var(--cy)}
   .territory[data-state="waiting"] .state-tag{color:var(--am)}
   .territory[data-state="paused"] .state-tag{color:var(--re)}
-  .territory[data-state="scanning"] .state-tag{color:var(--gr)}
-  .territory .price{font-size:9px;color:var(--mu);text-align:center;margin-top:3px;letter-spacing:.04em}
-  .territory .boss-hp{margin-top:6px;height:4px;background:rgba(255,68,102,0.2);border-radius:2px;overflow:hidden;display:none}
+  .territory[data-state="scanning"] .state-tag{color:rgba(0,229,160,0.7)}
+  .territory .price{font-size:9px;color:var(--mu);text-align:center;margin-top:2px;letter-spacing:.04em;text-shadow:0 1px 2px rgba(0,0,0,0.9)}
+  .territory .boss-hp{margin-top:5px;height:3px;background:rgba(255,68,102,0.2);border-radius:2px;overflow:hidden;display:none}
   .territory[data-state="in-trade"] .boss-hp{display:block}
   .territory .boss-hp .fill{height:100%;background:linear-gradient(90deg,#ff4466 0%,#ffb830 50%,#00e5a0 100%);transition:width 0.6s ease}
-  .territory .pos-flag{position:absolute;top:-8px;right:-8px;width:18px;height:22px}
+  .territory .pos-flag{position:absolute;top:-6px;right:-2px;width:16px;height:20px}
 
   .kingdom-empty{position:absolute;top:62%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.32);font-size:11px;letter-spacing:.18em;text-align:center;pointer-events:none}
   .kingdom-empty .label{margin-bottom:4px}
@@ -346,13 +348,14 @@
     50%{opacity:0.6;height:340px}
   }
 
-  /* BOTTOM BAND */
-  .bottom-band{min-height:280px;display:flex;flex-direction:column;gap:8px}
+  /* BOTTOM BAND — collapses when no trades so the page fits the viewport */
+  .bottom-band{display:flex;flex-direction:column;gap:6px}
   .bottom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
   .bottom-header .l{font-size:10px;color:var(--mu);letter-spacing:.15em}
   .bottom-header .c{font-size:10px;color:var(--cy);letter-spacing:.05em}
-  .charts-grid{display:grid;gap:10px;min-height:260px}
-  .charts-grid[data-n="0"]{display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px solid var(--b1);border-radius:6px}
+  .charts-grid{display:grid;gap:10px}
+  .charts-grid[data-n="0"]{display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;min-height:46px;padding:0 14px}
+  .charts-grid:not([data-n="0"]){min-height:240px}
   .charts-grid[data-n="1"]{grid-template-columns:1fr}
   .charts-grid[data-n="2"]{grid-template-columns:1fr 1fr}
   .charts-grid[data-n="3"]{grid-template-columns:repeat(3,1fr)}
@@ -517,76 +520,60 @@
 
       <!-- ── Distant mountains silhouette ── -->
       <g opacity="0.55">
-        <path d="M 0 460 L 80 380 L 180 420 L 280 350 L 400 410 L 520 360 L 640 400 L 760 340 L 900 390 L 1060 360 L 1180 410 L 1300 370 L 1450 400 L 1600 380 L 1600 600 L 0 600 Z" fill="#0a0e1a"/>
+        <path d="M 0 410 L 80 340 L 180 372 L 280 312 L 400 364 L 520 320 L 640 356 L 760 304 L 900 348 L 1060 320 L 1180 364 L 1300 328 L 1450 358 L 1600 340 L 1600 600 L 0 600 Z" fill="#0a0e1a"/>
       </g>
       <!-- ── Mid-ground hills ── -->
       <g opacity="0.7">
-        <path d="M 0 510 L 120 460 L 280 490 L 420 450 L 600 480 L 780 460 L 960 490 L 1140 470 L 1320 485 L 1500 465 L 1600 480 L 1600 600 L 0 600 Z" fill="#0b1019"/>
+        <path d="M 0 460 L 120 412 L 280 442 L 420 402 L 600 432 L 780 412 L 960 442 L 1140 422 L 1320 437 L 1500 417 L 1600 432 L 1600 600 L 0 600 Z" fill="#0b1019"/>
       </g>
       <!-- ── Ground plane ── -->
-      <rect x="0" y="535" width="1600" height="65" fill="#0a0c14"/>
+      <rect x="0" y="488" width="1600" height="112" fill="#0a0c14"/>
 
-      <!-- ═══ WALKWAYS — real cobblestone paths ═══ -->
+      <!-- ═══ WALKWAYS — real cobblestone paths (pulled up for compact layout) ═══ -->
       <g class="walkways">
         <!-- Main horizontal road (the wizard patrol corridor) -->
-        <path d="M 40 458 Q 800 446 1560 454 L 1560 498 Q 800 504 40 494 Z" fill="url(#pathGrad)"/>
-        <!-- Top highlight on main road -->
-        <path d="M 40 458 Q 800 446 1560 454 L 1560 463 Q 800 451 40 463 Z" fill="url(#pathEdge)"/>
+        <path d="M 40 408 Q 800 398 1560 405 L 1560 442 Q 800 448 40 438 Z" fill="url(#pathGrad)"/>
+        <path d="M 40 408 Q 800 398 1560 405 L 1560 413 Q 800 403 40 413 Z" fill="url(#pathEdge)"/>
 
-        <!-- Castle approach (gate to road) — slight perspective taper -->
-        <path d="M 740 408 L 860 408 L 894 462 L 706 462 Z" fill="url(#pathGrad)"/>
-        <path d="M 740 408 L 860 408 L 866 416 L 734 416 Z" fill="url(#pathEdge)"/>
+        <!-- Castle approach (gate to road) -->
+        <path d="M 750 368 L 850 368 L 882 412 L 718 412 Z" fill="url(#pathGrad)"/>
+        <path d="M 750 368 L 850 368 L 856 374 L 744 374 Z" fill="url(#pathEdge)"/>
 
         <!-- Calendar tower diagonal walkway -->
-        <path d="M 110 292 L 178 292 L 250 460 L 60 480 Z" fill="url(#pathGrad)"/>
-        <path d="M 110 292 L 178 292 L 184 304 L 116 304 Z" fill="url(#pathEdge)"/>
+        <path d="M 108 268 L 174 268 L 230 410 L 70 422 Z" fill="url(#pathGrad)"/>
+        <path d="M 108 268 L 174 268 L 178 278 L 112 278 Z" fill="url(#pathEdge)"/>
 
-        <!-- Treasury connector (road merges into vault arch) -->
-        <path d="M 1340 460 L 1490 432 L 1540 480 L 1340 488 Z" fill="url(#pathGrad)"/>
+        <!-- Treasury connector -->
+        <path d="M 1340 410 L 1490 388 L 1540 430 L 1340 436 Z" fill="url(#pathGrad)"/>
 
         <!-- Cobblestone accents on main road -->
         <g fill="rgba(0,0,0,0.45)">
-          <rect x="80"  y="475" width="6" height="3" rx="1"/>
-          <rect x="130" y="478" width="5" height="3" rx="1"/>
-          <rect x="180" y="476" width="6" height="3" rx="1"/>
-          <rect x="230" y="480" width="5" height="3" rx="1"/>
-          <rect x="285" y="475" width="6" height="3" rx="1"/>
-          <rect x="340" y="478" width="5" height="3" rx="1"/>
-          <rect x="395" y="476" width="6" height="3" rx="1"/>
-          <rect x="450" y="480" width="5" height="3" rx="1"/>
-          <rect x="510" y="475" width="6" height="3" rx="1"/>
-          <rect x="570" y="478" width="5" height="3" rx="1"/>
-          <rect x="630" y="476" width="6" height="3" rx="1"/>
-          <rect x="690" y="480" width="5" height="3" rx="1"/>
-          <rect x="900" y="475" width="6" height="3" rx="1"/>
-          <rect x="960" y="478" width="5" height="3" rx="1"/>
-          <rect x="1020" y="476" width="6" height="3" rx="1"/>
-          <rect x="1080" y="480" width="5" height="3" rx="1"/>
-          <rect x="1140" y="475" width="6" height="3" rx="1"/>
-          <rect x="1200" y="478" width="5" height="3" rx="1"/>
-          <rect x="1260" y="476" width="6" height="3" rx="1"/>
-          <rect x="1320" y="480" width="5" height="3" rx="1"/>
-          <rect x="1380" y="475" width="6" height="3" rx="1"/>
-          <rect x="1440" y="478" width="5" height="3" rx="1"/>
-          <!-- Castle approach accents -->
-          <rect x="755" y="425" width="5" height="3" rx="1"/>
-          <rect x="800" y="430" width="6" height="3" rx="1"/>
-          <rect x="840" y="436" width="5" height="3" rx="1"/>
-          <rect x="775" y="448" width="6" height="3" rx="1"/>
-          <rect x="820" y="452" width="5" height="3" rx="1"/>
-          <!-- Calendar tower diagonal accents -->
-          <rect x="120" y="320" width="5" height="3" rx="1"/>
-          <rect x="138" y="358" width="5" height="3" rx="1"/>
-          <rect x="158" y="402" width="6" height="3" rx="1"/>
-          <rect x="180" y="436" width="5" height="3" rx="1"/>
-          <rect x="208" y="455" width="6" height="3" rx="1"/>
+          <rect x="80"  y="423" width="6" height="3" rx="1"/>
+          <rect x="140" y="426" width="5" height="3" rx="1"/>
+          <rect x="200" y="424" width="6" height="3" rx="1"/>
+          <rect x="260" y="428" width="5" height="3" rx="1"/>
+          <rect x="320" y="423" width="6" height="3" rx="1"/>
+          <rect x="380" y="426" width="5" height="3" rx="1"/>
+          <rect x="440" y="424" width="6" height="3" rx="1"/>
+          <rect x="500" y="428" width="5" height="3" rx="1"/>
+          <rect x="560" y="423" width="6" height="3" rx="1"/>
+          <rect x="620" y="426" width="5" height="3" rx="1"/>
+          <rect x="900" y="423" width="6" height="3" rx="1"/>
+          <rect x="970" y="426" width="5" height="3" rx="1"/>
+          <rect x="1040" y="424" width="6" height="3" rx="1"/>
+          <rect x="1110" y="428" width="5" height="3" rx="1"/>
+          <rect x="1180" y="423" width="6" height="3" rx="1"/>
+          <rect x="1250" y="426" width="5" height="3" rx="1"/>
+          <rect x="1320" y="424" width="6" height="3" rx="1"/>
+          <rect x="1390" y="428" width="5" height="3" rx="1"/>
+          <rect x="1460" y="423" width="6" height="3" rx="1"/>
         </g>
-        <!-- Lantern poles along the road (small dots of warm glow at intervals) -->
+        <!-- Warm lantern dots along the road -->
         <g>
-          <circle cx="240" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-          <circle cx="500" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-          <circle cx="1100" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-          <circle cx="1350" cy="455" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="240" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="500" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="1100" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
+          <circle cx="1350" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
         </g>
       </g>
 
@@ -636,8 +623,8 @@
         </g>
       </g>
 
-      <!-- ═══ AI CASTLE (center, scaled to 80%) ═══ -->
-      <g class="castle-svg" transform="translate(576,88) scale(0.8)">
+      <!-- ═══ AI CASTLE (center, scaled to 65% for tighter layout) ═══ -->
+      <g class="castle-svg" transform="translate(626,108) scale(0.65)">
         <!-- Aura behind -->
         <circle cx="280" cy="240" r="280" fill="url(#castleAuraGrad)" class="castle-aura"/>
 
@@ -1304,9 +1291,9 @@ function spawnWizards(){
     var delay=(-Math.random()*36).toFixed(1)+'s';
     w.style.animationDuration=duration;
     w.style.animationDelay=delay;
-    // Stagger vertical position across the walkway band (60% to 70% of stage)
+    // Stagger vertical position across the walkway band (62% to 76% of stage)
     // so wizards in front appear larger relative to those further back.
-    w.style.top=(60+(i*0.9))+'%';
+    w.style.top=(62+(i*1.3))+'%';
     // Slightly vary z-order: wizards lower on screen (closer) on top
     w.style.zIndex=String(5+i);
     w.innerHTML=wizardSvg(cfg);
