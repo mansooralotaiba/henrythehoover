@@ -8,7 +8,7 @@
   :root{--bg:#08090d;--bg2:#12141b;--fg:#e8eaf0;--mu:#9aa0a6;--br:#23262e;--cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830;--pu:#9966ff}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font-family:'Courier New',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .box{background:var(--bg2);border:1px solid var(--br);padding:36px 32px;width:100%;max-width:440px;border-radius:6px}
+  .box{background:var(--bg2);border:1px solid var(--br);padding:36px 32px;width:100%;max-width:460px;border-radius:6px}
   h1{margin:0 0 4px;font-size:18px;letter-spacing:.12em;color:var(--cy)}
   .sub{color:var(--mu);font-size:11px;letter-spacing:.08em;margin-bottom:28px}
   .plan{border:1px solid rgba(0,212,255,.25);border-radius:5px;padding:20px 22px;background:rgba(0,212,255,.04);margin-bottom:24px}
@@ -19,8 +19,21 @@
   .features li{font-size:11px;color:var(--mu);padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);letter-spacing:.05em}
   .features li:last-child{border-bottom:0}
   .features li::before{content:'✓ ';color:var(--gr)}
-  button{width:100%;padding:14px;background:var(--cy);color:#000;border:0;font-family:inherit;font-size:13px;letter-spacing:.12em;font-weight:bold;cursor:pointer;border-radius:3px;margin-top:4px}
+
+  .pay-section{margin-top:8px}
+  .pay-divider{display:flex;align-items:center;gap:10px;margin:18px 0 14px;color:var(--mu);font-size:9px;letter-spacing:.2em}
+  .pay-divider::before,.pay-divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06)}
+
+  button{width:100%;padding:14px;border:0;font-family:inherit;font-size:13px;letter-spacing:.12em;font-weight:bold;cursor:pointer;border-radius:3px;transition:opacity .15s,transform .05s}
+  button:active{transform:translateY(1px)}
   button:disabled{opacity:.5;cursor:wait}
+  button.primary{background:var(--cy);color:#000}
+  button.crypto{background:linear-gradient(135deg,#f7931a 0%,#627eea 50%,#9945ff 100%);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.4)}
+  button.secondary{background:transparent;border:1px solid var(--br);color:var(--mu);margin-top:8px}
+  button.secondary:hover{border-color:var(--cy);color:var(--cy)}
+
+  .pay-note{margin-top:8px;font-size:10px;color:var(--mu);text-align:center;letter-spacing:.04em;line-height:1.6}
+  .pay-note .accent{color:var(--cy)}
   .msg{margin-top:16px;padding:12px;border:1px solid var(--br);border-radius:3px;font-size:11px;line-height:1.6}
   .msg.err{border-color:rgba(255,68,102,.4);color:var(--re);background:rgba(255,68,102,.06)}
   .msg.ok{border-color:rgba(0,229,160,.4);color:var(--gr);background:rgba(0,229,160,.06)}
@@ -28,6 +41,8 @@
   .links a{color:var(--cy);text-decoration:none}
   .links a:hover{text-decoration:underline}
   .secure{margin-top:14px;text-align:center;font-size:9px;color:rgba(255,255,255,.2);letter-spacing:.08em}
+
+  .hidden{display:none !important}
 </style>
 </head>
 <body>
@@ -44,89 +59,138 @@
       <li>Discord webhook integration</li>
       <li>Trade journal with stats</li>
       <li>3 exchanges — Weex, Binance, Hyperliquid</li>
-      <li>Gold spot via Polygon (XAU/USD)</li>
+      <li>Gold spot via Binance PAXG</li>
       <li>DXY live feed</li>
       <li>Server-side trade monitor</li>
     </ul>
   </div>
 
-  <button id="sub-btn">SUBSCRIBE NOW →</button>
+  <div class="pay-section">
+    <!-- Crypto (NowPayments) — primary -->
+    <button id="crypto-btn" class="crypto hidden">
+      ⚡ PAY WITH CRYPTO  →  $500 USDT / BTC / ETH / SOL
+    </button>
+    <div id="crypto-note" class="pay-note hidden">
+      30 days access · pay in any crypto · invoice via <span class="accent">NowPayments</span>
+    </div>
+
+    <!-- Card (Paddle) — secondary, hidden if not configured -->
+    <div id="paddle-section" class="hidden">
+      <div class="pay-divider">OR</div>
+      <button id="paddle-btn" class="secondary">PAY WITH CARD</button>
+    </div>
+  </div>
+
   <div id="msg"></div>
   <div class="links">
     <a href="/login">Already subscribed? Sign in</a>
     <a href="/register">No account? Register</a>
   </div>
-  <div class="secure">🔒 PAYMENTS SECURED BY PADDLE</div>
+  <div id="secure" class="secure">🔒 PAYMENT PROVIDERS HANDLE ALL CARD / CRYPTO DETAILS</div>
 </div>
 
-<!-- Paddle.js v2 — loaded async, init happens after config fetch -->
+<!-- Paddle.js v2 — only initialised if Paddle is configured -->
 <script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
 <script>
-const btn = document.getElementById('sub-btn');
+const cryptoBtn  = document.getElementById('crypto-btn');
+const cryptoNote = document.getElementById('crypto-note');
+const paddleBtn  = document.getElementById('paddle-btn');
+const paddleSection = document.getElementById('paddle-section');
 const msg = document.getElementById('msg');
+
 let paddleReady = false;
 let cachedPriceId = '';
 let cachedEmail = '';
 let cachedUid = '';
 
-function showErr(text) {
-  msg.className = 'msg err';
-  msg.textContent = text;
-}
+function showErr(text){msg.className='msg err';msg.textContent=text;}
+function showOk(text){msg.className='msg ok';msg.textContent=text;}
 
-async function init() {
+async function init(){
+  // 1) Fetch current user (requireSession — works even without subscription)
   try {
-    // Fetch Paddle config (client token + price ID)
-    const cfgRes = await fetch('/api/paddle/config');
-    const cfg = await cfgRes.json();
-    if (!cfg.clientToken || !cfg.priceId) {
-      showErr('Payment system not configured — please try again shortly.');
-      return;
-    }
-    cachedPriceId = cfg.priceId;
-
-    // Initialise Paddle.js
-    Paddle.Initialize({
-      token: cfg.clientToken,
-      ...(cfg.environment === 'sandbox' ? { environment: 'sandbox' } : {}),
-      eventCallback(e) {
-        if (e.name === 'checkout.completed') {
-          // Payment done — redirect to success page
-          window.location.href = '/subscribe/success';
-        }
-      },
-    });
-
-    // Fetch current user (requireSession — works even if not yet subscribed)
-    const meRes = await fetch('/api/me', { credentials: 'same-origin' });
+    const meRes = await fetch('/api/me',{credentials:'same-origin'});
     if (meRes.ok) {
       const me = await meRes.json();
       cachedEmail = me.email || '';
-      cachedUid   = me.id   || ''; // Supabase user UID
-      // If already active, skip straight to terminal
+      cachedUid   = me.id   || '';
+      // Already subscribed? Skip straight to the terminal
       if (me.subscription_status === 'active' || me.is_admin) {
         window.location.href = '/terminal';
         return;
       }
     }
+  } catch (e) {}
 
-    paddleReady = true;
-    btn.disabled = false;
-  } catch (err) {
-    showErr('Failed to load payment system: ' + err.message);
+  // 2) Probe NowPayments — show crypto button if enabled
+  try {
+    const cr = await fetch('/api/nowpayments/config');
+    if (cr.ok) {
+      const cfg = await cr.json();
+      if (cfg.enabled) {
+        cryptoBtn.classList.remove('hidden');
+        cryptoNote.classList.remove('hidden');
+      }
+    }
+  } catch (e) {}
+
+  // 3) Probe Paddle — show card button if a price ID exists
+  try {
+    const pr = await fetch('/api/paddle/config');
+    if (pr.ok) {
+      const cfg = await pr.json();
+      if (cfg.clientToken && cfg.priceId) {
+        cachedPriceId = cfg.priceId;
+        Paddle.Initialize({
+          token: cfg.clientToken,
+          ...(cfg.environment === 'sandbox' ? { environment: 'sandbox' } : {}),
+          eventCallback(e){
+            if (e.name === 'checkout.completed') window.location.href = '/subscribe/success';
+          },
+        });
+        paddleReady = true;
+        paddleSection.classList.remove('hidden');
+        paddleBtn.disabled = false;
+      }
+    }
+  } catch (e) {}
+
+  // 4) Nothing enabled — surface a hint
+  if (cryptoBtn.classList.contains('hidden') && paddleSection.classList.contains('hidden')) {
+    showErr('No payment provider is configured. Contact support.');
   }
 }
 
-btn.disabled = true; // disable until Paddle is ready
-btn.addEventListener('click', () => {
-  if (!paddleReady) return;
-
-  // Not logged in — send to login first
-  if (!cachedEmail) {
-    window.location.href = '/login?next=subscribe';
-    return;
+// Crypto — POST to server which calls NowPayments, returns hosted invoice URL
+cryptoBtn.addEventListener('click', async () => {
+  if (!cachedEmail) { window.location.href = '/login?next=subscribe'; return; }
+  cryptoBtn.disabled = true;
+  cryptoBtn.textContent = 'CREATING INVOICE…';
+  try {
+    const r = await fetch('/api/nowpayments/create-invoice', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await r.json();
+    if (!r.ok || !data.invoiceUrl) {
+      showErr(data.detail || data.error || 'Could not create invoice. Try again.');
+      cryptoBtn.disabled = false;
+      cryptoBtn.innerHTML = '⚡ PAY WITH CRYPTO  →  $500 USDT / BTC / ETH / SOL';
+      return;
+    }
+    showOk('Redirecting to NowPayments…');
+    window.location.href = data.invoiceUrl;
+  } catch (err) {
+    showErr('Network error: ' + err.message);
+    cryptoBtn.disabled = false;
+    cryptoBtn.innerHTML = '⚡ PAY WITH CRYPTO  →  $500 USDT / BTC / ETH / SOL';
   }
+});
 
+// Card — opens Paddle overlay (only wired if Paddle is configured)
+paddleBtn.addEventListener('click', () => {
+  if (!paddleReady) return;
+  if (!cachedEmail) { window.location.href = '/login?next=subscribe'; return; }
   Paddle.Checkout.open({
     items: [{ priceId: cachedPriceId, quantity: 1 }],
     customer: { email: cachedEmail },

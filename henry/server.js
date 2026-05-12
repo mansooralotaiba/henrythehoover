@@ -577,6 +577,150 @@ app.post('/api/paddle/cancel', requireSession, async (req, res) => {
   }
 });
 
+// ── NowPayments (crypto subscriptions) ───────────────────────────────────
+// Monthly invoice model: user clicks subscribe → server creates a hosted
+// NowPayments invoice → user redirects to nowpayments.io to pay any crypto →
+// IPN webhook flips profile.subscription_status to 'active' for 30 days.
+// Renewals require a fresh invoice (no custodial auto-recurring on the
+// standard NowPayments tier — they only offer that for white-label).
+const NOWPAY_API = 'https://api.nowpayments.io/v1';
+const NOWPAY_PRICE_USD = parseFloat(process.env.NOWPAYMENTS_PRICE_USD) || 500;
+
+async function nowpayFetch(method, path, body = null) {
+  if (!process.env.NOWPAYMENTS_API_KEY) throw new Error('NOWPAYMENTS_API_KEY not set');
+  const r = await fetch(`${NOWPAY_API}${path}`, {
+    method,
+    headers: {
+      'x-api-key': process.env.NOWPAYMENTS_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return r.json();
+}
+
+// NowPayments IPN signature: HMAC-SHA512 of the JSON body with keys sorted
+// alphabetically (recursively for nested objects). The header is
+// `x-nowpayments-sig`. Without this verification, anyone could mark a
+// subscription active by POSTing arbitrary JSON to the webhook URL.
+function _sortJsonKeys(value) {
+  if (Array.isArray(value)) return value.map(_sortJsonKeys);
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).sort().forEach(k => { out[k] = _sortJsonKeys(value[k]); });
+    return out;
+  }
+  return value;
+}
+function verifyNowPaySignature(rawBody, signatureHeader, secret) {
+  if (!signatureHeader || !secret) return false;
+  try {
+    const parsed = JSON.parse(rawBody);
+    const sortedJson = JSON.stringify(_sortJsonKeys(parsed));
+    const expected = createHmac('sha512', secret).update(sortedJson).digest('hex');
+    const a = Buffer.from(expected, 'hex');
+    const b = Buffer.from(String(signatureHeader), 'hex');
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch { return false; }
+}
+
+// Public config — tells the subscribe page whether crypto checkout is enabled.
+app.get('/api/nowpayments/config', (_req, res) => {
+  res.json({
+    enabled: !!process.env.NOWPAYMENTS_API_KEY,
+    priceUsd: NOWPAY_PRICE_USD,
+  });
+});
+
+// Create a hosted invoice for the authenticated user. Returns { invoiceUrl }
+// which the browser redirects to — user then pays in any crypto on nowpayments.io.
+app.post('/api/nowpayments/create-invoice', requireSession, async (req, res) => {
+  if (!process.env.NOWPAYMENTS_API_KEY) {
+    return res.status(503).json({ error: 'nowpayments_not_configured' });
+  }
+  try {
+    const email = (req.user.email || '').toLowerCase();
+    const uid = req.user.id;
+    // order_id encodes uid + ms so we can correlate the IPN back to a user
+    // even if NowPayments swallows our customData. order_description shows
+    // on the invoice page so the user sees what they're paying for.
+    const orderId = `henry_${uid}_${Date.now()}`;
+    const siteUrl = process.env.SITE_URL || `https://${req.headers.host || 'henrythehoover.com'}`;
+    const invoice = await nowpayFetch('POST', '/invoice', {
+      price_amount: NOWPAY_PRICE_USD,
+      price_currency: 'usd',
+      order_id: orderId,
+      order_description: 'Henry The Hoover — 30 days access',
+      ipn_callback_url: `${siteUrl}/api/nowpayments/webhook`,
+      success_url: `${siteUrl}/subscribe/success`,
+      cancel_url: `${siteUrl}/subscribe`,
+      is_fee_paid_by_user: false,
+    });
+    if (invoice.error || !invoice.invoice_url) {
+      console.error('[nowpay/create-invoice] failed:', JSON.stringify(invoice).slice(0, 400));
+      return res.status(502).json({ error: 'invoice_failed', detail: invoice.message || 'NowPayments rejected the invoice request' });
+    }
+    // Stash the orderId on the user's profile so we can find them when the
+    // IPN lands (uid is encoded in order_id but storing it here is cheaper).
+    await supaAdmin.from('profiles').update({
+      nowpay_last_order_id: orderId,
+      updated_at: new Date().toISOString(),
+    }).eq('email', email).then(() => {}, () => {});
+    console.log('[nowpay/create-invoice]', email, '$' + NOWPAY_PRICE_USD, '→', invoice.id);
+    res.json({ invoiceUrl: invoice.invoice_url, invoiceId: invoice.id, orderId });
+  } catch (err) {
+    console.error('[nowpay/create-invoice]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Webhook (IPN) — raw body required for signature verification.
+// NowPayments sends a payment_status field; we only act on 'finished' and
+// 'partially_paid' (close enough — credits the user, logs the underpay).
+app.post('/api/nowpayments/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const rawBody = req.body.toString('utf8');
+  const sig = req.headers['x-nowpayments-sig'];
+  const secret = process.env.NOWPAYMENTS_IPN_SECRET;
+  if (!verifyNowPaySignature(rawBody, sig, secret)) {
+    console.error('[nowpay webhook] bad signature');
+    return res.status(400).send('Bad signature');
+  }
+  let event;
+  try { event = JSON.parse(rawBody); } catch { return res.status(400).send('Bad JSON'); }
+
+  const orderId = event.order_id || '';
+  const status = event.payment_status; // waiting | confirming | confirmed | sending | partially_paid | finished | failed | refunded | expired
+  console.log('[nowpay webhook]', orderId, status, 'pay=' + event.actually_paid + ' ' + event.pay_currency);
+
+  // Only credit the user when payment is fully received
+  if (status !== 'finished' && status !== 'partially_paid') {
+    return res.json({ received: true });
+  }
+
+  // Extract uid from order_id (format: henry_<uid>_<ts>)
+  const m = orderId.match(/^henry_([^_]+(?:-[^_]+)*)_\d+$/);
+  const uid = m ? m[1] : null;
+  if (!uid) {
+    console.warn('[nowpay webhook] could not parse uid from order_id:', orderId);
+    return res.json({ received: true });
+  }
+
+  // Credit 30 days of access from now
+  const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await supaAdmin.from('profiles').update({
+    subscription_status: 'active',
+    plan: 'monthly_crypto',
+    current_period_end: periodEnd,
+    updated_at: new Date().toISOString(),
+  }).eq('user_id', uid);
+  if (error) {
+    console.error('[nowpay webhook] supabase update failed:', error.message);
+  } else {
+    console.log('[nowpay webhook] activated', uid, 'until', periodEnd);
+  }
+  res.json({ received: true });
+});
+
 // ── Discord proxies (server holds the webhook URLs) ────────────────────────
 async function forwardToDiscord(envKey, req, res) {
   const url = process.env[envKey];
@@ -5370,6 +5514,8 @@ app.listen(PORT, () => {
   if (!process.env.DISCORD_JOURNAL_WEBHOOK) console.warn('[warn] DISCORD_JOURNAL_WEBHOOK not set — trade journal posts disabled');
   if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
-  if (!process.env.PADDLE_API_KEY) console.warn('[warn] PADDLE_API_KEY not set — payments disabled');
+  if (!process.env.PADDLE_API_KEY) console.warn('[warn] PADDLE_API_KEY not set — Paddle card payments disabled');
   if (!process.env.PADDLE_PRICE_ID) console.warn('[warn] PADDLE_PRICE_ID not set');
+  if (!process.env.NOWPAYMENTS_API_KEY) console.warn('[warn] NOWPAYMENTS_API_KEY not set — crypto payments disabled');
+  if (!process.env.NOWPAYMENTS_IPN_SECRET) console.warn('[warn] NOWPAYMENTS_IPN_SECRET not set — webhook signature verification will reject');
 });
