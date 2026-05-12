@@ -944,6 +944,10 @@ app.use('/weex-futures', requireAuth, createProxyMiddleware(proxyOpts('https://a
 app.use('/binance-futures', requireAuth, createProxyMiddleware(proxyOpts('https://fapi.binance.com', '/binance-futures')));
 
 // ── Claude API proxy ────────────────────────────────────────────────────────
+// Uses _anthropicFetchWithRetry under the hood: transient 529/503/429/overloaded_error
+// auto-retry with exponential backoff (2s → 5s → 12s) so manual AI Analyse doesn't
+// fail when Anthropic is saturated. Streaming is NOT supported here (we buffer the
+// full response to make retries safe) — the browser doesn't depend on streaming.
 app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req, res) => {
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(500).json({ error: 'anthropic_not_configured' });
@@ -953,34 +957,19 @@ app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req
     // browser sends. This prevents stale cached values in old browser tabs from
     // hitting the API with deprecated/incorrect model IDs after a model bump.
     const body = { ...req.body, model: AI_MODEL };
-    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    res.status(upstream.status);
-    upstream.headers.forEach((value, key) => {
-      const k = key.toLowerCase();
-      if (k === 'content-encoding' || k === 'content-length' || k === 'transfer-encoding' || k === 'connection') return;
-      res.setHeader(key, value);
-    });
-    if (!upstream.body) return res.end();
-    const reader = upstream.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
-      if (typeof res.flush === 'function') res.flush();
-    }
-    res.end();
+    // Force non-streaming so the retry helper can buffer the response
+    delete body.stream;
+    const d = await _anthropicFetchWithRetry(body);
+    res.status(200).json(d);
   } catch (err) {
-    console.error('[claude proxy]', err);
-    if (!res.headersSent) res.status(502).json({ error: 'upstream', detail: String(err?.message || err) });
-    else res.end();
+    console.error('[claude proxy]', err.message);
+    const status = err.status || 502;
+    if (!res.headersSent) {
+      res.status(status).json({
+        error: err.anthropicError ? err.anthropicError.type : 'upstream',
+        detail: String(err.message || err),
+      });
+    } else res.end();
   }
 });
 
@@ -4098,25 +4087,68 @@ async function fetchOpenInterestServer(coin) {
   } catch { return null; }
 }
 
+// Anthropic returns HTTP 529 + {"error":{"type":"overloaded_error"}} when their
+// infra is saturated. It's transient — retry with backoff. Also covers 503 and
+// rate-limit 429. Non-transient errors (4xx other than 429) fail immediately.
+function _isAnthropicOverload(status, body) {
+  if (status === 529 || status === 503 || status === 429) return true;
+  const t = body && body.error && body.error.type;
+  return t === 'overloaded_error' || t === 'rate_limit_error' || t === 'api_error';
+}
+const ANTHROPIC_RETRY_DELAYS_MS = [2000, 5000, 12000]; // 3 retries, ~20s total
+async function _anthropicFetchWithRetry(payload) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= ANTHROPIC_RETRY_DELAYS_MS.length; attempt++) {
+    let r, d;
+    try {
+      r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      d = await r.json();
+    } catch (netErr) {
+      lastErr = netErr;
+      if (attempt < ANTHROPIC_RETRY_DELAYS_MS.length) {
+        const delay = ANTHROPIC_RETRY_DELAYS_MS[attempt];
+        console.warn(`[anthropic] network error (attempt ${attempt + 1}), retrying in ${delay}ms:`, netErr.message);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw netErr;
+    }
+    if (r.ok && !d.error) return d;
+    // Retryable?
+    if (_isAnthropicOverload(r.status, d) && attempt < ANTHROPIC_RETRY_DELAYS_MS.length) {
+      const delay = ANTHROPIC_RETRY_DELAYS_MS[attempt];
+      const errType = d && d.error && d.error.type || ('http_' + r.status);
+      console.warn(`[anthropic] ${errType} (attempt ${attempt + 1}), retrying in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+    // Non-retryable or out of retries
+    const msg = (d && d.error && d.error.message) || `HTTP ${r.status}`;
+    const err = new Error(msg);
+    err.status = r.status;
+    err.anthropicError = d && d.error;
+    throw err;
+  }
+  throw lastErr || new Error('Anthropic retry loop exhausted');
+}
+
 // Direct Anthropic API call (bypasses /api/claude proxy — no cookie auth needed server-side).
 async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
-    }),
+  const d = await _anthropicFetchWithRetry({
+    model: AI_MODEL,
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userMessage }],
   });
-  const d = await r.json();
-  if (d.error) throw new Error(d.error.message || 'Anthropic API error');
   return (d.content && d.content[0] && d.content[0].text) || '';
 }
 
