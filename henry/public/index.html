@@ -908,13 +908,15 @@ function renderPairMonitor(data){
     box.addEventListener('mouseenter',function(){box.style.borderColor='var(--cy)';});
     box.addEventListener('mouseleave',function(){box.style.borderColor='var(--b1)';});
 
-    // Header: pair label + status badge
+    // Header: pair label + status badge + (when has signal) tiny close-x
     var lbl=p.coin.replace('USDT','').replace('1000','');
     var hdr=document.createElement('div');
-    hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px';
+    hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:4px';
     var name=document.createElement('span');
     name.style.cssText='font-weight:bold;letter-spacing:.05em;color:var(--fg)';
     name.textContent=lbl;
+    var rightWrap=document.createElement('span');
+    rightWrap.style.cssText='display:flex;align-items:center;gap:4px';
     var badge=document.createElement('span');
     badge.style.cssText='font-size:9px;padding:1px 6px;border-radius:2px;letter-spacing:.05em';
     var badgeColor='var(--mu)',badgeBg='rgba(255,255,255,0.04)',badgeBorder='var(--b1)',badgeText='IDLE';
@@ -927,7 +929,30 @@ function renderPairMonitor(data){
     else{badgeColor='var(--cy)';badgeBg='rgba(0,212,255,0.06)';badgeBorder='rgba(0,212,255,0.25)';badgeText='SCANNING';}
     badge.style.color=badgeColor;badge.style.background=badgeBg;badge.style.border='1px solid '+badgeBorder;
     badge.textContent=badgeText;
-    hdr.appendChild(name);hdr.appendChild(badge);
+    rightWrap.appendChild(badge);
+    // Force-close × — only when pair has an active signal in server memory.
+    // Clears server-side ps state so the mini-card stops showing IN TRADE
+    // when the server missed an exit (wick TP/SL between polls, manual close,
+    // etc.). Click event stops propagation so it doesn't focus the pair.
+    if(p.hasSignal){
+      var closeX=document.createElement('span');
+      closeX.style.cssText='font-size:11px;color:var(--mu);cursor:pointer;padding:0 4px;line-height:1;border-radius:2px;border:1px solid var(--b1);background:rgba(255,255,255,0.02)';
+      closeX.title='Force-close: clear server state for '+p.coin;
+      closeX.textContent='×';
+      closeX.addEventListener('mouseenter',function(){closeX.style.color='var(--re)';closeX.style.borderColor='rgba(255,68,102,0.4)';});
+      closeX.addEventListener('mouseleave',function(){closeX.style.color='var(--mu)';closeX.style.borderColor='var(--b1)';});
+      closeX.addEventListener('click',function(ev){
+        ev.stopPropagation();
+        if(!confirm('Force-close '+p.coin+' on the server?\n\nThis clears the pending signal in server memory. Use when the trade resolved (TP/SL) externally but the mini-card is stuck showing IN TRADE.'))return;
+        fetch('/api/scan/clear',{
+          method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({coin:p.coin})
+        }).then(function(){refreshPairMonitor();}).catch(function(){});
+      });
+      rightWrap.appendChild(closeX);
+    }
+    hdr.appendChild(name);hdr.appendChild(rightWrap);
     box.appendChild(hdr);
 
     // Price
@@ -4155,30 +4180,106 @@ function cancelEntryWatch(){
   }
 }
 
-function detectConfirmationPattern(candles,isLong){
-  if(!candles||candles.length<3)return null;
+// ICT + S/D entry confirmation detector.
+// Returns { confirmed:bool, score, hits:[{name,weight}], summary:string }.
+// Confirmed when score >= MIN_SCORE (default 4) and last candle closes on
+// the trade-correct side. One primary pattern (weight 3-4) is enough; two
+// secondaries (weight 2) stack to confirm.
+function detectICTSDConfirmation(candles,isLong){
+  var EMPTY={confirmed:false,score:0,hits:[],summary:'no pattern'};
+  if(!candles||candles.length<6)return EMPTY;
   var n=candles.length;
-  var last=candles[n-1],prev=candles[n-2],prev2=candles[n-3]||prev;
-  var lastBull=last.c>last.o;
-  var prevBull=prev.c>prev.o;
+  var last=candles[n-1],prev=candles[n-2];
+  var lastBull=last.c>last.o, prevBull=prev.c>prev.o;
   var lastBody=Math.abs(last.c-last.o);
   var prevBody=Math.abs(prev.c-prev.o);
-  var lastRange=last.h-last.l||0.001;
-  var lastUp=last.h-Math.max(last.c,last.o);
-  var lastDown=Math.min(last.c,last.o)-last.l;
-  var avgVol2=candles.slice(-5).reduce(function(s,c){return s+c.v;},0)/5||1;
-  if(isLong){
-    if(lastBull&&!prevBull&&last.c>prev.o&&last.o<prev.c&&lastBody>prevBody)return 'Bullish engulfing';
-    if(lastDown>lastBody*2.5&&lastUp<lastBody&&lastDown>lastRange*0.5)return 'Hammer/pin bar';
-    if(last.c>prev.h&&last.v>avgVol2*1.2)return 'Micro bullish BOS';
-    if(lastBody<lastRange*0.1&&lastDown>lastRange*0.4&&last.v>avgVol2)return 'Bullish doji reversal';
-  } else {
-    if(!lastBull&&prevBull&&last.c<prev.o&&last.o>prev.c&&lastBody>prevBody)return 'Bearish engulfing';
-    if(lastUp>lastBody*2.5&&lastDown<lastBody&&lastUp>lastRange*0.5)return 'Shooting star/pin bar';
-    if(last.c<prev.l&&last.v>avgVol2*1.2)return 'Micro bearish BOS';
-    if(lastBody<lastRange*0.1&&lastUp>lastRange*0.4&&last.v>avgVol2)return 'Bearish doji reversal';
+  var lastRange=Math.max(last.h-last.l,1e-9);
+  var upWick=last.h-Math.max(last.c,last.o);
+  var dnWick=Math.min(last.c,last.o)-last.l;
+  var medRange=(function(){
+    var sl=candles.slice(-Math.min(20,n)).map(function(c){return c.h-c.l;}).sort(function(a,b){return a-b;});
+    return sl[Math.floor(sl.length/2)]||lastRange;
+  })();
+  var avgVol5=candles.slice(-5).reduce(function(s,c){return s+(c.v||0);},0)/5||1;
+  var hits=[];
+  function add(name,weight){hits.push({name:name,weight:weight});}
+
+  // Side gate: last close must be on the trade-correct side of the prior close.
+  // Avoids firing on a wick that hasn't actually flipped intent yet.
+  var sideOk=isLong?last.c>=prev.c:last.c<=prev.c;
+
+  // 1. LTF MSS + Displacement (PRIMARY, w=4)
+  // close clears 5-bar swing extreme + body >= 60% of range + range >= 1.3 * median
+  var prev5=candles.slice(-6,-1);
+  var swingHi=Math.max.apply(null,prev5.map(function(c){return c.h;}));
+  var swingLo=Math.min.apply(null,prev5.map(function(c){return c.l;}));
+  var bodyPct=lastBody/lastRange;
+  var rangeMul=lastRange/medRange;
+  if(isLong&&last.c>swingHi&&bodyPct>=0.6&&rangeMul>=1.3)add('LTF MSS+disp',4);
+  else if(!isLong&&last.c<swingLo&&bodyPct>=0.6&&rangeMul>=1.3)add('LTF MSS+disp',4);
+
+  // 2. FVG retest in last 6 bars (PRIMARY, w=3)
+  // bullish FVG = candle[i-2].h < candle[i].l ; price now retesting top of gap
+  for(var i=n-1;i>=Math.max(2,n-6);i--){
+    var a=candles[i-2],b=candles[i];
+    if(isLong&&a.h<b.l){
+      // current candle dipped into FVG zone (low <= gap top) and closed up
+      if(last.l<=b.l&&lastBull){add('FVG retest',3);break;}
+    } else if(!isLong&&a.l>b.h){
+      if(last.h>=b.h&&!lastBull){add('FVG retest',3);break;}
+    }
   }
-  return null;
+
+  // 3. Liquidity sweep + reclaim (PRIMARY, w=3)
+  // wick takes out 8-bar swing low/high then closes back inside with correct body
+  var prev8=candles.slice(-9,-1);
+  if(prev8.length){
+    var sLo=Math.min.apply(null,prev8.map(function(c){return c.l;}));
+    var sHi=Math.max.apply(null,prev8.map(function(c){return c.h;}));
+    if(isLong&&last.l<sLo&&last.c>sLo&&lastBull)add('Sweep+reclaim',3);
+    else if(!isLong&&last.h>sHi&&last.c<sHi&&!lastBull)add('Sweep+reclaim',3);
+  }
+
+  // 4. Engulfing (PRIMARY, w=2)
+  if(isLong&&lastBull&&!prevBull&&last.c>prev.o&&last.o<prev.c&&lastBody>prevBody)add('Bullish engulfing',2);
+  else if(!isLong&&!lastBull&&prevBull&&last.c<prev.o&&last.o>prev.c&&lastBody>prevBody)add('Bearish engulfing',2);
+
+  // 5. Pin bar / hammer (PRIMARY, w=2)
+  if(isLong&&dnWick>=2*lastBody&&upWick<lastBody&&dnWick>=0.5*lastRange)add('Hammer/pin',2);
+  else if(!isLong&&upWick>=2*lastBody&&dnWick<lastBody&&upWick>=0.5*lastRange)add('Shooting star',2);
+
+  // 6. Micro BOS w/ volume (SECONDARY, w=2) — only if MSS hasn't already fired
+  var hasMSS=hits.some(function(h){return h.name==='LTF MSS+disp';});
+  if(!hasMSS){
+    if(isLong&&last.c>prev.h&&(last.v||0)>avgVol5*1.2)add('Micro BOS',2);
+    else if(!isLong&&last.c<prev.l&&(last.v||0)>avgVol5*1.2)add('Micro BOS',2);
+  }
+
+  // 7. OTE confluence (CONFLUENCE, w=1) — last 20-bar impulse leg
+  var win=candles.slice(-20);
+  if(win.length>=10){
+    var hi=Math.max.apply(null,win.map(function(c){return c.h;}));
+    var lo=Math.min.apply(null,win.map(function(c){return c.l;}));
+    if(hi>lo){
+      var range=hi-lo;
+      var pos=(last.c-lo)/range; // 0 at low, 1 at high
+      // For long: trade is in discount; we want pullback into 0.21-0.38 zone (62-79% from high)
+      if(isLong&&pos>=0.21&&pos<=0.38)add('OTE 62-79%',1);
+      else if(!isLong&&pos>=0.62&&pos<=0.79)add('OTE 62-79%',1);
+    }
+  }
+
+  var score=hits.reduce(function(s,h){return s+h.weight;},0);
+  var MIN_SCORE=4;
+  var confirmed=sideOk&&score>=MIN_SCORE;
+  var summary=hits.length?hits.map(function(h){return h.name;}).join(' + '):'no pattern';
+  return {confirmed:confirmed,score:score,hits:hits,summary:summary,sideOk:sideOk};
+}
+
+// Back-compat shim: returns the strongest pattern name when confirmed, null otherwise.
+function detectConfirmationPattern(candles,isLong){
+  var r=detectICTSDConfirmation(candles,isLong);
+  return r.confirmed?r.summary:null;
 }
 
 function checkEntryConfirmation(sig){
@@ -4194,24 +4295,35 @@ function checkEntryConfirmation(sig){
   if(updateEl)updateEl.textContent='Price: '+fp(cp)+' | '+(inZone?'IN ZONE — watching for pattern':'Waiting for price to reach zone ('+fp(zoneBot)+'-'+fp(zoneTop)+')');
   if(!inZone)return;
 
-  // Use henry proxies for 1m candles
+  // Fetch 1m + 5m candles for detector. Routes:
+  //   binance       → fapi/v1/klines
+  //   massive/gold  → /api/gold/candles  (Polygon C:XAUUSD aggregates)
+  //   weex (default)→ capi/v2/market/historyCandles
   var bsym=BINANCE_SYM[coin]||coin;
   var fsym=FUTURES_SYM[coin]||('cmt_'+coin.toLowerCase());
+  var isGold=activeBroker==='massive'||coin==='GOLD'||coin==='XAUUSD';
+  function _mapGold(d){return (d&&d.candles||[]).map(function(k){return{t:parseInt(k.time)*1000,o:parseFloat(k.o),h:parseFloat(k.h),l:parseFloat(k.l),c:parseFloat(k.c),v:parseFloat(k.v||0)};});}
   var p1m,p5m;
-  if(activeBroker==='binance'){
-    p1m=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=1m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
-    p5m=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=5m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+  if(isGold){
+    p1m=fetch('/api/gold/candles?interval=1m&limit=30',{credentials:'include'}).then(function(r){return r.json();}).then(_mapGold).catch(function(){return [];});
+    p5m=fetch('/api/gold/candles?interval=5m&limit=30',{credentials:'include'}).then(function(r){return r.json();}).then(function(d){return _mapGold(d);}).catch(function(){return [];});
+  } else if(activeBroker==='binance'){
+    p1m=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=1m&limit=30').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+    p5m=fetch(BINANCE_BASE+'/fapi/v1/klines?symbol='+bsym+'&interval=5m&limit=30').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
   } else {
-    p1m=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=1m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
-    p5m=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=5m&limit=20').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+    p1m=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=1m&limit=30').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
+    p5m=fetch(FUTURES_BASE+'/capi/v2/market/historyCandles?symbol='+fsym+'&granularity=5m&limit=30').then(function(r){return r.json();}).then(function(d){return d.map(function(k){return{t:parseInt(k[0]),o:parseFloat(k[1]),h:parseFloat(k[2]),l:parseFloat(k[3]),c:parseFloat(k[4]),v:parseFloat(k[5])};});}).catch(function(){return [];});
   }
   Promise.all([p1m,p5m]).then(function(results){
     var c1m=results[0]||[],c5m=results[1]||[];
-    var pattern1m=detectConfirmationPattern(c1m,isLong);
-    var pattern5m=detectConfirmationPattern(c5m,isLong);
-    var confirmed=pattern1m||pattern5m;
-    if(updateEl)updateEl.textContent=(pattern1m?'1m: '+pattern1m:'1m: no pattern')+' | '+(pattern5m?'5m: '+pattern5m:'5m: no pattern');
-    if(confirmed&&window._entryWatchSig){
+    var r1m=detectICTSDConfirmation(c1m,isLong);
+    var r5m=detectICTSDConfirmation(c5m,isLong);
+    // Pick whichever fires; prefer 1m for tighter confirmation
+    var picked=r1m.confirmed?{r:r1m,tf:'1m'}:(r5m.confirmed?{r:r5m,tf:'5m'}:null);
+    if(updateEl){
+      updateEl.textContent='1m['+r1m.score+']: '+r1m.summary+'  |  5m['+r5m.score+']: '+r5m.summary;
+    }
+    if(picked&&window._entryWatchSig){
       var confirmedSig=JSON.parse(JSON.stringify(window._entryWatchSig));
       stopEntryWatch();
       window._entryWatchSig=null;
@@ -4221,24 +4333,20 @@ function checkEntryConfirmation(sig){
       var e2=refinedEntry,sl2=parseFloat(confirmedSig.sl),tp2=parseFloat(confirmedSig.tp);
       if(isLong&&sl2<e2&&tp2>e2)confirmedSig.rr=parseFloat(((tp2-e2)/(e2-sl2)).toFixed(2));
       else if(!isLong&&sl2>e2&&tp2<e2)confirmedSig.rr=parseFloat(((e2-tp2)/(sl2-e2)).toFixed(2));
-      confirmedSig.entry_reason=((confirmedSig.entry_reason||'').split(' | CONFIRMED:')[0])+' | CONFIRMED: '+confirmed+' on '+(pattern1m?'1m':'5m')+' @ '+fp(cp)+' (refined from '+fp(originalEntry)+')';
+      var label=picked.r.summary+' (score '+picked.r.score+', '+picked.tf+')';
+      confirmedSig.entry_reason=((confirmedSig.entry_reason||'').split(' | CONFIRMED:')[0])+' | CONFIRMED: '+label+' @ '+fp(cp)+' (refined from '+fp(originalEntry)+')';
       confirmedSig._confirmed=true;
       var watchDiv=document.getElementById('entry-watch-status');if(watchDiv)watchDiv.remove();
       _drawSigCard(confirmedSig);
-      triggerAlert('ENTRY CONFIRMED',coin+' '+confirmedSig.direction+' — '+confirmed+' on '+(pattern1m?'1m':'5m')+'. Refined: '+fp(refinedEntry),'var(--gr)',true);
+      triggerAlert('ENTRY CONFIRMED',coin+' '+confirmedSig.direction+' — '+label+'. Refined: '+fp(refinedEntry),'var(--gr)',true);
     }
   }).catch(function(){});
 }
 
 function startEntryWatch(sig){
   if(!sig||sig.direction==='NO TRADE')return;
-  // Gold uses Polygon — no 1m Binance/Weex futures data available for confirmation.
-  // Render the card immediately; monitoring works fine via the Polygon 10s poll.
-  if(activeBroker==='massive'||coin==='GOLD'){
-    sig._confirmed=true;
-    _drawSigCard(sig);
-    return;
-  }
+  // Gold (Polygon) goes through the same watcher — /api/gold/candles
+  // exposes 1m + 5m C:XAUUSD aggregates so the detector works identically.
   _entryWatchActive=true;
   window._entryWatchSig=sig;
   var isLong=sig.direction==='LONG';

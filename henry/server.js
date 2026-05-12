@@ -994,14 +994,17 @@ async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr, 
     return;
   }
 
-  // Post journal on first outcome assignment OR when we just backfilled
-  if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE')) {
+  // Post journal on first outcome assignment OR when we just backfilled.
+  // EXPIRED is included so unfilled signals show up in the journal feed,
+  // but circuit-breaker recording stays gated to TP/SL/BE only (expiry isn't
+  // a P/L event — should never contribute to a "losing streak" pause).
+  if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE' || outcome === 'EXPIRED')) {
     const stats = await getUserStats(userId).catch(() => null);
     postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
       .catch(e => console.error('[journal post]', e.message));
     // Record into circuit breaker history (only on first outcome) so losing
     // streaks pause future scans automatically.
-    if (signalForJournal && signalForJournal.pair) {
+    if (signalForJournal && signalForJournal.pair && outcome !== 'EXPIRED') {
       recordOutcomeForCircuitBreaker(userId, signalForJournal.pair, outcome);
     }
   }
@@ -1036,11 +1039,12 @@ async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
     console.warn('[journal] no signal data passed — skipping post');
     return;
   }
-  const isWin = outcome === 'TP';
-  const isBE  = outcome === 'BE';
-  const outcomeEmoji = isWin ? '🟢' : isBE ? '🟡' : '🔴';
-  const outcomeLabel = isWin ? 'TAKE PROFIT' : isBE ? 'BREAKEVEN' : 'STOP LOSS';
-  const rrDisplay = isWin ? `+${outcomeRr ?? signal.rr ?? '—'}R` : isBE ? '0R' : '-1R';
+  const isWin     = outcome === 'TP';
+  const isBE      = outcome === 'BE';
+  const isExpired = outcome === 'EXPIRED';
+  const outcomeEmoji = isWin ? '🟢' : isBE ? '🟡' : isExpired ? '⚪' : '🔴';
+  const outcomeLabel = isWin ? 'TAKE PROFIT' : isBE ? 'BREAKEVEN' : isExpired ? 'EXPIRED (no entry)' : 'STOP LOSS';
+  const rrDisplay = isWin ? `+${outcomeRr ?? signal.rr ?? '—'}R` : isBE ? '0R' : isExpired ? '0R (unfilled)' : '-1R';
   const fields = [
     { name: 'Pair',       value: `\`${signal.pair || '—'}\``,                  inline: true },
     { name: 'Direction',  value: `\`${signal.direction || '—'}\``,             inline: true },
@@ -1064,7 +1068,7 @@ async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
     description: (signal.entry_reason ? `**Entry:** ${signal.entry_reason}\n` : '')
       + (reasoning ? `${reasoning}${reasoning.length === 200 ? '...' : ''}\n` : '')
       + statsText,
-    color: isWin ? 3066993 : isBE ? 16776960 : 15548997,
+    color: isWin ? 3066993 : isBE ? 16776960 : isExpired ? 8421504 : 15548997,
     fields,
     footer: {
       text: `Henry Journal | ${signal.broker || ''}${signal.timeframe ? ' | ' + signal.timeframe : ''} | ${new Date().toUTCString()}`,
@@ -1212,16 +1216,20 @@ app.get('/api/performance/dashboard', requireAuth, async (req, res) => {
     const rows = data || [];
     console.log('[dashboard]', req.user.email, 'total signals=' + (totalAllSignals || 0), 'with outcome=' + rows.length);
 
-    // ── Helper: aggregate a row group into { tp, sl, be, total, winRate, totalR, expectancy } ──
+    // ── Helper: aggregate a row group into { tp, sl, be, expired, total, winRate, totalR, expectancy } ──
+    // `total` = filled outcomes (tp+sl+be). EXPIRED is tracked separately so
+    // win-rate/expectancy stay clean while unfilled signals still appear on
+    // the dashboard and don't silently vanish.
     function agg(group) {
       const tp = group.filter(s => s.outcome === 'TP').length;
       const sl = group.filter(s => s.outcome === 'SL').length;
       const be = group.filter(s => s.outcome === 'BE').length;
+      const expired = group.filter(s => s.outcome === 'EXPIRED').length;
       const total = tp + sl + be;
       const totalR = group.reduce((s, x) => s + (parseFloat(x.outcome_rr) || 0), 0);
       const winRate = total ? +(((tp + be * 0.5) / total) * 100).toFixed(1) : 0;
       const expectancy = total ? +(totalR / total).toFixed(2) : 0;
-      return { tp, sl, be, total, totalR: +totalR.toFixed(2), winRate, expectancy };
+      return { tp, sl, be, expired, total, totalR: +totalR.toFixed(2), winRate, expectancy };
     }
 
     // ── Group helpers ──
@@ -1260,7 +1268,7 @@ app.get('/api/performance/dashboard', requireAuth, async (req, res) => {
     const byHour = {};
     for (let h = 0; h < 24; h++) {
       const key = String(h).padStart(2, '0');
-      byHour[key] = byHourRaw[key] ? agg(byHourRaw[key]) : { tp: 0, sl: 0, be: 0, total: 0, totalR: 0, winRate: 0, expectancy: 0 };
+      byHour[key] = byHourRaw[key] ? agg(byHourRaw[key]) : { tp: 0, sl: 0, be: 0, expired: 0, total: 0, totalR: 0, winRate: 0, expectancy: 0 };
     }
 
     // Cumulative R over time
@@ -1845,6 +1853,15 @@ function getPairState(sub, coin) {
       pendSignal: null, signalId: null, signalTimestamp: null,
       _entryAlerted: false, _beAlerted: false, _tpAlerted: false, _expiryAlerted: false,
       _outcomeLogged: false,
+      // Entry-confirmation state (ICT/S&D candle-pattern gate before ENTRY HIT)
+      _zoneFirstTouchAt: 0,    // ms when price first entered ±0.3% entry zone
+      _confirmFailedAt: 0,     // ms last time confirmation check ran without firing
+      _confirmAttempts: 0,
+      // Synchronous in-flight lock — set TRUE the moment a scan tick enters
+      // the analysis branch (before any await). Prevents a second 30s tick
+      // from racing into AI on the same trigger while the first is mid-flight.
+      _scanInFlight: false,
+      _scanLockAt: 0,
       lastPrice: null,
       lastTrigger: null,
       lastStatus: 'idle', // 'idle' | 'scanning' | 'cooldown' | 'waiting' | 'in-trade'
@@ -1861,6 +1878,11 @@ function clearPairState(ps) {
   ps._tpAlerted = false;
   ps._expiryAlerted = false;
   ps._outcomeLogged = false;
+  ps._zoneFirstTouchAt = 0;
+  ps._confirmFailedAt = 0;
+  ps._confirmAttempts = 0;
+  ps._scanInFlight = false;
+  ps._scanLockAt = 0;
   ps.lastStatus = 'idle';
 }
 
@@ -1873,23 +1895,53 @@ app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
   const recentOutcomes = prev?.recentOutcomes && prev.recentOutcomes.length
     ? prev.recentOutcomes
     : await loadRecentOutcomes(req.user.id);
+  // isAdmin: trust either the profile flag OR an exact email match against
+  // ADMIN_EMAIL. The DB profile.is_admin column can legitimately be null/
+  // false even for the ADMIN_EMAIL account (e.g. profile row was inserted
+  // by /api/auth/register before the admin flag was set), and that silently
+  // blocks postAlertToDiscord — so push fires but TP/SL/BE/ENTRY HIT alerts
+  // never reach Discord. Mirror the fallback used in requireAdmin.
+  const adminEmail = (req.user.email || '').toLowerCase();
+  const isAdminSub = !!req.profile?.is_admin || adminEmail === ADMIN_EMAIL;
   scanSubscriptions.set(req.user.id, {
     active: true, coin, tf, broker: broker || 'weex',
     cooldownMs: cooldownMs || 180000,
     watchlist: Array.isArray(watchlist) ? watchlist : [],
-    isAdmin: !!req.profile.is_admin,
+    isAdmin: isAdminSub,
     pairs: prev?.pairs || {},
     recentOutcomes,
   });
   res.json({ ok: true });
 });
 
-// Update watchlist on the fly without restarting the scan
+// Update watchlist on the fly without restarting the scan.
+// Also prunes leftover sub.pairs[] entries for coins no longer in the
+// watchlist so the LIVE PAIR STATUS grid doesn't keep showing them with
+// stale "SCANNING" badges. Pairs with an active pending signal are
+// preserved — we don't drop monitoring of an open trade just because the
+// user unticked the pair from the watchlist (the trade plays out to
+// TP/SL/BE/expiry naturally, then state clears).
 app.post('/api/scan/update-watchlist', requireAuth, express.json(), (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (!sub) return res.status(404).json({ error: 'no_scan_session' });
   sub.watchlist = Array.isArray(req.body?.watchlist) ? req.body.watchlist : [];
-  res.json({ ok: true, count: sub.watchlist.length });
+  // Prune stale per-pair state for coins that were removed.
+  let pruned = 0;
+  if (sub.pairs) {
+    const keep = new Set(sub.watchlist);
+    for (const coin of Object.keys(sub.pairs)) {
+      if (keep.has(coin)) continue;
+      const ps = sub.pairs[coin];
+      // Preserve pairs with an in-flight signal so the monitor still
+      // resolves entry/BE/TP/SL/expiry. Once cleared, the next call to
+      // this endpoint (or a stop/start cycle) will drop them.
+      if (ps && ps.pendSignal) continue;
+      delete sub.pairs[coin];
+      pruned++;
+    }
+  }
+  if (pruned) console.log('[update-watchlist]', req.user.email || req.user.id, 'pruned', pruned, 'stale pair(s)');
+  res.json({ ok: true, count: sub.watchlist.length, pruned });
 });
 
 // Returns the focused pair's pending signal if the server-side AI generated one.
@@ -1975,11 +2027,18 @@ async function getUserPairStats(userId) {
 app.get('/api/scan/all-pairs', requireAuth, async (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (!sub) return res.json({ active: false, pairs: [] });
-  // Pairs to report on: union of watchlist + any pair that has state (e.g. signal active)
-  const pairCoins = new Set([
-    ...(sub.watchlist || []),
-    ...(sub.pairs ? Object.keys(sub.pairs) : []),
-  ]);
+  // Pairs to report on: every watchlist coin, plus any non-watchlist coin
+  // that has an in-flight signal (so an open trade on a just-untiked pair
+  // still surfaces until it resolves). Idle leftover state on dropped pairs
+  // is filtered out so the grid stays in sync with the user's selection.
+  const watchSet = new Set(sub.watchlist || []);
+  const pairCoins = new Set(watchSet);
+  if (sub.pairs) {
+    for (const [coin, ps] of Object.entries(sub.pairs)) {
+      if (watchSet.has(coin)) continue;
+      if (ps && ps.pendSignal) pairCoins.add(coin);
+    }
+  }
   if (!pairCoins.size && sub.coin) pairCoins.add(sub.coin);
 
   // Pre-fetch the cached pair stats once for all pairs in this response
@@ -2118,6 +2177,110 @@ async function notifyUser(userId, isAdmin, { title, body, color, data }) {
   await postAlertToDiscord(title, body, color || 'cy', isAdmin);
 }
 
+// ICT + S/D entry confirmation detector — mirror of public/index.html's
+// detectICTSDConfirmation. Operates on a slice of LTF candles (1m or 5m).
+// Returns { confirmed, score, hits[], summary, sideOk }.
+//
+// Patterns + weights (one primary 3-4 OR two secondaries weight ≥2 → confirm):
+//   • LTF MSS + Displacement     primary  4
+//   • FVG retest in last 6 bars  primary  3
+//   • Sweep + reclaim            primary  3
+//   • Engulfing                  primary  2
+//   • Pin bar / hammer           primary  2
+//   • Micro BOS w/ volume        secondary 2  (skipped if MSS already fired)
+//   • OTE 62-79% confluence      confluence 1
+//
+// Side gate: last close must be on the trade-correct side of prior close.
+// MIN_SCORE: 4. Confirmed = sideOk && score >= 4.
+function detectICTSDConfirmationServer(candles, isLong) {
+  const EMPTY = { confirmed: false, score: 0, hits: [], summary: 'no pattern', sideOk: false };
+  if (!candles || candles.length < 6) return EMPTY;
+  const n = candles.length;
+  const last = candles[n - 1], prev = candles[n - 2];
+  const lastBull = last.c > last.o, prevBull = prev.c > prev.o;
+  const lastBody = Math.abs(last.c - last.o);
+  const prevBody = Math.abs(prev.c - prev.o);
+  const lastRange = Math.max(last.h - last.l, 1e-9);
+  const upWick = last.h - Math.max(last.c, last.o);
+  const dnWick = Math.min(last.c, last.o) - last.l;
+  const recent = candles.slice(-Math.min(20, n));
+  const ranges = recent.map(c => c.h - c.l).sort((a, b) => a - b);
+  const medRange = ranges[Math.floor(ranges.length / 2)] || lastRange;
+  const avgVol5 = candles.slice(-5).reduce((s, c) => s + (c.v || 0), 0) / 5 || 1;
+  const hits = [];
+  const add = (name, weight) => hits.push({ name, weight });
+
+  const sideOk = isLong ? last.c >= prev.c : last.c <= prev.c;
+
+  // 1. LTF MSS + Displacement
+  const prev5 = candles.slice(-6, -1);
+  const swingHi = Math.max(...prev5.map(c => c.h));
+  const swingLo = Math.min(...prev5.map(c => c.l));
+  const bodyPct = lastBody / lastRange;
+  const rangeMul = lastRange / medRange;
+  if (isLong && last.c > swingHi && bodyPct >= 0.6 && rangeMul >= 1.3) add('LTF MSS+disp', 4);
+  else if (!isLong && last.c < swingLo && bodyPct >= 0.6 && rangeMul >= 1.3) add('LTF MSS+disp', 4);
+
+  // 2. FVG retest in last 6 bars
+  for (let i = n - 1; i >= Math.max(2, n - 6); i--) {
+    const a = candles[i - 2], b = candles[i];
+    if (isLong && a.h < b.l) {
+      if (last.l <= b.l && lastBull) { add('FVG retest', 3); break; }
+    } else if (!isLong && a.l > b.h) {
+      if (last.h >= b.h && !lastBull) { add('FVG retest', 3); break; }
+    }
+  }
+
+  // 3. Liquidity sweep + reclaim
+  const prev8 = candles.slice(-9, -1);
+  if (prev8.length) {
+    const sLo = Math.min(...prev8.map(c => c.l));
+    const sHi = Math.max(...prev8.map(c => c.h));
+    if (isLong && last.l < sLo && last.c > sLo && lastBull) add('Sweep+reclaim', 3);
+    else if (!isLong && last.h > sHi && last.c < sHi && !lastBull) add('Sweep+reclaim', 3);
+  }
+
+  // 4. Engulfing
+  if (isLong && lastBull && !prevBull && last.c > prev.o && last.o < prev.c && lastBody > prevBody) add('Bullish engulfing', 2);
+  else if (!isLong && !lastBull && prevBull && last.c < prev.o && last.o > prev.c && lastBody > prevBody) add('Bearish engulfing', 2);
+
+  // 5. Pin bar / hammer
+  if (isLong && dnWick >= 2 * lastBody && upWick < lastBody && dnWick >= 0.5 * lastRange) add('Hammer/pin', 2);
+  else if (!isLong && upWick >= 2 * lastBody && dnWick < lastBody && upWick >= 0.5 * lastRange) add('Shooting star', 2);
+
+  // 6. Micro BOS w/ volume (skip if MSS already fired)
+  const hasMSS = hits.some(h => h.name === 'LTF MSS+disp');
+  if (!hasMSS) {
+    if (isLong && last.c > prev.h && (last.v || 0) > avgVol5 * 1.2) add('Micro BOS', 2);
+    else if (!isLong && last.c < prev.l && (last.v || 0) > avgVol5 * 1.2) add('Micro BOS', 2);
+  }
+
+  // 7. OTE confluence (last 20-bar dealing range)
+  const win = candles.slice(-20);
+  if (win.length >= 10) {
+    const hi = Math.max(...win.map(c => c.h));
+    const lo = Math.min(...win.map(c => c.l));
+    if (hi > lo) {
+      const pos = (last.c - lo) / (hi - lo); // 0 at low, 1 at high
+      if (isLong && pos >= 0.21 && pos <= 0.38) add('OTE 62-79%', 1);
+      else if (!isLong && pos >= 0.62 && pos <= 0.79) add('OTE 62-79%', 1);
+    }
+  }
+
+  const score = hits.reduce((s, h) => s + h.weight, 0);
+  const MIN_SCORE = 4;
+  const confirmed = sideOk && score >= MIN_SCORE;
+  const summary = hits.length ? hits.map(h => h.name).join(' + ') : 'no pattern';
+  return { confirmed, score, hits, summary, sideOk };
+}
+
+// 2-hour fallback for confirmation watch — after this, server fires ENTRY HIT
+// even without a confirming pattern (so the trade isn't lost forever if the
+// micro-pattern never appears). Marked as UNCONFIRMED in the alert.
+const ENTRY_CONFIRM_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+// Zone width ±0.3% of entry — must match browser watcher.
+const ENTRY_CONFIRM_ZONE_PCT = 0.003;
+
 async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverride) {
   const { tf, isAdmin } = sub;
   // Route to the pair's appropriate broker (GOLD → massive, others → user choice)
@@ -2129,42 +2292,137 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
   const e = parseFloat(pendSignal.entry), slP = parseFloat(pendSignal.sl), tpP = parseFloat(pendSignal.tp);
   const isLong = pendSignal.direction === 'LONG';
 
-  // Entry hit
-  const entryHit = isLong ? price <= e : price >= e;
-  if (entryHit && !ps._entryAlerted) {
-    ps._entryAlerted = true;
-    ps._expiryAlerted = true;
-    ps.lastStatus = 'in-trade';
-    await notifyUser(userId, isAdmin, {
-      title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-      body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
-      color: 'cy',
-    });
+  // ── Wick-aware extremes since the last monitor tick ──
+  // Point-in-time price polling misses brief wicks that touch TP/SL/BE and
+  // revert before the next 30s poll. We pull the most recent 1m candles
+  // (cheap) and use their high/low alongside the current price so a wick
+  // that closes the trade in real time still registers server-side.
+  // recentHigh = effective high since ~2 minutes ago including current tick.
+  // recentLow  = effective low  since ~2 minutes ago including current tick.
+  let recentHigh = price, recentLow = price;
+  if (ps._entryAlerted) {
+    try {
+      const recent = await fetchCandlesServer(coin, '1m', 3, broker);
+      if (Array.isArray(recent) && recent.length) {
+        for (const c of recent) {
+          if (c.h > recentHigh) recentHigh = c.h;
+          if (c.l < recentLow)  recentLow  = c.l;
+        }
+      }
+    } catch { /* fall back to point-in-time price */ }
   }
 
-  // BE
+  // ── Entry confirmation gate (ICT/S&D micro-patterns on 1m+5m) ──
+  // Gold (Polygon/massive) goes through the same gate as crypto — Polygon's
+  // aggregates API exposes 1m + 5m for C:XAUUSD natively (see POLY_TF), and
+  // fetchCandlesServer routes that through transparently.
+  // Bypassed only when pendSignal._confirmed === true (browser already
+  // ran the watcher before POSTing the signal).
+  // Otherwise: wait until price enters ±0.3% of entry, then on each tick
+  // pull 1m+5m candles and only fire ENTRY HIT when detector confirms.
+  // After ENTRY_CONFIRM_TIMEOUT_MS (2h) inside zone, fire as UNCONFIRMED so
+  // we never miss the trade if the pattern doesn't print.
+  if (!ps._entryAlerted) {
+    const zoneTop = e * (1 + ENTRY_CONFIRM_ZONE_PCT);
+    const zoneBot = e * (1 - ENTRY_CONFIRM_ZONE_PCT);
+    const inZone = price >= zoneBot && price <= zoneTop;
+    const browserConfirmed = pendSignal && pendSignal._confirmed === true;
+
+    // Touched-entry without zone (price overshot directly).
+    const touchedEntry = isLong ? price <= e : price >= e;
+
+    if (browserConfirmed) {
+      // Bypass path — browser already confirmed; just wait for price-touch.
+      if (touchedEntry) {
+        ps._entryAlerted = true;
+        ps._expiryAlerted = true;
+        ps.lastStatus = 'in-trade';
+        await notifyUser(userId, isAdmin, {
+          title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+          body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
+          color: 'cy',
+        });
+      }
+    } else if (inZone || touchedEntry) {
+      if (!ps._zoneFirstTouchAt) ps._zoneFirstTouchAt = Date.now();
+      const elapsed = Date.now() - ps._zoneFirstTouchAt;
+
+      // Throttle confirmation checks: at most once per 60s per pair, since
+      // 1m candles only update every 60s anyway.
+      const now = Date.now();
+      const okToCheck = now - (ps._confirmFailedAt || 0) >= 60_000;
+
+      if (okToCheck) {
+        ps._confirmAttempts = (ps._confirmAttempts || 0) + 1;
+        const [c1m, c5m] = await Promise.all([
+          fetchCandlesServer(coin, '1m', 30, broker).catch(() => []),
+          fetchCandlesServer(coin, '5m', 30, broker).catch(() => []),
+        ]);
+        const r1m = detectICTSDConfirmationServer(c1m, isLong);
+        const r5m = detectICTSDConfirmationServer(c5m, isLong);
+        const picked = r1m.confirmed ? { r: r1m, tf: '1m' } : (r5m.confirmed ? { r: r5m, tf: '5m' } : null);
+
+        if (picked) {
+          ps._entryAlerted = true;
+          ps._expiryAlerted = true;
+          ps.lastStatus = 'in-trade';
+          const label = `${picked.r.summary} (score ${picked.r.score}, ${picked.tf})`;
+          console.log('[entry-confirm]', coin, 'CONFIRMED:', label, 'price=' + price);
+          await notifyUser(userId, isAdmin, {
+            title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+            body: `Entry filled @ ${price} — confirmed by ${label}. Trade is now ACTIVE.`,
+            color: 'cy',
+          });
+        } else if (elapsed >= ENTRY_CONFIRM_TIMEOUT_MS) {
+          // Fallback: 2h elapsed, fire anyway as UNCONFIRMED so trade isn't lost
+          ps._entryAlerted = true;
+          ps._expiryAlerted = true;
+          ps.lastStatus = 'in-trade';
+          console.log('[entry-confirm]', coin, 'TIMEOUT — firing unconfirmed', 'attempts=' + ps._confirmAttempts);
+          await notifyUser(userId, isAdmin, {
+            title: `🎯 ENTRY HIT (UNCONFIRMED): ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+            body: `Entry @ ${price}. 2h confirmation window elapsed — no qualifying ICT/S&D pattern fired. Trade is ACTIVE.`,
+            color: 'am',
+          });
+        } else {
+          ps._confirmFailedAt = now;
+          ps.lastStatus = 'waiting'; // still watching for confirmation
+          // Quiet log so we can debug in Railway logs without spamming Discord
+          console.log('[entry-confirm]', coin, 'waiting',
+            `1m[${r1m.score}]:${r1m.summary} | 5m[${r5m.score}]:${r5m.summary}`,
+            'elapsed=' + Math.round(elapsed / 1000) + 's');
+        }
+      }
+    }
+  }
+
+  // BE — uses recentHigh (LONG) / recentLow (SHORT) so a wick that briefly
+  // tags the BE level between polls still fires the alert.
   if (ps._entryAlerted && !ps._beAlerted) {
     const bePrice = isLong ? e + (tpP - e) * BE_TRIGGER_PCT : e - (e - tpP) * BE_TRIGGER_PCT;
-    const beReached = isLong ? price >= bePrice : price <= bePrice;
+    const beReached = isLong ? recentHigh >= bePrice : recentLow <= bePrice;
     if (beReached) {
       ps._beAlerted = true;
       await notifyUser(userId, isAdmin, {
         title: '⚑ MOVE SL TO BREAKEVEN',
-        body: `${coin.replace('USDT', '')} reached BE @ ${price.toFixed(2)}. Move SL to ${e}.`,
+        body: `${coin.replace('USDT', '')} reached BE @ ${(isLong ? recentHigh : recentLow).toFixed(2)}. Move SL to ${e}.`,
         color: 'am',
       });
     }
   }
 
-  // TP
+  // TP — wick-aware: triggers on either current price OR any recent 1m
+  // candle high/low crossing TP. Fixes the "browser saw TP, server didn't"
+  // race where price wicks through TP between 30s polls.
   if (ps._entryAlerted && !ps._tpAlerted) {
-    const tpHit = isLong ? price >= tpP : price <= tpP;
+    const tpHit = isLong ? recentHigh >= tpP : recentLow <= tpP;
     if (tpHit) {
       ps._tpAlerted = true;
-      console.log('[monitor]', coin, 'TP hit at', price, 'signalId=' + ps.signalId);
+      const tpPrice = isLong ? Math.max(price, recentHigh) : Math.min(price, recentLow);
+      console.log('[monitor]', coin, 'TP hit at', tpPrice, '(price=' + price + ', wickExt=' + (isLong ? recentHigh : recentLow) + ')', 'signalId=' + ps.signalId);
       await notifyUser(userId, isAdmin, {
         title: `🎯 TP REACHED: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-        body: `Take profit hit @ ${price.toFixed(2)}. Logged.`,
+        body: `Take profit hit @ ${tpPrice.toFixed(2)}. Logged.`,
         color: 'gr',
       });
       if (!ps._outcomeLogged) {
@@ -2179,19 +2437,24 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
   }
 
   // SL hit — original stop-loss breached
-  const slHit = isLong ? price <= slP : price >= slP;
+  // SL — wick-aware. Uses recentLow (LONG) / recentHigh (SHORT) so a wick
+  // through SL between polls still closes the trade.
+  const slHit = isLong ? recentLow <= slP : recentHigh >= slP;
   // BE-stop hit — fires when:
   //   • BE alert already fired (user should have moved SL to entry)
   //   • Price returned to entry (LONG: cp <= e; SHORT: cp >= e)
   //   • Price hasn't yet reached original SL (otherwise slHit handles it)
-  // This catches the case where price spikes to BE level, user moves SL to entry,
-  // price comes back to entry → effective SL hit at breakeven, no need to wait
-  // for the original (further-away) SL.
-  const beStopHit = ps._beAlerted && (isLong ? (price <= e && price > slP) : (price >= e && price < slP));
+  // Wick-aware so a fast revisit of entry between polls still closes BE.
+  const beStopHit = ps._beAlerted && (isLong
+    ? (recentLow <= e && recentLow > slP)
+    : (recentHigh >= e && recentHigh < slP));
   if (slHit || beStopHit) {
     const wasBE = ps._beAlerted; // true if BE-stop OR (slHit while _beAlerted is set)
     const reason = beStopHit ? 'BE-stop' : (wasBE ? 'SL-after-BE' : 'SL');
-    console.log('[monitor]', coin, reason, 'hit at', price, 'signalId=' + ps.signalId);
+    const slPrice = beStopHit
+      ? (isLong ? Math.min(price, recentLow) : Math.max(price, recentHigh))
+      : (isLong ? Math.min(price, recentLow) : Math.max(price, recentHigh));
+    console.log('[monitor]', coin, reason, 'hit at', slPrice, '(price=' + price + ', wickExt=' + (isLong ? recentLow : recentHigh) + ')', 'signalId=' + ps.signalId);
     if (!ps._outcomeLogged) {
       ps._outcomeLogged = true;
       await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1, pendSignal, broker, tf)
@@ -2199,24 +2462,37 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     }
     await notifyUser(userId, isAdmin, {
       title: `${wasBE ? '⚑ STOPPED AT BE' : '🛑 SL HIT'}: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-      body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${price.toFixed(2)}. Logged automatically.`,
+      body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${slPrice.toFixed(2)}. Logged automatically.`,
       color: wasBE ? 'am' : 're',
     });
     clearPairState(ps);
     return;
   }
 
-  // Expiry — only if entry never hit, fires once, clears the trade
+  // Expiry — only if entry never hit, fires once, clears the trade.
+  // Also logs the signal as outcome='EXPIRED' (rr=0) so /performance and the
+  // journal show the full picture. Without this, signals that fire but never
+  // pull back to entry stay as outcome=NULL in the DB and silently vanish
+  // from stats — common on BTC when AI gives pullback-limit entries that
+  // don't fill within the expiry window.
   if (!ps._entryAlerted && !ps._expiryAlerted && pendSignal.expiry_candles) {
     const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
     const maxMs = pendSignal.expiry_candles * (tfMs[tf] || 900000);
     if (Date.now() - ps.signalTimestamp > maxMs) {
       ps._expiryAlerted = true;
+      console.log('[monitor]', coin, 'EXPIRED (never entered)', 'signalId=' + ps.signalId);
       await notifyUser(userId, isAdmin, {
         title: '⏱ SIGNAL EXPIRED',
-        body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles.`,
+        body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles (no entry).`,
         color: 'am',
       });
+      if (!ps._outcomeLogged) {
+        ps._outcomeLogged = true;
+        // Record EXPIRED outcome so /performance reflects it and the journal
+        // posts a per-pair stat update. rr=0 (no entry → no P/L).
+        await logSignalOutcomeAndJournal(userId, ps.signalId, 'EXPIRED', 0, pendSignal, broker, tf)
+          .catch(e => console.error('[server EXPIRED outcome]', e.message));
+      }
       clearPairState(ps);
     }
   }
@@ -3579,79 +3855,103 @@ async function processPair(userId, sub, coin) {
     ps.lastStatus = 'cooldown';
     return;
   }
+
+  // 3a) RACE GUARD — synchronous in-flight lock.
+  //     processPair contains multiple awaits (fetch candles, funding, regime,
+  //     pre-AI score, AI call) before cooldownUntil is set. Without this lock,
+  //     a second 30s scan tick can race into the same code path while the
+  //     first is mid-flight, see pendSignal still null + cooldownUntil still
+  //     in the past, and fire the SAME trigger twice → duplicate Discord posts.
+  //     The lock is checked + set synchronously here, then released in finally.
+  //     Stale-lock fallback: if a tick crashed and somehow left the lock set,
+  //     auto-release after 90s so the pair doesn't get stuck forever.
+  if (ps._scanInFlight) {
+    if (Date.now() - (ps._scanLockAt || 0) < 90_000) {
+      ps.lastStatus = 'cooldown';
+      return;
+    }
+    console.warn('[scan] stale lock on', coin, '— releasing');
+  }
+  ps._scanInFlight = true;
+  ps._scanLockAt = Date.now();
   ps.lastStatus = 'scanning';
 
-  // Fetch candles + detect trigger (using the pair's appropriate broker)
-  let candles, trigger;
   try {
-    candles = await fetchCandlesServer(coin, sub.tf, 30, broker);
-    trigger = (candles && candles.length >= 11) ? detectTrigger(candles) : null;
-  } catch (e) {
-    console.error('[scan]', coin, e.message);
-    return;
-  }
-  if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
-  if (!trigger) return;
+    // Fetch candles + detect trigger (using the pair's appropriate broker)
+    let candles, trigger;
+    try {
+      candles = await fetchCandlesServer(coin, sub.tf, 30, broker);
+      trigger = (candles && candles.length >= 11) ? detectTrigger(candles) : null;
+    } catch (e) {
+      console.error('[scan]', coin, e.message);
+      return;
+    }
+    if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
+    if (!trigger) return;
 
-  // 4) HARD VETOES — pre-compute indicators, run defensive filters before AI
-  const adx = computeADX(candles, 14);
-  const atr14 = computeATR(candles, 14);
-  const lastCandle = candles[candles.length - 1];
-  const avgVol20 = candles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
-  const volRatio = avgVol20 > 0 ? (lastCandle.v || 0) / avgVol20 : null;
-  const divergence = detectDivergence(candles, 30);
-  const trigDir = inferTriggerDirection(trigger);
-  const funding = await fetchFundingRateServer(coin).catch(() => null);
+    // 4) HARD VETOES — pre-compute indicators, run defensive filters before AI
+    const adx = computeADX(candles, 14);
+    const atr14 = computeATR(candles, 14);
+    const lastCandle = candles[candles.length - 1];
+    const avgVol20 = candles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
+    const volRatio = avgVol20 > 0 ? (lastCandle.v || 0) / avgVol20 : null;
+    const divergence = detectDivergence(candles, 30);
+    const trigDir = inferTriggerDirection(trigger);
+    const funding = await fetchFundingRateServer(coin).catch(() => null);
 
-  // Compute regime as INFO (passed to AI), no longer a veto.
-  let regimeData = null;
-  if (trigDir) {
-    regimeData = await detectMarketRegime(coin, broker).catch(() => null);
-    if (regimeData) ps.regime = regimeData;
-  }
+    // Compute regime as INFO (passed to AI), no longer a veto.
+    let regimeData = null;
+    if (trigDir) {
+      regimeData = await detectMarketRegime(coin, broker).catch(() => null);
+      if (regimeData) ps.regime = regimeData;
+    }
 
-  // Compute confluence score as INFO (passed to AI), no longer a hard gate.
-  const pre = await preAiConfluenceScore(coin, sub.tf, broker, candles, trigger).catch(() => null);
-  ps.lastPreScore = pre ? pre.score : null;
+    // Compute confluence score as INFO (passed to AI), no longer a hard gate.
+    const pre = await preAiConfluenceScore(coin, sub.tf, broker, candles, trigger).catch(() => null);
+    ps.lastPreScore = pre ? pre.score : null;
 
-  // Cache for AI prompt + later use (all filter data — AI decides what to do with it)
-  ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding, confluenceScore: pre ? pre.score : null, regime: regimeData };
-  ps.lastVetoReason = null;
+    // Cache for AI prompt + later use (all filter data — AI decides what to do with it)
+    ps.lastIndicators = { adx, atr14, volRatio, divergence, trigDir, funding, confluenceScore: pre ? pre.score : null, regime: regimeData };
+    ps.lastVetoReason = null;
 
-  // System-safety vetoes (NOT trade-quality filters):
-  //   • Portfolio heat — concurrency cap (5 max active, 2/cluster)
-  //   • Circuit breaker — loss-streak pause (handled earlier in this function)
-  // Everything else (ADX, volume, divergence, funding, regime) is passed to the
-  // AI as data and the AI decides whether to take or skip the trade.
-  const heat = checkPortfolioHeat(sub, coin);
-  if (heat.blocked) {
-    console.log('[heat veto]', coin, heat.reason);
-    ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+    // System-safety vetoes (NOT trade-quality filters):
+    //   • Portfolio heat — concurrency cap (5 max active, 2/cluster)
+    //   • Circuit breaker — loss-streak pause (handled earlier in this function)
+    // Everything else (ADX, volume, divergence, funding, regime) is passed to the
+    // AI as data and the AI decides whether to take or skip the trade.
+    const heat = checkPortfolioHeat(sub, coin);
+    if (heat.blocked) {
+      console.log('[heat veto]', coin, heat.reason);
+      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+      ps.lastTrigger = trigger;
+      ps.lastStatus = 'veto:' + heat.code;
+      ps.lastVetoReason = heat.reason;
+      return;
+    }
+
+    // Apply per-pair cooldown — extended automatically during 22:00-08:00 UTC dead zone
+    ps.cooldownUntil = Date.now() + effectiveCooldownMs(sub);
     ps.lastTrigger = trigger;
-    ps.lastStatus = 'veto:' + heat.code;
-    ps.lastVetoReason = heat.reason;
-    return;
-  }
 
-  // Apply per-pair cooldown — extended automatically during 22:00-08:00 UTC dead zone
-  ps.cooldownUntil = Date.now() + effectiveCooldownMs(sub);
-  ps.lastTrigger = trigger;
+    // 6) Run full AI analysis for this pair (now with ATR + ADX + class context)
+    let aiSignal = null;
+    try {
+      aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker);
+    } catch (e) { console.error('[runServerAIForPair]', coin, e.message); }
 
-  // 6) Run full AI analysis for this pair (now with ATR + ADX + class context)
-  let aiSignal = null;
-  try {
-    aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker);
-  } catch (e) { console.error('[runServerAIForPair]', coin, e.message); }
-
-  // Fallback: AI failed → still push a trigger alert
-  if (!aiSignal) {
-    ps.lastStatus = 'cooldown';
-    await sendPushTo(userId, {
-      title: `⚡ ${trigger.type.toUpperCase()}: ${coin.replace('USDT', '').replace('1000', '')}`,
-      body: `${trigger.desc}. Open Henry to run AI analysis.`,
-      icon: '/manifest.json',
-      data: { coin, tf: sub.tf, broker, trigger },
-    });
+    // Fallback: AI failed → still push a trigger alert
+    if (!aiSignal) {
+      ps.lastStatus = 'cooldown';
+      await sendPushTo(userId, {
+        title: `⚡ ${trigger.type.toUpperCase()}: ${coin.replace('USDT', '').replace('1000', '')}`,
+        body: `${trigger.desc}. Open Henry to run AI analysis.`,
+        icon: '/manifest.json',
+        data: { coin, tf: sub.tf, broker, trigger },
+      });
+    }
+  } finally {
+    // Always release the in-flight lock, even on exceptions or early returns.
+    ps._scanInFlight = false;
   }
 }
 

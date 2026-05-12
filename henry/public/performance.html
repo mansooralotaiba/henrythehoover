@@ -69,6 +69,7 @@
       <span class="pill tp" id="ov-tp">TP: —</span>
       <span class="pill sl" id="ov-sl">SL: —</span>
       <span class="pill be" id="ov-be">BE: —</span>
+      <span class="pill" id="ov-exp" style="background:rgba(128,128,128,.15);color:#9aa4b2">EXPIRED: —</span>
     </div>
   </div>
 
@@ -138,9 +139,12 @@ function wrColor(p){return p>=60?'v-gr':p>=40?'v-am':'v-re';}
 function renderTable(elId,rows,keyFn,labelFn){
   var el=document.querySelector('#'+elId+' tbody');
   el.innerHTML='';
-  // Sort by total desc, then totalR desc
+  // Sort by (total + expired) desc so pairs with only expired signals still
+  // surface; tie-break by totalR.
   var entries=Object.entries(rows).sort(function(a,b){
-    if(b[1].total!==a[1].total)return b[1].total-a[1].total;
+    var ta=(a[1].total||0)+(a[1].expired||0);
+    var tb=(b[1].total||0)+(b[1].expired||0);
+    if(tb!==ta)return tb-ta;
     return b[1].totalR-a[1].totalR;
   });
   if(!entries.length){el.innerHTML='<tr><td colspan="4" class="v-mu" style="font-style:italic">No data</td></tr>';return;}
@@ -149,10 +153,12 @@ function renderTable(elId,rows,keyFn,labelFn){
     var k=labelFn?labelFn(e[0]):e[0];
     var v=e[1];
     var pct=maxR?Math.abs(v.totalR)/maxR*100:0;
+    // "Total" cell shows filled trades + expired count in muted suffix.
+    var totalCell=v.total+(v.expired?' <span class="v-mu" style="opacity:.6">(+' + v.expired + ' exp)</span>':'');
     var tr=document.createElement('tr');
     tr.innerHTML=
       '<td>'+k+'</td>'
-     +'<td class="v-mu">'+v.total+'</td>'
+     +'<td class="v-mu">'+totalCell+'</td>'
      +'<td class="'+wrColor(v.winRate)+'">'+v.winRate+'%</td>'
      +'<td class="bar-cell"><div class="bar '+(v.totalR<0?'neg':'')+'" style="width:'+pct+'%"></div><span class="v '+rColor(v.totalR)+'">'+fmt(v.totalR)+'</span></td>';
     el.appendChild(tr);
@@ -266,7 +272,9 @@ function load(){
       document.getElementById('ov-tp').textContent='TP: '+(t.tp||0);
       document.getElementById('ov-sl').textContent='SL: '+(t.sl||0);
       document.getElementById('ov-be').textContent='BE: '+(t.be||0);
-      document.getElementById('period').textContent='Last '+(t.total||0)+' closed trades';
+      document.getElementById('ov-exp').textContent='EXPIRED: '+(t.expired||0);
+      var totalSeen=(t.total||0)+(t.expired||0);
+      document.getElementById('period').textContent='Last '+(t.total||0)+' closed trades'+(t.expired?' · '+t.expired+' expired unfilled':'');
 
       renderTable('t-pair',d.byPair||{},null,function(k){return k.replace('USDT','').replace('1000','');});
       renderTable('t-trigger',d.byTrigger||{},null,function(k){return k.toUpperCase();});
