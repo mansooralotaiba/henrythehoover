@@ -764,16 +764,37 @@ app.get('/api/gold/candles', requireAuth, async (req, res) => {
     const interval = String(req.query.interval || '15m');
     const limit = Math.min(parseInt(req.query.limit) || 200, 500);
     const tf = POLY_TF[interval] || POLY_TF['15m'];
-    const start = Date.now() - tf.ms * limit * 2;
+    // Widen the window so we have enough bars after slicing — Polygon returns
+    // sparse data for spot gold (forex hours, holidays, low-vol periods).
+    const start = Date.now() - tf.ms * limit * 4;
     const from = new Date(start).toISOString().split('T')[0];
     const to = new Date().toISOString().split('T')[0];
     const data = await polyFetch(
       `/v2/aggs/ticker/C:XAUUSD/range/${tf.multiplier}/${tf.timespan}/${from}/${to}`,
-      { adjusted: 'true', sort: 'asc', limit }
+      { adjusted: 'true', sort: 'asc', limit: Math.min(limit * 4, 5000) }
     );
-    const candles = (data.results || []).slice(-limit).map(r => ({
-      time: Math.floor(r.t / 1000), o: r.o, h: r.h, l: r.l, c: r.c, v: r.v || 0,
-    }));
+    if (!data || !Array.isArray(data.results)) {
+      console.warn('[gold/candles] no results from Polygon:', interval, JSON.stringify(data).slice(0, 300));
+      return res.json({ candles: [], reason: 'polygon_empty' });
+    }
+    // Map + filter out malformed entries (missing OHLC) + dedupe by timestamp + sort ascending
+    const seen = new Set();
+    const candles = data.results
+      .map(r => ({
+        time: Math.floor(r.t / 1000),
+        o: +r.o, h: +r.h, l: +r.l, c: +r.c, v: +(r.v || 0),
+      }))
+      .filter(c => {
+        if (!isFinite(c.time) || c.time <= 0) return false;
+        if (!isFinite(c.o) || !isFinite(c.h) || !isFinite(c.l) || !isFinite(c.c)) return false;
+        if (c.h < c.l) return false; // sanity
+        if (seen.has(c.time)) return false;
+        seen.add(c.time);
+        return true;
+      })
+      .sort((a, b) => a.time - b.time)
+      .slice(-limit);
+    console.log('[gold/candles]', interval, 'returned', candles.length, 'bars (Polygon had', data.results.length, ')');
     res.json({ candles });
   } catch (err) {
     console.error('[gold/candles]', err);
