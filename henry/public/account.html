@@ -16,16 +16,22 @@
   .lbl{color:var(--mu);letter-spacing:.08em}
   .val{color:var(--fg);font-weight:bold;letter-spacing:.05em}
   .val.active{color:var(--gr)}
-  .val.inactive,.val.cancelled,.val.past_due{color:var(--re)}
+  .val.inactive,.val.cancelled,.val.past_due,.val.expired{color:var(--re)}
   .val.admin{color:var(--cy)}
+  .days-left{font-size:9px;color:var(--mu);margin-top:2px;letter-spacing:.06em}
+  .days-left.warn{color:var(--am)}
+  .days-left.urgent{color:var(--re)}
   .section{margin-top:24px}
   .section-title{font-size:9px;letter-spacing:.15em;color:rgba(255,255,255,.25);margin-bottom:10px}
   button{width:100%;margin-top:10px;padding:11px;border:1px solid var(--br);background:transparent;color:var(--fg);font-family:inherit;font-size:11px;letter-spacing:.1em;cursor:pointer;border-radius:3px;transition:border-color .15s}
   button:hover{border-color:var(--cy);color:var(--cy)}
+  button:disabled{opacity:.5;cursor:wait}
   button.danger{border-color:rgba(255,68,102,.3);color:var(--re)}
   button.danger:hover{border-color:var(--re);background:rgba(255,68,102,.06)}
   button.primary{background:var(--cy);color:#000;border-color:var(--cy);font-weight:bold}
   button.primary:hover{background:#00bce0}
+  button.crypto{background:linear-gradient(135deg,#f7931a 0%,#627eea 50%,#9945ff 100%);color:#fff;border-color:transparent;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.4)}
+  button.crypto:hover{filter:brightness(1.1)}
   .msg{margin-top:14px;padding:11px;border:1px solid var(--br);border-radius:3px;font-size:11px;line-height:1.6}
   .msg.ok{border-color:rgba(0,229,160,.4);color:var(--gr);background:rgba(0,229,160,.06)}
   .msg.err{border-color:rgba(255,68,102,.4);color:var(--re);background:rgba(255,68,102,.06)}
@@ -42,13 +48,21 @@
   <div class="row"><span class="lbl">EMAIL</span><span class="val" id="a-email">—</span></div>
   <div class="row"><span class="lbl">PLAN</span><span class="val" id="a-plan">—</span></div>
   <div class="row"><span class="lbl">STATUS</span><span class="val" id="a-status">—</span></div>
-  <div class="row"><span class="lbl">RENEWS</span><span class="val" id="a-renews">—</span></div>
+  <div class="row">
+    <span class="lbl">RENEWS</span>
+    <span style="text-align:right">
+      <span class="val" id="a-renews">—</span>
+      <div class="days-left" id="a-days-left"></div>
+    </span>
+  </div>
 
   <div id="msg"></div>
 
   <div class="section">
     <div class="section-title">ACTIONS</div>
     <button class="primary" onclick="goTerminal()">← BACK TO TERMINAL</button>
+    <!-- Renew / Subscribe — only visible to non-admin users -->
+    <button id="renew-btn" class="crypto" onclick="renewCrypto()" style="display:none">⚡ RENEW WITH CRYPTO — 30 DAYS</button>
     <button id="cancel-btn" class="danger" onclick="cancelSub()" style="display:none">CANCEL SUBSCRIPTION</button>
     <button onclick="doLogout()">LOG OUT</button>
   </div>
@@ -57,40 +71,108 @@
 </div>
 <script>
 const msg = document.getElementById('msg');
+let _nowpayEnabled = false;
 
 async function load() {
   try {
+    // Probe crypto config first so we know whether to show the Renew button
+    try {
+      const cr = await fetch('/api/nowpayments/config');
+      if (cr.ok) { const c = await cr.json(); _nowpayEnabled = !!c.enabled; }
+    } catch (e) {}
+
     const r = await fetch('/api/me', { credentials: 'same-origin' });
     if (!r.ok) { window.location.href = '/login'; return; }
     const d = await r.json();
     document.getElementById('a-email').textContent  = d.email || '—';
-    const planEl   = document.getElementById('a-plan');
-    const statusEl = document.getElementById('a-status');
-    const renewsEl = document.getElementById('a-renews');
+    const planEl    = document.getElementById('a-plan');
+    const statusEl  = document.getElementById('a-status');
+    const renewsEl  = document.getElementById('a-renews');
+    const daysEl    = document.getElementById('a-days-left');
+    const renewBtn  = document.getElementById('renew-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+
     if (d.is_admin && d.plan === 'admin') {
       planEl.textContent   = 'ADMIN';
       planEl.className     = 'val admin';
       statusEl.textContent = 'FULL ACCESS';
       statusEl.className   = 'val admin';
       renewsEl.textContent = '—';
+      return; // admin doesn't need renew/cancel buttons
+    }
+
+    // Pretty plan label
+    const planRaw = (d.plan || 'none').toLowerCase();
+    planEl.textContent = planRaw === 'monthly'        ? 'PRO MONTHLY (CARD)'
+                      : planRaw === 'monthly_crypto'  ? 'PRO MONTHLY (CRYPTO)'
+                      : planRaw === 'lifetime'        ? 'LIFETIME'
+                      : (planRaw || 'NONE').toUpperCase();
+
+    const st = (d.subscription_status || 'inactive').toLowerCase();
+    statusEl.textContent = st.toUpperCase();
+    statusEl.className   = 'val ' + st;
+
+    // Days-left + renew prompt logic
+    if (d.current_period_end) {
+      const endMs = new Date(d.current_period_end).getTime();
+      renewsEl.textContent = new Date(endMs).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+      const daysLeft = Math.ceil((endMs - Date.now()) / 86400000);
+      if (daysLeft > 0) {
+        daysEl.textContent = daysLeft + ' day' + (daysLeft===1?'':'s') + ' left';
+        daysEl.className   = 'days-left' + (daysLeft <= 3 ? ' urgent' : daysLeft <= 7 ? ' warn' : '');
+      } else {
+        daysEl.textContent = 'EXPIRED ' + (-daysLeft) + ' day' + (daysLeft===-1?'':'s') + ' ago';
+        daysEl.className   = 'days-left urgent';
+      }
     } else {
-      planEl.textContent   = d.plan === 'monthly' ? 'PRO MONTHLY' : (d.plan || 'NONE').toUpperCase();
-      const st = (d.subscription_status || 'inactive').toLowerCase();
-      statusEl.textContent = st.toUpperCase();
-      statusEl.className   = 'val ' + st;
-      renewsEl.textContent = d.current_period_end
-        ? new Date(d.current_period_end).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })
-        : '—';
-      if (st === 'active' || st === 'cancelled') {
-        document.getElementById('cancel-btn').style.display = st === 'active' ? '' : 'none';
+      renewsEl.textContent = '—';
+      daysEl.textContent   = '';
+    }
+
+    // Show RENEW for everyone non-admin if crypto is enabled.
+    //   active  → "renew now to extend"
+    //   expired / cancelled / inactive → "subscribe again"
+    if (_nowpayEnabled) {
+      renewBtn.style.display = '';
+      if (st === 'active') {
+        renewBtn.textContent = '⚡ RENEW WITH CRYPTO — +30 DAYS';
+      } else {
+        renewBtn.textContent = '⚡ SUBSCRIBE WITH CRYPTO — 30 DAYS';
       }
     }
+    if (st === 'active' && planRaw === 'monthly') cancelBtn.style.display = ''; // only Paddle subs can be cancelled mid-cycle
   } catch (e) {
     window.location.href = '/login';
   }
 }
 
 function goTerminal() { window.location.href = '/terminal'; }
+
+// Crypto renew — creates a fresh NowPayments invoice and redirects to it.
+// Webhook stacks +30 days from whichever is later: now or current_period_end.
+async function renewCrypto() {
+  const btn = document.getElementById('renew-btn');
+  btn.disabled = true; btn.textContent = 'CREATING INVOICE…';
+  msg.className = ''; msg.textContent = '';
+  try {
+    const r = await fetch('/api/nowpayments/create-invoice', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const d = await r.json();
+    if (!r.ok || !d.invoiceUrl) {
+      msg.className = 'msg err';
+      msg.textContent = d.detail || d.error || 'Could not create invoice. Try again.';
+      btn.disabled = false; btn.textContent = '⚡ RENEW WITH CRYPTO — +30 DAYS';
+      return;
+    }
+    msg.className = 'msg ok'; msg.textContent = 'Redirecting to NowPayments…';
+    window.location.href = d.invoiceUrl;
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Network error: ' + e.message;
+    btn.disabled = false; btn.textContent = '⚡ RENEW WITH CRYPTO — +30 DAYS';
+  }
+}
 
 async function cancelSub() {
   if (!confirm('Cancel subscription? You keep access until the end of the billing period.')) return;

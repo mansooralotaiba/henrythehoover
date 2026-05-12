@@ -719,7 +719,42 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){
   var al=document.getElementById('adminlink');if(al&&IS_ADMIN)al.style.display='';
   // Web Push registration — server can wake the phone when auto-scan triggers
   registerPushIfPossible();
+  // Subscription expiry warning — banner when <7 days left
+  showExpiryBannerIfDue(u);
 }).catch(function(){});
+
+// Floating expiry warning at top of terminal. Fires when:
+//   • non-admin user has a current_period_end
+//   • days_left <= 7
+// Click → /account to renew. Auto-hides after first dismissal per-session.
+function showExpiryBannerIfDue(u){
+  if(!u||u.is_admin)return;
+  if(!u.current_period_end)return;
+  if(sessionStorage.getItem('_expiryBannerDismissed')==='1')return;
+  var end=new Date(u.current_period_end).getTime();
+  if(!isFinite(end))return;
+  var days=Math.ceil((end-Date.now())/86400000);
+  if(days>7)return;
+  var urgent=days<=3;
+  var color=urgent?'#ff4466':'#ffb830';
+  var bg=urgent?'rgba(255,68,102,0.15)':'rgba(255,184,48,0.15)';
+  var msg=days<=0
+    ? 'Your subscription has expired. Renew now to keep auto-scan running.'
+    : 'Subscription expires in '+days+' day'+(days===1?'':'s')+'. Renew now to avoid losing access.';
+  var bar=document.createElement('div');
+  bar.id='expiry-banner';
+  bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;padding:10px 16px;background:'+bg+';border-bottom:1px solid '+color+';color:'+color+';font-family:"Courier New",monospace;font-size:11px;letter-spacing:.05em;display:flex;align-items:center;gap:12px;backdrop-filter:blur(8px)';
+  bar.innerHTML='<span style="flex:1">⚠ '+msg+'</span>'
+    +'<a href="/account" style="padding:5px 12px;background:'+color+';color:#000;text-decoration:none;border-radius:3px;font-weight:bold;letter-spacing:.08em">RENEW →</a>'
+    +'<span id="expiry-x" style="cursor:pointer;color:'+color+';font-size:14px;opacity:.6;padding:2px 4px">×</span>';
+  document.body.appendChild(bar);
+  document.body.style.paddingTop='38px';
+  document.getElementById('expiry-x').addEventListener('click',function(){
+    sessionStorage.setItem('_expiryBannerDismissed','1');
+    bar.remove();
+    document.body.style.paddingTop='';
+  });
+}
 
 // ── Web Push registration ─────────────────────────────────────────────
 async function registerPushIfPossible(){

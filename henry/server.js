@@ -108,6 +108,25 @@ async function loadProfile(email) {
   return data;
 }
 
+// Auto-expire subscriptions whose current_period_end has passed. Without this,
+// a subscription_status='active' flag from a 30-day-old NowPayments payment
+// would still grant access forever. Called from requireAuth on every gated
+// request so expiry is enforced server-side (the user can't bypass it).
+async function _expireIfPast(profile) {
+  if (!profile || !profile.current_period_end) return profile;
+  if (profile.subscription_status !== 'active') return profile;
+  if (profile.email && profile.email.toLowerCase() === ADMIN_EMAIL) return profile; // admin never expires
+  const periodEnd = new Date(profile.current_period_end).getTime();
+  if (!isFinite(periodEnd) || periodEnd > Date.now()) return profile;
+  // Period ended — flip status and persist
+  await supaAdmin.from('profiles').update({
+    subscription_status: 'expired',
+    updated_at: new Date().toISOString(),
+  }).eq('email', profile.email);
+  console.log('[auth] subscription expired for', profile.email);
+  return Object.assign({}, profile, { subscription_status: 'expired' });
+}
+
 async function requireAuth(req, res, next) {
   try {
     const session = await resolveSession(req, res);
@@ -123,7 +142,8 @@ async function requireAuth(req, res, next) {
       req.profile = profile || { email, is_admin: true, subscription_status: 'active', plan: 'admin' };
       return next();
     }
-    const profile = await loadProfile(email);
+    let profile = await loadProfile(email);
+    profile = await _expireIfPast(profile);
     if (!profile || profile.subscription_status !== 'active') {
       if (req.method === 'GET' && req.accepts('html')) return res.redirect('/subscribe');
       return res.status(403).json({ error: 'subscription_required' });
@@ -145,7 +165,9 @@ async function requireSession(req, res, next) {
       if (req.method === 'GET' && req.accepts('html')) return res.redirect('/login');
       return res.status(401).json({ error: 'unauthenticated' });
     }
-    const profile = await loadProfile(session.user.email.toLowerCase()).catch(() => null);
+    let profile = await loadProfile(session.user.email.toLowerCase()).catch(() => null);
+    // Apply the same expiry sweep so /api/me + account page see honest status
+    profile = await _expireIfPast(profile).catch(() => profile);
     req.user = session.user;
     req.profile = profile;
     next();
@@ -705,8 +727,16 @@ app.post('/api/nowpayments/webhook', express.raw({ type: 'application/json' }), 
     return res.json({ received: true });
   }
 
-  // Credit 30 days of access from now
-  const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  // Stack 30 days from whichever is later: NOW or the existing period_end.
+  // So a user who renews 5 days early gets 35 days total from today, not 30.
+  // Without this, early renewers would lose the time they paid for.
+  const { data: existing } = await supaAdmin.from('profiles')
+    .select('current_period_end')
+    .eq('user_id', uid).maybeSingle();
+  const now = Date.now();
+  const existingEnd = existing && existing.current_period_end ? new Date(existing.current_period_end).getTime() : 0;
+  const baseline = (existingEnd > now) ? existingEnd : now;
+  const periodEnd = new Date(baseline + 30 * 24 * 60 * 60 * 1000).toISOString();
   const { error } = await supaAdmin.from('profiles').update({
     subscription_status: 'active',
     plan: 'monthly_crypto',
@@ -716,7 +746,8 @@ app.post('/api/nowpayments/webhook', express.raw({ type: 'application/json' }), 
   if (error) {
     console.error('[nowpay webhook] supabase update failed:', error.message);
   } else {
-    console.log('[nowpay webhook] activated', uid, 'until', periodEnd);
+    const stacked = existingEnd > now ? ` (stacked on existing ${new Date(existingEnd).toISOString()})` : '';
+    console.log('[nowpay webhook] activated', uid, 'until', periodEnd, stacked);
   }
   res.json({ received: true });
 });
