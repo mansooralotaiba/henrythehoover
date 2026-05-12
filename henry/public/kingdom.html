@@ -32,9 +32,7 @@
   .top-band{display:grid;grid-template-columns:280px 1fr 360px;gap:12px}
   .card{background:var(--bg2);border:1px solid var(--b1);border-radius:6px;padding:12px;position:relative;overflow:hidden}
   .card-title{font-size:9px;color:var(--mu);letter-spacing:.18em;margin-bottom:8px}
-  .card-sub{font-size:9px;color:var(--di);letter-spacing:.1em;margin-bottom:6px}
 
-  /* Card 1: Today */
   .today-r{font-size:34px;font-weight:bold;letter-spacing:.04em;line-height:1.2;text-align:right;margin-bottom:8px}
   .today-r.pos{color:var(--gr)}.today-r.neg{color:var(--re)}.today-r.zero{color:var(--mu)}
   .today-row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--b1);font-size:11px}
@@ -43,22 +41,17 @@
   .api-strip{margin-top:8px;font-size:9px;color:var(--di);letter-spacing:.05em}
   .api-strip::before{content:'● ';color:var(--gr)}
 
-  /* Card 2: Month chart */
   .month-headers{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-  .month-headers .left{font-size:10px;color:var(--mu);letter-spacing:.1em}
-  .month-headers .right{font-size:10px;color:var(--mu);letter-spacing:.1em}
+  .month-headers .left,.month-headers .right{font-size:10px;color:var(--mu);letter-spacing:.1em}
   .month-bignums{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}
   .month-bignum{background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:10px 12px;text-align:center}
   .month-bignum .lbl{font-size:9px;color:var(--mu);letter-spacing:.12em;margin-bottom:4px}
   .month-bignum .val{font-size:22px;font-weight:bold;letter-spacing:.02em}
   .month-bignum .sub{font-size:9px;color:var(--di);margin-top:2px}
-  .month-bignum.pos .val{color:var(--gr)}
-  .month-bignum.neg .val{color:var(--re)}
-  .month-bignum.zero .val{color:var(--mu)}
+  .month-bignum.pos .val{color:var(--gr)}.month-bignum.neg .val{color:var(--re)}.month-bignum.zero .val{color:var(--mu)}
   .month-chart-wrap{height:120px;background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:6px 4px}
   .month-chart-wrap svg{width:100%;height:100%;display:block;overflow:visible}
 
-  /* Card 3: Open positions */
   .openpos-count{position:absolute;top:12px;right:12px;font-size:11px;font-weight:bold;color:var(--cy)}
   .openpos-section{margin-top:10px}
   .openpos-section .head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.15em;color:var(--mu);margin-bottom:4px}
@@ -69,345 +62,107 @@
   .openpos-row .l{color:var(--mu);letter-spacing:.05em}
   .openpos-row .v{font-weight:bold}
 
-  /* QUICK STRIP */
+  /* Quick strip */
   .quick-strip{display:flex;gap:18px;flex-wrap:wrap;padding:6px 12px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;font-size:10px;color:var(--mu);letter-spacing:.05em}
   .quick-strip .item{display:flex;gap:6px;align-items:baseline}
   .quick-strip .item .l{color:var(--di)}
   .quick-strip .item .v{color:var(--fg);font-weight:bold}
   .quick-strip .item .v.pos{color:var(--gr)}.quick-strip .item .v.neg{color:var(--re)}.quick-strip .item .v.am{color:var(--am)}
 
-  /* ═════════ MIDDLE BAND — KINGDOM (custom SVG) ═════════ */
-  .middle-band{flex:1;min-height:380px;max-height:42vh;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden}
-  .kingdom-stage{position:absolute;inset:0}
-  .scene-svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+  /* ═════════ KINGDOM — 4-PANEL CHART GRID ═════════ */
+  .kingdom{flex:1;min-height:500px;display:flex;flex-direction:column;gap:8px}
+  .kingdom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
+  .kingdom-header .l{font-size:10px;color:var(--mu);letter-spacing:.15em}
+  .kingdom-header .c{font-size:10px;color:var(--cy);letter-spacing:.05em}
 
-  /* Sky gradient layers — UTC-driven, transitions smoothly */
-  .kingdom-stage::before{
-    content:'';position:absolute;inset:0;pointer-events:none;
-    background:linear-gradient(180deg,#0a0d18 0%,#0e1224 35%,#101830 70%,#0e1117 100%);
-    transition:background 4s ease;
+  .chart-grid{flex:1;display:grid;gap:8px;min-height:460px}
+  .chart-grid[data-n="0"]{grid-template-columns:1fr}
+  .chart-grid[data-n="1"]{grid-template-columns:1fr}
+  .chart-grid[data-n="2"]{grid-template-columns:1fr 1fr}
+  .chart-grid[data-n="3"]{grid-template-columns:repeat(3,1fr)}
+  .chart-grid[data-n="4"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+  .chart-grid[data-n="5"],.chart-grid[data-n="6"]{grid-template-columns:repeat(3,1fr);grid-template-rows:1fr 1fr}
+
+  .chart-grid .empty{display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;color:var(--di);font-size:11px;letter-spacing:.1em;text-align:center}
+
+  /* PANEL */
+  .panel{position:relative;background:var(--bg2);border:1.5px solid var(--b1);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;transition:border-color 0.3s, box-shadow 0.3s}
+  .panel[data-state="scanning"]{border-color:rgba(0,229,160,0.25)}
+  .panel[data-state="waiting"]{border-color:rgba(255,184,48,0.45);box-shadow:inset 0 0 24px rgba(255,184,48,0.08)}
+  .panel[data-state="in-trade"]{border-color:rgba(0,212,255,0.6);box-shadow:0 0 18px rgba(0,212,255,0.25),inset 0 0 28px rgba(0,212,255,0.06);animation:in-trade-pulse 2.2s ease-in-out infinite}
+  .panel[data-state="cooldown"]{border-color:rgba(255,255,255,0.08);opacity:0.75}
+  .panel[data-state="paused"]{border-color:rgba(255,68,102,0.5);box-shadow:inset 0 0 22px rgba(255,68,102,0.08)}
+  @keyframes in-trade-pulse{0%,100%{box-shadow:0 0 14px rgba(0,212,255,0.2),inset 0 0 24px rgba(0,212,255,0.05)}50%{box-shadow:0 0 30px rgba(0,212,255,0.45),inset 0 0 36px rgba(0,212,255,0.1)}}
+
+  .panel-header{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid var(--b1);background:linear-gradient(180deg,rgba(255,255,255,0.02) 0%,transparent 100%);min-height:34px;flex-shrink:0}
+  .panel-pair{display:flex;align-items:center;gap:8px}
+  .panel-pair .coin-icon{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:#fff}
+  .panel-pair .name{font-weight:bold;font-size:12px;letter-spacing:.08em}
+  .panel-state-tag{font-size:9px;padding:2px 7px;border-radius:2px;letter-spacing:.12em;font-weight:bold}
+  .panel-state-tag.scanning{color:var(--gr);background:rgba(0,229,160,0.08);border:1px solid rgba(0,229,160,0.3)}
+  .panel-state-tag.waiting{color:var(--am);background:rgba(255,184,48,0.1);border:1px solid rgba(255,184,48,0.4)}
+  .panel-state-tag.in-trade{color:var(--cy);background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.5)}
+  .panel-state-tag.cooldown{color:var(--mu);background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1)}
+  .panel-state-tag.paused{color:var(--re);background:rgba(255,68,102,0.1);border:1px solid rgba(255,68,102,0.4)}
+  .panel-state-tag.idle{color:var(--di);background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08)}
+  .panel-price{font-size:11px;font-weight:bold;color:var(--fg);letter-spacing:.04em}
+  .panel-price.long{color:var(--gr)}.panel-price.short{color:var(--re)}
+
+  .panel-body{flex:1;position:relative;min-height:0}
+  .panel-chart{position:absolute;inset:0}
+
+  /* Coin character overlay — animates on top of the chart */
+  .panel-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+  .coin-char{position:absolute;bottom:12px;width:32px;height:46px;will-change:transform,left;z-index:3}
+  .coin-char svg{display:block;animation:char-bob 0.5s ease-in-out infinite;transform-origin:bottom center}
+  @keyframes char-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
+  .coin-char .arm-l{animation:arm-l 0.5s ease-in-out infinite;transform-origin:8px 18px;transform-box:fill-box}
+  .coin-char .arm-r{animation:arm-r 0.5s ease-in-out infinite;transform-origin:24px 18px;transform-box:fill-box}
+  .coin-char .leg-l{animation:leg-l 0.5s ease-in-out infinite;transform-origin:13px 28px;transform-box:fill-box}
+  .coin-char .leg-r{animation:leg-r 0.5s ease-in-out infinite;transform-origin:19px 28px;transform-box:fill-box}
+  @keyframes leg-l{0%,100%{transform:rotate(-18deg)}50%{transform:rotate(18deg)}}
+  @keyframes leg-r{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-18deg)}}
+  @keyframes arm-l{0%,100%{transform:rotate(15deg)}50%{transform:rotate(-15deg)}}
+  @keyframes arm-r{0%,100%{transform:rotate(-15deg)}50%{transform:rotate(15deg)}}
+  .coin-char.walk{animation:coin-walk 14s linear infinite}
+  @keyframes coin-walk{
+    0%{left:6%;transform:scaleX(1)}
+    48%{left:80%;transform:scaleX(1)}
+    50%{left:80%;transform:scaleX(-1)}
+    98%{left:6%;transform:scaleX(-1)}
+    100%{left:6%;transform:scaleX(1)}
   }
-  .kingdom-stage[data-sky="dawn"]::before{background:linear-gradient(180deg,#1a1838 0%,#3a2542 35%,#5d3050 70%,#1d1224 100%)}
-  .kingdom-stage[data-sky="day"]::before{background:linear-gradient(180deg,#15243d 0%,#1f3b5d 35%,#2a4d7a 70%,#142036 100%)}
-  .kingdom-stage[data-sky="dusk"]::before{background:linear-gradient(180deg,#1a1232 0%,#4a2030 35%,#6e2a36 70%,#1a0e18 100%)}
-  .kingdom-stage[data-sky="killzone"]::before{background:linear-gradient(180deg,#1a1838 0%,#3d1838 35%,#5a1f3c 70%,#1c0e1f 100%)}
-
-  /* Stars overlay */
-  .stars{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity 2s ease}
-  .kingdom-stage[data-sky="night"] .stars{opacity:1}
-  .stars .star{position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;animation:twinkle 3s ease-in-out infinite}
-  @keyframes twinkle{0%,100%{opacity:0.3}50%{opacity:1}}
-
-  .clouds{position:absolute;inset:0;pointer-events:none;opacity:0.5}
-  .cloud{position:absolute;background:rgba(255,255,255,0.04);border-radius:50%;filter:blur(10px);animation:cloud-drift 80s linear infinite}
-  @keyframes cloud-drift{from{transform:translateX(-200px)}to{transform:translateX(calc(100vw + 200px))}}
-
-  /* SVG element animations */
-  @keyframes castle-aura{0%,100%{opacity:0.35}50%{opacity:0.75}}
-  .castle-aura{animation:castle-aura 4s ease-in-out infinite;transform-origin:center}
-  @keyframes window-pulse{0%,100%{opacity:0.25}50%{opacity:1}}
-  .advisor-window{animation:window-pulse 2.6s ease-in-out infinite}
-  .advisor-window.w0{animation-delay:0s}.advisor-window.w1{animation-delay:0.2s}.advisor-window.w2{animation-delay:0.4s}
-  .advisor-window.w3{animation-delay:0.6s}.advisor-window.w4{animation-delay:0.8s}.advisor-window.w5{animation-delay:1.0s}
-  .advisor-window.w6{animation-delay:1.2s}.advisor-window.w7{animation-delay:1.4s}.advisor-window.w8{animation-delay:1.6s}
-  .advisor-window.w9{animation-delay:1.8s}.advisor-window.w10{animation-delay:2.0s}
-
-  @keyframes flag-wave-svg{0%,100%{transform:skewX(-4deg)}50%{transform:skewX(4deg)}}
-  .flag-cloth{transform-origin:left top;animation:flag-wave-svg 2.4s ease-in-out infinite}
-
-  @keyframes bell-swing{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}
-  .cal-tower-svg.warn .bell{animation:bell-swing 1.4s ease-in-out infinite;transform-origin:50% 0%}
-  .cal-tower-svg.imminent .bell{animation:bell-swing 0.5s ease-in-out infinite;transform-origin:50% 0%}
-  .lightning-bolt{opacity:0;transition:opacity 0.1s}
-  .cal-tower-svg.imminent .lightning-bolt{animation:lightning-flash 0.6s ease-in-out infinite}
-  @keyframes lightning-flash{0%,100%{opacity:0}40%,60%{opacity:1}}
-
-  /* HTML text overlays on top of SVG */
-  .scene-overlay{position:absolute;inset:0;pointer-events:none}
-  .scene-overlay > *{pointer-events:auto}
-  .overlay-text{position:absolute;color:#e8eaf0;font-family:var(--mn);text-align:center;text-shadow:0 1px 3px rgba(0,0,0,0.8)}
-
-  .cal-clock-label{left:6%;top:24%;font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:.15em}
-  .cal-event-label{left:2%;top:30%;width:18%;font-size:9px;color:rgba(255,184,48,0.7);letter-spacing:.05em}
-
-  .kingdom-empty{position:absolute;top:62%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.32);font-size:11px;letter-spacing:.18em;text-align:center;pointer-events:none}
-  .kingdom-empty .label{margin-bottom:4px}
-  .kingdom-empty .sub{font-size:9px;color:rgba(255,255,255,0.2)}
-
-  /* ══════════════════ COIN CHARACTERS ══════════════════ */
-  /* Each scanned pair is a small humanoid coin walking the same walkway as
-   * the wizards. Logo on body, tiny name label below feet. State drives
-   * behaviour: scanning = walks, waiting = paces in place, in-trade = stops
-   * and gets zapped by a wizard. */
-  .coin-char{position:absolute;width:38px;height:54px;z-index:8;will-change:transform,left,top;cursor:pointer}
-  .coin-char svg{display:block;animation:coin-bob 0.52s ease-in-out infinite;transform-origin:bottom center}
-  @keyframes coin-bob{
-    0%,100%{transform:translateY(0)}
-    25%{transform:translateY(-2px)}
-    50%{transform:translateY(0)}
-    75%{transform:translateY(-2px)}
-  }
-  .coin-char .arm-l{animation:arm-swing-l 0.52s ease-in-out infinite;transform-origin:9px 20px;transform-box:fill-box}
-  .coin-char .arm-r{animation:arm-swing-r 0.52s ease-in-out infinite;transform-origin:27px 20px;transform-box:fill-box}
-  .coin-char .leg-l{animation:coin-leg-l 0.52s ease-in-out infinite;transform-origin:14px 30px;transform-box:fill-box}
-  .coin-char .leg-r{animation:coin-leg-r 0.52s ease-in-out infinite;transform-origin:22px 30px;transform-box:fill-box}
-  @keyframes coin-leg-l{0%,100%{transform:rotate(-18deg)}50%{transform:rotate(18deg)}}
-  @keyframes coin-leg-r{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-18deg)}}
-  @keyframes arm-swing-l{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-18deg)}}
-  @keyframes arm-swing-r{0%,100%{transform:rotate(-18deg)}50%{transform:rotate(18deg)}}
-
-  /* Reuse the wizard patrol keyframes — coins walk the same walkway */
-  .coin-char.cw1{animation-name:patrol-1}
-  .coin-char.cw2{animation-name:patrol-2}
-  .coin-char.cw3{animation-name:patrol-3}
-  .coin-char.cw4{animation-name:patrol-4}
-  .coin-char.cw5{animation-name:patrol-5}
-  .coin-char{animation-timing-function:linear;animation-iteration-count:infinite}
-
-  /* State behaviours */
-  .coin-char[data-state="scanning"]{}
-  .coin-char[data-state="waiting"]{animation-play-state:paused}
-  .coin-char[data-state="waiting"] .arm-l,.coin-char[data-state="waiting"] .arm-r{animation:arm-wave 1.4s ease-in-out infinite;transform-origin:inherit}
-  @keyframes arm-wave{0%,100%{transform:rotate(0)}50%{transform:rotate(-25deg)}}
-  .coin-char[data-state="in-trade"]{animation-play-state:paused}
-  .coin-char[data-state="in-trade"] .leg-l,.coin-char[data-state="in-trade"] .leg-r{animation-play-state:paused}
-  .coin-char[data-state="in-trade"] .arm-l,.coin-char[data-state="in-trade"] .arm-r{animation:arm-up 1s ease-in-out infinite;transform-origin:inherit}
-  @keyframes arm-up{0%,100%{transform:rotate(-90deg)}50%{transform:rotate(-100deg)}}
-  /* In-trade glow halo */
-  .coin-char[data-state="in-trade"]::before{
-    content:'';position:absolute;left:50%;top:32%;transform:translate(-50%,-50%);
+  /* In-trade — coin stops, raises arms, halo */
+  .panel[data-state="in-trade"] .coin-char{animation-play-state:paused;left:50% !important;margin-left:-16px}
+  .panel[data-state="in-trade"] .coin-char .leg-l,.panel[data-state="in-trade"] .coin-char .leg-r{animation-play-state:paused}
+  .panel[data-state="in-trade"] .coin-char .arm-l{animation:arm-up 1.1s ease-in-out infinite}
+  .panel[data-state="in-trade"] .coin-char .arm-r{animation:arm-up 1.1s ease-in-out infinite}
+  @keyframes arm-up{0%,100%{transform:rotate(-100deg)}50%{transform:rotate(-110deg)}}
+  .panel[data-state="in-trade"] .coin-char::before{
+    content:'';position:absolute;left:50%;top:30%;transform:translate(-50%,-50%);
     width:60px;height:60px;border-radius:50%;
-    background:radial-gradient(circle,rgba(0,212,255,0.25) 0%,transparent 70%);
-    animation:in-trade-pulse 1.4s ease-in-out infinite;pointer-events:none;
+    background:radial-gradient(circle,rgba(0,212,255,0.4) 0%,transparent 70%);
+    animation:halo-pulse 1.4s ease-in-out infinite;
   }
-  @keyframes in-trade-pulse{0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(0.9)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.15)}}
-  .coin-char[data-state="cooldown"]{opacity:0.55}
-  .coin-char[data-state="paused"]{animation-play-state:paused;opacity:0.6}
-  .coin-char[data-state="paused"] .leg-l,.coin-char[data-state="paused"] .leg-r,.coin-char[data-state="paused"] .arm-l,.coin-char[data-state="paused"] .arm-r{animation-play-state:paused}
-  .coin-char[data-state="paused"]::after{
-    content:'';position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);
-    width:46px;height:46px;border-radius:50%;
-    border:2px solid rgba(255,68,102,0.5);
-    box-shadow:0 0 12px rgba(255,68,102,0.4);pointer-events:none;
-  }
+  @keyframes halo-pulse{0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(0.9)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.2)}}
 
-  /* Zap shake when wizard casts on coin */
-  @keyframes coin-zap{
-    0%,100%{transform:translateX(0)}
-    15%{transform:translateX(-3px)}
-    30%{transform:translateX(3px)}
-    45%{transform:translateX(-2px)}
-    60%{transform:translateX(2px)}
-    75%{transform:translateX(-1px)}
-  }
-  .coin-char.zapped svg{animation:coin-zap 0.6s ease-out, coin-bob 0.52s ease-in-out infinite}
+  .panel[data-state="cooldown"] .coin-char{opacity:0.4}
+  .panel[data-state="paused"] .coin-char{animation-play-state:paused;opacity:0.5}
+  .panel[data-state="paused"] .coin-char .leg-l,.panel[data-state="paused"] .coin-char .leg-r,.panel[data-state="paused"] .coin-char .arm-l,.panel[data-state="paused"] .coin-char .arm-r{animation-play-state:paused}
 
-  /* Floating name label below the coin's feet */
-  .coin-name{position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);font-size:8.5px;font-weight:bold;letter-spacing:.1em;color:#e8eaf0;text-shadow:0 1px 3px rgba(0,0,0,0.95),0 0 2px rgba(0,0,0,0.9);white-space:nowrap;pointer-events:none}
-  .coin-char[data-state="in-trade"] .coin-name{color:var(--cy)}
-  .coin-char[data-state="waiting"] .coin-name{color:var(--am)}
-  .coin-char[data-state="paused"] .coin-name{color:var(--re)}
-
-  /* TP progress bar — only visible in-trade */
-  .coin-hp{position:absolute;bottom:-22px;left:50%;transform:translateX(-50%);width:38px;height:3px;background:rgba(255,68,102,0.25);border-radius:2px;overflow:hidden;display:none;pointer-events:none}
-  .coin-char[data-state="in-trade"] .coin-hp{display:block}
-  .coin-hp .fill{height:100%;background:linear-gradient(90deg,#ff4466 0%,#ffb830 50%,#00e5a0 100%);transition:width 0.6s ease;width:0%}
-
-  /* ══════════════════ AMBIENT LIFE LAYER ══════════════════ */
-  .kingdom-ambient{position:absolute;inset:0;pointer-events:none;z-index:5;overflow:hidden}
-
-  /* ── WIZARDS ── */
-  .wizard{position:absolute;width:36px;height:50px;will-change:transform,left,top}
-  .wizard svg{display:block;animation:wizard-bob 0.55s ease-in-out infinite;transform-origin:bottom center}
-  @keyframes wizard-bob{
-    0%,100%{transform:translateY(0) rotate(0deg)}
-    25%{transform:translateY(-2px) rotate(-2deg)}
-    50%{transform:translateY(0) rotate(0deg)}
-    75%{transform:translateY(-2px) rotate(2deg)}
-  }
-  .wizard .leg-l{transform-origin:6px 0;animation:leg-l 0.55s ease-in-out infinite}
-  .wizard .leg-r{transform-origin:6px 0;animation:leg-r 0.55s ease-in-out infinite}
-  @keyframes leg-l{0%,100%{transform:rotate(-15deg)}50%{transform:rotate(15deg)}}
-  @keyframes leg-r{0%,100%{transform:rotate(15deg)}50%{transform:rotate(-15deg)}}
-  /* Robe sway */
-  .wizard .robe{transform-origin:16px 22px;animation:robe-sway 1.1s ease-in-out infinite}
-  @keyframes robe-sway{0%,100%{transform:skewX(-2deg)}50%{transform:skewX(2deg)}}
-  /* Staff orb subtle glow pulse */
-  .wizard .staff-orb{animation:orb-pulse 1.6s ease-in-out infinite;transform-origin:center}
-  @keyframes orb-pulse{0%,100%{filter:brightness(0.9)}50%{filter:brightness(1.4)}}
-
-  /* Patrol routes — 5 keyframes the 11 wizards rotate through (with
-   * randomized animation-delay and duration so they spread out). Each
-   * keyframe only animates `left` and `transform: scaleX` — vertical
-   * position is set per-wizard via inline `top` so wizards walk at
-   * slightly different y-levels for depth.
-   */
-  .wizard.w1{animation-name:patrol-1}
-  .wizard.w2{animation-name:patrol-2}
-  .wizard.w3{animation-name:patrol-3}
-  .wizard.w4{animation-name:patrol-4}
-  .wizard.w5{animation-name:patrol-5}
-  .wizard{animation-timing-function:linear;animation-iteration-count:infinite}
-
-  @keyframes patrol-1{
-    0%{left:18%;transform:scaleX(1)}
-    48%{left:78%;transform:scaleX(1)}
-    50%{left:78%;transform:scaleX(-1)}
-    98%{left:18%;transform:scaleX(-1)}
-    100%{left:18%;transform:scaleX(1)}
-  }
-  @keyframes patrol-2{
-    0%{left:80%;transform:scaleX(-1)}
-    48%{left:22%;transform:scaleX(-1)}
-    50%{left:22%;transform:scaleX(1)}
-    98%{left:80%;transform:scaleX(1)}
-    100%{left:80%;transform:scaleX(-1)}
-  }
-  /* Castle-center patrol (mid-range, around the castle gate area) */
-  @keyframes patrol-3{
-    0%{left:42%;transform:scaleX(1)}
-    48%{left:62%;transform:scaleX(1)}
-    50%{left:62%;transform:scaleX(-1)}
-    98%{left:42%;transform:scaleX(-1)}
-    100%{left:42%;transform:scaleX(1)}
-  }
-  /* Left-wing patrol (calendar tower side) */
-  @keyframes patrol-4{
-    0%{left:14%;transform:scaleX(1)}
-    48%{left:42%;transform:scaleX(1)}
-    50%{left:42%;transform:scaleX(-1)}
-    98%{left:14%;transform:scaleX(-1)}
-    100%{left:14%;transform:scaleX(1)}
-  }
-  /* Right-wing patrol (treasury side) */
-  @keyframes patrol-5{
-    0%{left:60%;transform:scaleX(1)}
-    48%{left:84%;transform:scaleX(1)}
-    50%{left:84%;transform:scaleX(-1)}
-    98%{left:60%;transform:scaleX(-1)}
-    100%{left:60%;transform:scaleX(1)}
-  }
-
-  /* Wizard casting state: pauses patrol, raises staff, glows */
-  .wizard.casting{animation-play-state:paused}
-  .wizard.casting svg{animation:wizard-cast 1.4s ease-out forwards}
-  @keyframes wizard-cast{
-    0%{transform:translateY(0)}
-    20%{transform:translateY(-8px) scale(1.08)}
-    40%{transform:translateY(-12px) scale(1.1)}
-    70%{transform:translateY(-6px) scale(1.05)}
-    100%{transform:translateY(0) scale(1)}
-  }
-  .wizard.casting .staff-orb{animation:orb-cast 1.4s ease-out forwards;transform-origin:center}
-  @keyframes orb-cast{
-    0%{filter:brightness(1) drop-shadow(0 0 0 currentColor)}
-    40%{filter:brightness(2) drop-shadow(0 0 12px currentColor)}
-    100%{filter:brightness(1) drop-shadow(0 0 0 currentColor)}
-  }
-
-  /* Spell burst — concentric expanding ring + sparks */
-  .spell-burst{position:absolute;width:90px;height:90px;margin-left:-45px;margin-top:-45px;pointer-events:none;z-index:6}
+  /* Spell burst overlay when entry confirms */
+  .spell-burst{position:absolute;width:80px;height:80px;margin-left:-40px;margin-top:-40px;pointer-events:none;z-index:4}
   .spell-burst .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--spell-color,#00d4ff);opacity:0.9;animation:burst-ring 1.2s ease-out forwards}
   .spell-burst .ring.r2{animation-delay:0.15s}
   .spell-burst .ring.r3{animation-delay:0.3s}
-  @keyframes burst-ring{
-    0%{transform:scale(0.1);opacity:0.9}
-    100%{transform:scale(2.4);opacity:0}
-  }
-  .spell-burst .spark{position:absolute;width:3px;height:3px;left:50%;top:50%;margin-left:-1.5px;margin-top:-1.5px;background:var(--spell-color,#00d4ff);border-radius:50%;box-shadow:0 0 6px currentColor;color:var(--spell-color,#00d4ff);animation:spark-fly 1.0s ease-out forwards}
-  @keyframes spark-fly{
-    0%{transform:translate(0,0) scale(1);opacity:1}
-    100%{transform:translate(var(--sx),var(--sy)) scale(0.2);opacity:0}
-  }
+  @keyframes burst-ring{0%{transform:scale(0.1);opacity:0.9}100%{transform:scale(2.4);opacity:0}}
 
-  /* ── BIRDS ── */
-  .bird-flock{position:absolute;width:90px;height:18px;opacity:0.65}
-  .bird-flock.b1{animation:bird-fly-1 22s linear infinite;animation-delay:-3s}
-  .bird-flock.b2{animation:bird-fly-2 28s linear infinite;animation-delay:-15s}
-  @keyframes bird-fly-1{
-    0%{left:-10%;top:10%}
-    50%{top:14%}
-    100%{left:110%;top:8%}
-  }
-  @keyframes bird-fly-2{
-    0%{left:110%;top:14%;transform:scaleX(-1)}
-    50%{top:8%}
-    100%{left:-10%;top:12%;transform:scaleX(-1)}
-  }
-  .bird-flock .bird{animation:bird-wing 0.4s ease-in-out infinite;transform-origin:center}
-  .bird-flock .bird.b2-w{animation-delay:0.1s}
-  .bird-flock .bird.b3-w{animation-delay:0.05s}
-  @keyframes bird-wing{0%,100%{transform:scaleY(1)}50%{transform:scaleY(0.45)}}
+  .panel-empty{display:flex;align-items:center;justify-content:center;flex:1;color:var(--di);font-size:11px;letter-spacing:.1em}
 
-  /* ── FIREFLIES ── */
-  .firefly{position:absolute;width:4px;height:4px;background:rgba(255,220,100,0.85);border-radius:50%;filter:blur(0.5px);box-shadow:0 0 8px rgba(255,220,100,0.6),0 0 16px rgba(255,220,100,0.3);animation:firefly-drift 8s ease-in-out infinite,firefly-blink 2.2s ease-in-out infinite}
-  @keyframes firefly-drift{
-    0%,100%{transform:translate(0,0)}
-    25%{transform:translate(18px,-15px)}
-    50%{transform:translate(-12px,-26px)}
-    75%{transform:translate(14px,-12px)}
-  }
-  @keyframes firefly-blink{0%,100%{opacity:0.25}50%{opacity:1}}
-
-  /* ── SMOKE FROM SPIRE ── */
-  .smoke-puff{position:absolute;width:8px;height:8px;background:rgba(200,200,210,0.35);border-radius:50%;filter:blur(4px);animation:smoke-rise 4.5s ease-out infinite}
-  @keyframes smoke-rise{
-    0%{opacity:0;transform:translate(0,0) scale(0.4)}
-    15%{opacity:0.7}
-    100%{opacity:0;transform:translate(var(--sx,5px),-80px) scale(2.5)}
-  }
-
-  /* ── TORCH FLAMES ON CASTLE WALLS ── */
-  .torch{position:absolute;width:8px;height:14px;pointer-events:none}
-  .torch::before{content:'';position:absolute;left:50%;top:0;width:6px;height:10px;margin-left:-3px;background:radial-gradient(ellipse at center bottom,#fff5b8 0%,#ffb830 35%,#ff6020 80%,transparent 100%);border-radius:50% 50% 50% 50% / 60% 60% 40% 40%;filter:blur(0.5px);animation:torch-flicker 0.25s ease-in-out infinite alternate;transform-origin:bottom center}
-  .torch::after{content:'';position:absolute;left:50%;top:10px;width:3px;height:4px;margin-left:-1.5px;background:#3a2515;border-radius:1px}
-  @keyframes torch-flicker{
-    0%{transform:scaleY(1) scaleX(1) translateX(0);opacity:0.9}
-    100%{transform:scaleY(1.15) scaleX(0.85) translateX(1px);opacity:1}
-  }
-  /* Torch glow halo */
-  .torch::after{box-shadow:0 -6px 12px rgba(255,184,48,0.5),0 -2px 6px rgba(255,100,32,0.4)}
-
-  /* ── CASTLE AURA RAYS (volumetric light) ── */
-  .castle-rays{position:absolute;top:5%;left:50%;transform:translateX(-50%);width:520px;height:380px;pointer-events:none;opacity:0.4;mix-blend-mode:screen}
-  .castle-rays .ray{position:absolute;top:40%;left:50%;width:2px;height:300px;background:linear-gradient(to bottom,transparent,rgba(0,212,255,0.4),transparent);transform-origin:top center;animation:ray-sweep 8s ease-in-out infinite}
-  .castle-rays .ray.r1{transform:rotate(-25deg)}
-  .castle-rays .ray.r2{transform:rotate(-10deg);animation-delay:-2s}
-  .castle-rays .ray.r3{transform:rotate(5deg);animation-delay:-4s}
-  .castle-rays .ray.r4{transform:rotate(20deg);animation-delay:-6s}
-  @keyframes ray-sweep{
-    0%,100%{opacity:0.2;height:280px}
-    50%{opacity:0.6;height:340px}
-  }
-
-  /* BOTTOM BAND — collapses when no trades so the page fits the viewport */
-  .bottom-band{display:flex;flex-direction:column;gap:6px}
-  .bottom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
-  .bottom-header .l{font-size:10px;color:var(--mu);letter-spacing:.15em}
-  .bottom-header .c{font-size:10px;color:var(--cy);letter-spacing:.05em}
-  .charts-grid{display:grid;gap:10px}
-  .charts-grid[data-n="0"]{display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;min-height:46px;padding:0 14px}
-  .charts-grid:not([data-n="0"]){min-height:240px}
-  .charts-grid[data-n="1"]{grid-template-columns:1fr}
-  .charts-grid[data-n="2"]{grid-template-columns:1fr 1fr}
-  .charts-grid[data-n="3"]{grid-template-columns:repeat(3,1fr)}
-  .charts-grid[data-n="4"]{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr)}
-  .charts-grid[data-n="5"],.charts-grid[data-n="6"]{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr)}
-  .charts-grid[data-n="7"],.charts-grid[data-n="8"],.charts-grid[data-n="9"]{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr)}
-  .charts-grid[data-n="10"],.charts-grid[data-n="11"],.charts-grid[data-n="12"]{grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(3,1fr)}
-  .charts-grid .empty-pane{color:var(--di);font-size:11px;letter-spacing:.1em}
-
-  .chart-pane{background:var(--bg2);border:1px solid var(--b1);border-radius:6px;display:flex;flex-direction:column;overflow:hidden;min-height:230px}
-  .chart-pane .ph{padding:8px 10px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--b1);font-size:10px}
-  .chart-pane .ph .pair{font-weight:bold;letter-spacing:.05em}
-  .chart-pane .ph .dir.long{color:var(--gr)}.chart-pane .ph .dir.short{color:var(--re)}
-  .chart-pane .ph .levels{color:var(--mu);font-size:9px;letter-spacing:.02em}
-  .chart-pane .ph .progress{color:var(--cy);font-weight:bold}
-  .chart-pane .ph .badge{padding:1px 6px;border-radius:2px;font-size:9px;letter-spacing:.08em}
-  .chart-pane .ph .badge.entered{color:var(--gr);background:rgba(0,229,160,0.08);border:1px solid rgba(0,229,160,0.3)}
-  .chart-pane .ph .badge.waiting{color:var(--am);background:rgba(255,184,48,0.08);border:1px solid rgba(255,184,48,0.3)}
-  .chart-pane .ph .badge.be{color:var(--am);background:rgba(255,184,48,0.16);border:1px solid rgba(255,184,48,0.5)}
-  .chart-pane .body{flex:1;position:relative}
+  /* RR badge floating top-right inside chart body when signal exists */
+  .signal-info{position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.6);backdrop-filter:blur(3px);border:1px solid var(--b1);border-radius:3px;padding:3px 7px;font-size:9px;color:var(--mu);letter-spacing:.04em;z-index:2}
+  .signal-info .val{color:var(--fg);font-weight:bold}
+  .signal-info .pct{color:var(--cy);font-weight:bold}
 </style>
 </head>
 <body>
@@ -462,7 +217,6 @@
   <div class="card">
     <div class="card-title">OPEN POSITIONS</div>
     <div class="openpos-count" id="op-count">0 POS</div>
-
     <div class="openpos-section long">
       <div class="head"><span class="tag">▲ LONG</span><span id="op-long-count">0 POS</span></div>
       <div class="openpos-table">
@@ -472,7 +226,6 @@
         <div class="openpos-row"><span class="l">PAIRS</span><span class="v v-cy" id="op-long-pairs">—</span></div>
       </div>
     </div>
-
     <div class="openpos-section short">
       <div class="head"><span class="tag">▼ SHORT</span><span id="op-short-count">0 POS</span></div>
       <div class="openpos-table">
@@ -494,345 +247,14 @@
   <div class="item"><span class="l">NEXT EVENT</span><span class="v am" id="q-next">—</span></div>
 </div>
 
-<!-- ═══ MIDDLE BAND — KINGDOM ═══ -->
-<div class="middle-band">
-  <div class="kingdom-stage" id="stage" data-sky="day">
-
-    <div class="stars" id="stars"></div>
-    <div class="clouds" id="clouds"></div>
-
-    <!-- ═════════ MAIN SCENE SVG ═════════ -->
-    <svg class="scene-svg" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMid slice" aria-label="Henry kingdom scene">
-      <defs>
-        <!-- Stone tower gradient -->
-        <linearGradient id="stoneGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#3a4257"/>
-          <stop offset="100%" stop-color="#1c2230"/>
-        </linearGradient>
-        <linearGradient id="stoneGradLit" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#4a5571"/>
-          <stop offset="100%" stop-color="#252b3a"/>
-        </linearGradient>
-        <linearGradient id="roofGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#5a3038"/>
-          <stop offset="100%" stop-color="#311b22"/>
-        </linearGradient>
-        <linearGradient id="goldGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#ffd470"/>
-          <stop offset="100%" stop-color="#c08410"/>
-        </linearGradient>
-        <linearGradient id="vaultGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#604530"/>
-          <stop offset="100%" stop-color="#2e1d12"/>
-        </linearGradient>
-        <linearGradient id="pathGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#3a3328"/>
-          <stop offset="55%" stop-color="#262018"/>
-          <stop offset="100%" stop-color="#15110a"/>
-        </linearGradient>
-        <linearGradient id="pathEdge" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="rgba(255,255,255,0.06)"/>
-          <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
-        </linearGradient>
-        <radialGradient id="castleAuraGrad">
-          <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.35"/>
-          <stop offset="60%" stop-color="#00d4ff" stop-opacity="0.05"/>
-          <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
-        </radialGradient>
-        <radialGradient id="windowGlow">
-          <stop offset="0%" stop-color="#ffb830"/>
-          <stop offset="80%" stop-color="#c08410"/>
-          <stop offset="100%" stop-color="#704508"/>
-        </radialGradient>
-        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="3" result="blur"/>
-          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-      </defs>
-
-      <!-- ── Distant mountains silhouette ── -->
-      <g opacity="0.55">
-        <path d="M 0 410 L 80 340 L 180 372 L 280 312 L 400 364 L 520 320 L 640 356 L 760 304 L 900 348 L 1060 320 L 1180 364 L 1300 328 L 1450 358 L 1600 340 L 1600 600 L 0 600 Z" fill="#0a0e1a"/>
-      </g>
-      <!-- ── Mid-ground hills ── -->
-      <g opacity="0.7">
-        <path d="M 0 460 L 120 412 L 280 442 L 420 402 L 600 432 L 780 412 L 960 442 L 1140 422 L 1320 437 L 1500 417 L 1600 432 L 1600 600 L 0 600 Z" fill="#0b1019"/>
-      </g>
-      <!-- ── Ground plane ── -->
-      <rect x="0" y="488" width="1600" height="112" fill="#0a0c14"/>
-
-      <!-- ═══ WALKWAYS — real cobblestone paths (pulled up for compact layout) ═══ -->
-      <g class="walkways">
-        <!-- Main horizontal road (the wizard patrol corridor) -->
-        <path d="M 40 408 Q 800 398 1560 405 L 1560 442 Q 800 448 40 438 Z" fill="url(#pathGrad)"/>
-        <path d="M 40 408 Q 800 398 1560 405 L 1560 413 Q 800 403 40 413 Z" fill="url(#pathEdge)"/>
-
-        <!-- Castle approach (gate to road) -->
-        <path d="M 750 368 L 850 368 L 882 412 L 718 412 Z" fill="url(#pathGrad)"/>
-        <path d="M 750 368 L 850 368 L 856 374 L 744 374 Z" fill="url(#pathEdge)"/>
-
-        <!-- Calendar tower diagonal walkway -->
-        <path d="M 108 268 L 174 268 L 230 410 L 70 422 Z" fill="url(#pathGrad)"/>
-        <path d="M 108 268 L 174 268 L 178 278 L 112 278 Z" fill="url(#pathEdge)"/>
-
-        <!-- Treasury connector -->
-        <path d="M 1340 410 L 1490 388 L 1540 430 L 1340 436 Z" fill="url(#pathGrad)"/>
-
-        <!-- Cobblestone accents on main road -->
-        <g fill="rgba(0,0,0,0.45)">
-          <rect x="80"  y="423" width="6" height="3" rx="1"/>
-          <rect x="140" y="426" width="5" height="3" rx="1"/>
-          <rect x="200" y="424" width="6" height="3" rx="1"/>
-          <rect x="260" y="428" width="5" height="3" rx="1"/>
-          <rect x="320" y="423" width="6" height="3" rx="1"/>
-          <rect x="380" y="426" width="5" height="3" rx="1"/>
-          <rect x="440" y="424" width="6" height="3" rx="1"/>
-          <rect x="500" y="428" width="5" height="3" rx="1"/>
-          <rect x="560" y="423" width="6" height="3" rx="1"/>
-          <rect x="620" y="426" width="5" height="3" rx="1"/>
-          <rect x="900" y="423" width="6" height="3" rx="1"/>
-          <rect x="970" y="426" width="5" height="3" rx="1"/>
-          <rect x="1040" y="424" width="6" height="3" rx="1"/>
-          <rect x="1110" y="428" width="5" height="3" rx="1"/>
-          <rect x="1180" y="423" width="6" height="3" rx="1"/>
-          <rect x="1250" y="426" width="5" height="3" rx="1"/>
-          <rect x="1320" y="424" width="6" height="3" rx="1"/>
-          <rect x="1390" y="428" width="5" height="3" rx="1"/>
-          <rect x="1460" y="423" width="6" height="3" rx="1"/>
-        </g>
-        <!-- Warm lantern dots along the road -->
-        <g>
-          <circle cx="240" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-          <circle cx="500" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-          <circle cx="1100" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-          <circle cx="1350" cy="405" r="1.6" fill="#ffb830" filter="url(#glow)"/>
-        </g>
-      </g>
-
-      <!-- ═══ CALENDAR TOWER (top-left) ═══ -->
-      <g class="cal-tower-svg" id="cal-tower-svg" transform="translate(80,40)">
-        <!-- Tower stack: base, mid, top -->
-        <rect x="20" y="190" width="80" height="60" fill="url(#stoneGrad)" rx="2"/>
-        <rect x="28" y="110" width="64" height="80" fill="url(#stoneGradLit)" rx="2"/>
-        <rect x="34" y="50" width="52" height="60" fill="url(#stoneGrad)" rx="2"/>
-        <!-- Crenellations on top -->
-        <g fill="#2a3344">
-          <rect x="34" y="42" width="10" height="10"/>
-          <rect x="50" y="42" width="10" height="10"/>
-          <rect x="66" y="42" width="10" height="10"/>
-          <rect x="76" y="42" width="10" height="10"/>
-        </g>
-        <!-- Conical bell roof -->
-        <polygon points="34,50 60,18 86,50" fill="url(#roofGrad)"/>
-        <polygon points="34,50 60,22 86,50" fill="#1a0c12" opacity="0.4"/>
-        <!-- Bell housing -->
-        <rect x="50" y="30" width="20" height="14" fill="#2a3344" rx="1"/>
-        <!-- Bell (animates) -->
-        <g class="bell">
-          <path d="M 56 36 L 64 36 L 66 46 L 54 46 Z" fill="url(#goldGrad)"/>
-          <circle cx="60" cy="48" r="1.5" fill="#c08410"/>
-        </g>
-        <!-- Clock face -->
-        <circle cx="60" cy="142" r="14" fill="#1a1f2e" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
-        <circle cx="60" cy="142" r="10" fill="#0e1117"/>
-        <!-- Clock hands rotate via JS — placeholder static -->
-        <line x1="60" y1="142" x2="60" y2="136" stroke="rgba(255,255,255,0.5)" stroke-width="1.2" id="clock-hour"/>
-        <line x1="60" y1="142" x2="60" y2="134" stroke="rgba(0,212,255,0.7)" stroke-width="1" id="clock-min"/>
-        <circle cx="60" cy="142" r="1.2" fill="#00d4ff"/>
-        <!-- Tower base (entryway) -->
-        <rect x="50" y="225" width="20" height="25" fill="#0a0e1a"/>
-        <path d="M 50 235 Q 60 225 70 235 L 70 250 L 50 250 Z" fill="#0a0e1a"/>
-        <!-- Stone texture lines -->
-        <g stroke="rgba(0,0,0,0.3)" stroke-width="1" fill="none">
-          <line x1="34" y1="80" x2="86" y2="80"/>
-          <line x1="28" y1="140" x2="92" y2="140"/>
-          <line x1="20" y1="220" x2="100" y2="220"/>
-        </g>
-        <!-- Lightning bolts (visible when imminent) -->
-        <g class="lightning-bolt" stroke="#fff" stroke-width="2" fill="none" filter="url(#glow)">
-          <polyline points="40,10 30,30 50,32 38,55 60,52 48,72" stroke="rgba(255,184,48,0.9)"/>
-          <polyline points="90,12 100,32 80,30 92,52 70,50 82,70" stroke="rgba(255,68,102,0.9)"/>
-        </g>
-      </g>
-
-      <!-- ═══ AI CASTLE (center, scaled to 65% for tighter layout) ═══ -->
-      <g class="castle-svg" transform="translate(626,108) scale(0.65)">
-        <!-- Aura behind -->
-        <circle cx="280" cy="240" r="280" fill="url(#castleAuraGrad)" class="castle-aura"/>
-
-        <!-- Curtain wall connecting towers (back layer) -->
-        <rect x="40" y="280" width="480" height="120" fill="url(#stoneGrad)"/>
-        <!-- Wall crenellations -->
-        <g fill="#1c2230">
-          <rect x="40" y="270" width="20" height="14"/>
-          <rect x="70" y="270" width="20" height="14"/>
-          <rect x="100" y="270" width="20" height="14"/>
-          <rect x="130" y="270" width="20" height="14"/>
-          <rect x="160" y="270" width="20" height="14"/>
-          <rect x="370" y="270" width="20" height="14"/>
-          <rect x="400" y="270" width="20" height="14"/>
-          <rect x="430" y="270" width="20" height="14"/>
-          <rect x="460" y="270" width="20" height="14"/>
-          <rect x="490" y="270" width="20" height="14"/>
-        </g>
-
-        <!-- Left tower -->
-        <rect x="20" y="180" width="80" height="220" fill="url(#stoneGrad)" rx="2"/>
-        <g fill="#1c2230">
-          <rect x="20" y="170" width="14" height="14"/>
-          <rect x="40" y="170" width="14" height="14"/>
-          <rect x="60" y="170" width="14" height="14"/>
-          <rect x="86" y="170" width="14" height="14"/>
-        </g>
-        <polygon points="20,180 60,130 100,180" fill="url(#roofGrad)"/>
-        <!-- Left tower flag pole -->
-        <line x1="60" y1="130" x2="60" y2="100" stroke="#2a3344" stroke-width="2"/>
-        <g transform="translate(60,100)">
-          <path class="flag-cloth" d="M 0 0 L 22 4 L 18 12 L 22 20 L 0 16 Z" fill="#00d4ff"/>
-        </g>
-
-        <!-- Right tower -->
-        <rect x="460" y="180" width="80" height="220" fill="url(#stoneGrad)" rx="2"/>
-        <g fill="#1c2230">
-          <rect x="460" y="170" width="14" height="14"/>
-          <rect x="480" y="170" width="14" height="14"/>
-          <rect x="500" y="170" width="14" height="14"/>
-          <rect x="526" y="170" width="14" height="14"/>
-        </g>
-        <polygon points="460,180 500,130 540,180" fill="url(#roofGrad)"/>
-        <line x1="500" y1="130" x2="500" y2="100" stroke="#2a3344" stroke-width="2"/>
-        <g transform="translate(500,100)">
-          <path class="flag-cloth" d="M 0 0 L 22 4 L 18 12 L 22 20 L 0 16 Z" fill="#00e5a0"/>
-        </g>
-
-        <!-- Central keep (tallest) -->
-        <rect x="200" y="80" width="160" height="320" fill="url(#stoneGradLit)" rx="2"/>
-        <g fill="#1c2230">
-          <rect x="200" y="70" width="20" height="14"/>
-          <rect x="226" y="70" width="20" height="14"/>
-          <rect x="252" y="70" width="20" height="14"/>
-          <rect x="278" y="70" width="20" height="14"/>
-          <rect x="304" y="70" width="20" height="14"/>
-          <rect x="330" y="70" width="20" height="14"/>
-          <rect x="340" y="70" width="20" height="14"/>
-        </g>
-        <polygon points="200,80 280,20 360,80" fill="url(#roofGrad)"/>
-        <polygon points="200,80 280,28 360,80" fill="#1a0c12" opacity="0.4"/>
-        <!-- Central spire flag -->
-        <line x1="280" y1="20" x2="280" y2="-12" stroke="#2a3344" stroke-width="2"/>
-        <circle cx="280" cy="-14" r="3" fill="url(#goldGrad)"/>
-        <g transform="translate(280,-12)">
-          <path class="flag-cloth" d="M 0 0 L 28 6 L 22 14 L 28 24 L 0 18 Z" fill="#ff4466"/>
-        </g>
-
-        <!-- 11 advisor windows on the keep (3-4-4 layout) -->
-        <g>
-          <!-- Row 1 (3 windows) -->
-          <rect class="advisor-window w0" x="230" y="120" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Trigger detection</title></rect>
-          <rect class="advisor-window w1" x="270" y="120" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Multi-timeframe HTF</title></rect>
-          <rect class="advisor-window w2" x="310" y="120" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>BTC correlation / DXY</title></rect>
-          <!-- Row 2 (4 windows) -->
-          <rect class="advisor-window w3" x="218" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Funding rate</title></rect>
-          <rect class="advisor-window w4" x="252" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Open interest</title></rect>
-          <rect class="advisor-window w5" x="288" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Liquidity heatmap</title></rect>
-          <rect class="advisor-window w6" x="322" y="170" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Order flow / footprint</title></rect>
-          <!-- Row 3 (4 windows) -->
-          <rect class="advisor-window w7" x="218" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>CVD trend</title></rect>
-          <rect class="advisor-window w8" x="252" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Cross-broker check</title></rect>
-          <rect class="advisor-window w9" x="288" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>News headlines</title></rect>
-          <rect class="advisor-window w10" x="322" y="220" width="20" height="26" fill="url(#windowGlow)" rx="2"><title>Economic calendar</title></rect>
-        </g>
-        <!-- Castle gate -->
-        <path d="M 250 400 L 250 340 Q 280 314 310 340 L 310 400 Z" fill="#0a0e1a"/>
-        <line x1="280" y1="340" x2="280" y2="400" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-        <!-- Stone joint lines -->
-        <g stroke="rgba(0,0,0,0.35)" stroke-width="1" fill="none">
-          <line x1="200" y1="160" x2="360" y2="160"/>
-          <line x1="200" y1="210" x2="360" y2="210"/>
-          <line x1="200" y1="260" x2="360" y2="260"/>
-          <line x1="200" y1="320" x2="360" y2="320"/>
-          <line x1="20" y1="240" x2="100" y2="240"/>
-          <line x1="20" y1="300" x2="100" y2="300"/>
-          <line x1="460" y1="240" x2="540" y2="240"/>
-          <line x1="460" y1="300" x2="540" y2="300"/>
-        </g>
-      </g>
-
-    </svg>
-    <!-- ═════════ END SCENE SVG ═════════ -->
-
-    <!-- ═════════ AMBIENT LIFE LAYER ═════════ -->
-    <div class="kingdom-ambient" id="ambient">
-      <!-- Castle volumetric light rays -->
-      <div class="castle-rays">
-        <div class="ray r1"></div>
-        <div class="ray r2"></div>
-        <div class="ray r3"></div>
-        <div class="ray r4"></div>
-      </div>
-
-      <!-- Birds (continuously flying across) -->
-      <div class="bird-flock b1">
-        <svg viewBox="0 0 90 18" width="90" height="18">
-          <path class="bird b1-w" d="M 8 8 Q 12 3 16 8 Q 20 3 24 8" stroke="#0a0d18" stroke-width="1.6" fill="none"/>
-          <path class="bird b2-w" d="M 35 10 Q 39 5 43 10 Q 47 5 51 10" stroke="#0a0d18" stroke-width="1.6" fill="none"/>
-          <path class="bird b3-w" d="M 60 7 Q 64 2 68 7 Q 72 2 76 7" stroke="#0a0d18" stroke-width="1.6" fill="none"/>
-        </svg>
-      </div>
-      <div class="bird-flock b2">
-        <svg viewBox="0 0 90 18" width="90" height="18">
-          <path class="bird b1-w" d="M 8 8 Q 12 3 16 8 Q 20 3 24 8" stroke="#0a0d18" stroke-width="1.4" fill="none"/>
-          <path class="bird b2-w" d="M 35 10 Q 39 5 43 10 Q 47 5 51 10" stroke="#0a0d18" stroke-width="1.4" fill="none"/>
-        </svg>
-      </div>
-
-      <!-- Smoke from central spire -->
-      <div class="smoke-puff" style="left:50%;top:18%;--sx:5px;animation-delay:0s"></div>
-      <div class="smoke-puff" style="left:50%;top:18%;--sx:-3px;animation-delay:-1.5s"></div>
-      <div class="smoke-puff" style="left:50%;top:18%;--sx:7px;animation-delay:-3s"></div>
-
-      <!-- Fireflies drifting around castle and territories -->
-      <div class="firefly" style="left:38%;top:46%;animation-delay:0s"></div>
-      <div class="firefly" style="left:62%;top:48%;animation-delay:-1s"></div>
-      <div class="firefly" style="left:46%;top:52%;animation-delay:-2.4s"></div>
-      <div class="firefly" style="left:55%;top:55%;animation-delay:-3.8s"></div>
-      <div class="firefly" style="left:42%;top:60%;animation-delay:-1.2s"></div>
-      <div class="firefly" style="left:58%;top:62%;animation-delay:-2.9s"></div>
-      <div class="firefly" style="left:30%;top:64%;animation-delay:-4.2s"></div>
-      <div class="firefly" style="left:68%;top:64%;animation-delay:-0.5s"></div>
-      <div class="firefly" style="left:50%;top:68%;animation-delay:-3.1s"></div>
-      <div class="firefly" style="left:35%;top:50%;animation-delay:-1.8s"></div>
-
-      <!-- Torches on castle walls (positioned absolutely over the SVG castle) -->
-      <div class="torch" style="left:39%;top:46%"></div>
-      <div class="torch" style="left:60%;top:46%"></div>
-      <div class="torch" style="left:43%;top:54%"></div>
-      <div class="torch" style="left:56%;top:54%"></div>
-
-      <!-- 11 walking wizards — sprites built by JS in spawnWizards() -->
-    </div>
-
-    <!-- HTML overlays on top of the SVG (dynamic text) -->
-    <div class="scene-overlay">
-      <div class="overlay-text cal-clock-label" id="cal-clock">--:-- UTC</div>
-      <div class="overlay-text cal-event-label" id="cal-event">scanning…</div>
-      <!-- Coin character names float anchored to their sprite (rendered in JS) -->
-      <div class="kingdom-empty" id="kingdom-empty" style="display:none">
-        <div class="label">SCAN INACTIVE</div>
-        <div class="sub">Start auto-scan from the terminal to populate the kingdom</div>
-      </div>
-    </div>
+<!-- ═══ KINGDOM — 4-panel chart grid ═══ -->
+<div class="kingdom">
+  <div class="kingdom-header">
+    <span class="l">WATCHLIST PANELS</span>
+    <span class="c" id="kingdom-count">— / 4 max</span>
   </div>
-</div>
-
-<!-- ═══ BOTTOM BAND — Active Trades ═══ -->
-<div class="bottom-band">
-  <div class="bottom-header">
-    <span class="l">ACTIVE TRADES</span>
-    <span class="c" id="bottom-count">—</span>
-  </div>
-  <div id="charts-grid" class="charts-grid" data-n="0">
-    <div class="empty-pane">No active trades</div>
+  <div id="chart-grid" class="chart-grid" data-n="0">
+    <div class="empty">Scan inactive — click AUTO on the terminal to populate</div>
   </div>
 </div>
 
@@ -840,36 +262,60 @@
 // ─────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────
-function fmtR(r){
-  if(r==null)return'—';
-  var n=parseFloat(r);
-  if(isNaN(n))return'—';
-  return (n>=0?'+':'')+n.toFixed(2)+'R';
+function fmtR(r){if(r==null)return'—';var n=parseFloat(r);if(isNaN(n))return'—';return (n>=0?'+':'')+n.toFixed(2)+'R';}
+function fmtPx(p){if(p==null)return'—';var n=parseFloat(p);if(isNaN(n))return'—';if(n>=1000)return n.toFixed(2);if(n>=10)return n.toFixed(4);return n.toFixed(6);}
+function clsR(r){if(r==null||r===0)return'zero';return parseFloat(r)>=0?'pos':'neg';}
+function shortCoin(c){return (c||'').replace('USDT','').replace('1000','');}
+
+// Coin color/symbol info — used both for icon badge and walking character body
+var COIN_INFO={
+  BTCUSDT:  {sym:'₿',  color:'#f7931a', dark:'#a86208'},
+  ETHUSDT:  {sym:'Ξ',  color:'#627eea', dark:'#3a4ea8'},
+  SOLUSDT:  {sym:'S',  color:'#9945ff', dark:'#5a2898'},
+  XRPUSDT:  {sym:'X',  color:'#23292f', dark:'#0a0d12'},
+  DOGEUSDT: {sym:'D',  color:'#c2a633', dark:'#7a6510'},
+  AVAXUSDT: {sym:'A',  color:'#e84142', dark:'#8e2020'},
+  AAVEUSDT: {sym:'A',  color:'#b6509e', dark:'#732e62'},
+  PEPEUSDT: {sym:'P',  color:'#389134', dark:'#1a4a18'},
+  GOLD:     {sym:'AU', color:'#ffd700', dark:'#a07c00'},
+  BNBUSDT:  {sym:'B',  color:'#f3ba2f', dark:'#a07810'},
+  ADAUSDT:  {sym:'A',  color:'#3e3fff', dark:'#1a1c98'},
+  DOTUSDT:  {sym:'D',  color:'#e6007a', dark:'#8a0048'},
+  LINKUSDT: {sym:'L',  color:'#2a5ada', dark:'#103088'},
+  SUIUSDT:  {sym:'S',  color:'#4ca3ff', dark:'#1a5aa8'},
+  ARBUSDT:  {sym:'A',  color:'#28a0f0', dark:'#0a5a92'},
+  OPUSDT:   {sym:'O',  color:'#ff0420', dark:'#8a0a14'},
+  NEARUSDT: {sym:'N',  color:'#80828c', dark:'#3a3c44'},
+  INJUSDT:  {sym:'I',  color:'#00f3a8', dark:'#00a072'},
+  XAUTUSDT: {sym:'AU', color:'#d4af37', dark:'#7a6010'},
+  XAGUSDT:  {sym:'AG', color:'#c0c0c0', dark:'#7a7a7a'},
+  XTIUSDT:  {sym:'WTI',color:'#1f1f1f', dark:'#0a0a0a'},
+  XBRUSDT:  {sym:'BR', color:'#3a2a1a', dark:'#1a1208'},
+};
+function infoFor(coin){return COIN_INFO[coin]||{sym:shortCoin(coin).slice(0,2),color:'#888',dark:'#444'};}
+
+function coinSpriteSvg(coin){
+  var i=infoFor(coin);
+  return '<svg viewBox="0 0 32 46" width="32" height="46">'
+    +'<ellipse cx="16" cy="44" rx="8" ry="1.4" fill="rgba(0,0,0,0.55)"/>'
+    +'<g class="arm-l"><line x1="8" y1="18" x2="6" y2="26" stroke="'+i.dark+'" stroke-width="2" stroke-linecap="round"/><circle cx="6" cy="27" r="1.4" fill="'+i.color+'"/></g>'
+    +'<g class="arm-r"><line x1="24" y1="18" x2="26" y2="26" stroke="'+i.dark+'" stroke-width="2" stroke-linecap="round"/><circle cx="26" cy="27" r="1.4" fill="'+i.color+'"/></g>'
+    +'<g><circle cx="16" cy="14" r="11" fill="'+i.color+'" stroke="'+i.dark+'" stroke-width="1.2"/>'
+    +'<circle cx="16" cy="14" r="9" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="0.6"/>'
+    +'<text x="16" y="18" text-anchor="middle" font-size="'+(i.sym.length>1?8:11)+'" font-weight="900" fill="#fff" font-family="Arial Black, Arial">'+i.sym+'</text>'
+    +'<ellipse cx="12" cy="10" rx="2.5" ry="1.8" fill="rgba(255,255,255,0.25)"/></g>'
+    +'<g class="leg-l"><line x1="13" y1="25" x2="13" y2="40" stroke="#2a1a0e" stroke-width="2.5" stroke-linecap="round"/><ellipse cx="13" cy="42" rx="2.5" ry="1.3" fill="#0a0604"/></g>'
+    +'<g class="leg-r"><line x1="19" y1="25" x2="19" y2="40" stroke="#2a1a0e" stroke-width="2.5" stroke-linecap="round"/><ellipse cx="19" cy="42" rx="2.5" ry="1.3" fill="#0a0604"/></g>'
+    +'</svg>';
 }
-function fmtPx(p){
-  if(p==null)return'—';
-  var n=parseFloat(p);
-  if(isNaN(n))return'—';
-  if(n>=1000)return n.toFixed(2);
-  if(n>=10)return n.toFixed(4);
-  return n.toFixed(6);
-}
-function clsR(r){
-  if(r==null||r===0)return'zero';
-  return parseFloat(r)>=0?'pos':'neg';
-}
-function shortCoin(c){return c.replace('USDT','').replace('1000','');}
 
 // ─────────────────────────────────────────────────────────────
-// TOP BAND RENDER
+// TOP BAND RENDER (unchanged from before)
 // ─────────────────────────────────────────────────────────────
 function renderSummary(d){
   if(!d)return;
-  var t=d.today||{};
-  var m=d.month||{};
-  var a=d.allTime||{};
+  var t=d.today||{},m=d.month||{},a=d.allTime||{};
 
-  // Today card
   var tEl=document.getElementById('today-r');
   tEl.textContent=fmtR(t.totalR);
   tEl.className='today-r '+clsR(t.totalR);
@@ -881,600 +327,296 @@ function renderSummary(d){
   wr.textContent=(t.winRate!=null?t.winRate+'%':'—');
   wr.className='val '+(t.winRate>=60?'v-gr':t.winRate>=40?'v-am':t.winRate>0?'v-re':'v-mu');
   document.getElementById('t-ai').textContent=t.aiCalls||0;
-
-  // API strip
   var scan=d.scanState||{};
-  var apiEl=document.getElementById('api-strip');
-  apiEl.textContent=(scan.active?'API Connected':'Scan idle')+' — '+(scan.watchlistSize||0)+' pairs watchlist, '+(scan.pairsTracked||0)+' tracked';
+  document.getElementById('api-strip').textContent=(scan.active?'API Connected':'Scan idle')+' — '+(scan.watchlistSize||0)+' pairs watchlist, '+(scan.pairsTracked||0)+' tracked';
 
-  // Month card
-  var monthCard=document.getElementById('m-month-card');
-  var totalCard=document.getElementById('m-total-card');
+  var monthCard=document.getElementById('m-month-card'),totalCard=document.getElementById('m-total-card');
   document.getElementById('m-month').textContent=fmtR(m.totalR);
   monthCard.className='month-bignum '+clsR(m.totalR);
   document.getElementById('m-month-sub').textContent=(m.closed||0)+' closed · '+(m.tp||0)+'W '+(m.sl||0)+'L '+(m.be||0)+'BE';
   document.getElementById('m-total').textContent=fmtR(a.totalR);
   totalCard.className='month-bignum '+clsR(a.totalR);
   document.getElementById('m-total-sub').textContent=(a.closed||0)+' closed · WR '+(a.winRate||0)+'%';
-
-  var now=new Date();
-  var mNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var now=new Date(),mNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   document.getElementById('m-month-label').textContent=mNames[now.getUTCMonth()]+' '+now.getUTCFullYear();
-  if(a.startedAt){
-    var s=new Date(a.startedAt);
-    document.getElementById('m-start-label').textContent='Start '+s.toISOString().slice(0,10);
-  } else {
-    document.getElementById('m-start-label').textContent='No trades yet';
-  }
-
+  if(a.startedAt){var s=new Date(a.startedAt);document.getElementById('m-start-label').textContent='Start '+s.toISOString().slice(0,10);}
+  else document.getElementById('m-start-label').textContent='No trades yet';
   drawMonthChart(d.dailyR||[]);
 
-  // Open positions
   var op=d.openPositions||{};
   var lg=op.long||{count:0,plannedR:0,avgConf:0,pairs:[],rAtRisk:0};
   var sh=op.short||{count:0,plannedR:0,avgConf:0,pairs:[],rAtRisk:0};
   document.getElementById('op-count').textContent=(op.totalCount||0)+' POS';
   document.getElementById('op-long-count').textContent=lg.count+' POS';
   document.getElementById('op-short-count').textContent=sh.count+' POS';
-
   document.getElementById('op-long-risk').textContent=fmtR(lg.rAtRisk);
   document.getElementById('op-long-planned').textContent=fmtR(lg.plannedR);
   document.getElementById('op-long-conf').textContent=lg.count?(lg.avgConf+'%'):'—';
   document.getElementById('op-long-pairs').textContent=lg.pairs.length?lg.pairs.join(' · '):'—';
-
   document.getElementById('op-short-risk').textContent=fmtR(sh.rAtRisk);
   document.getElementById('op-short-planned').textContent=fmtR(sh.plannedR);
   document.getElementById('op-short-conf').textContent=sh.count?(sh.avgConf+'%'):'—';
   document.getElementById('op-short-pairs').textContent=sh.pairs.length?sh.pairs.join(' · '):'—';
 
-  // Quick strip
-  var exp=a.expectancy;
-  var expEl=document.getElementById('q-exp');
+  var exp=a.expectancy,expEl=document.getElementById('q-exp');
   expEl.textContent=exp!=null?fmtR(exp)+'/trade':'—';
   expEl.className='v '+(exp>0?'pos':exp<0?'neg':'');
-
   var sEl=document.getElementById('q-streak');
-  if(d.streak){
-    sEl.textContent=(d.streak.type==='W'?'+':'-')+d.streak.count+(d.streak.type==='W'?'W':'L');
-    sEl.className='v '+(d.streak.type==='W'?'pos':'neg');
-  } else {
-    sEl.textContent='—';
-    sEl.className='v';
-  }
-
+  if(d.streak){sEl.textContent=(d.streak.type==='W'?'+':'-')+d.streak.count+(d.streak.type==='W'?'W':'L');sEl.className='v '+(d.streak.type==='W'?'pos':'neg');}
+  else{sEl.textContent='—';sEl.className='v';}
   var bEl=document.getElementById('q-best');
-  if(d.bestToday){
-    bEl.textContent=fmtR(d.bestToday.r)+' '+shortCoin(d.bestToday.pair);
-    bEl.className='v pos';
-  } else {bEl.textContent='—';bEl.className='v'}
-
+  if(d.bestToday){bEl.textContent=fmtR(d.bestToday.r)+' '+shortCoin(d.bestToday.pair);bEl.className='v pos';}
+  else{bEl.textContent='—';bEl.className='v';}
   var wEl=document.getElementById('q-worst');
-  if(d.worstToday&&d.worstToday.r<0){
-    wEl.textContent=fmtR(d.worstToday.r)+' '+shortCoin(d.worstToday.pair);
-    wEl.className='v neg';
-  } else {wEl.textContent='—';wEl.className='v'}
-
+  if(d.worstToday&&d.worstToday.r<0){wEl.textContent=fmtR(d.worstToday.r)+' '+shortCoin(d.worstToday.pair);wEl.className='v neg';}
+  else{wEl.textContent='—';wEl.className='v';}
   var nEl=document.getElementById('q-next');
-  if(d.nextEvent){
-    var m2=d.nextEvent.inMinutes;
-    var when=m2<60?(m2+'m'):Math.floor(m2/60)+'h'+(m2%60).toString().padStart(2,'0');
-    nEl.textContent=d.nextEvent.name+' ('+d.nextEvent.zone+') in '+when;
-  } else {nEl.textContent='No high-impact in 4h'}
+  if(d.nextEvent){var m2=d.nextEvent.inMinutes;var when=m2<60?(m2+'m'):Math.floor(m2/60)+'h'+(m2%60).toString().padStart(2,'0');nEl.textContent=d.nextEvent.name+' ('+d.nextEvent.zone+') in '+when;}
+  else nEl.textContent='No high-impact in 4h';
 }
 
-// ─────────────────────────────────────────────────────────────
-// MONTH BAR CHART (SVG)
-// ─────────────────────────────────────────────────────────────
 function drawMonthChart(daily){
   var svg=document.getElementById('m-chart');
   svg.innerHTML='';
   if(!daily||!daily.length){svg.innerHTML='<text x="50%" y="50%" fill="#5a5f7a" text-anchor="middle" font-size="10">No data</text>';return;}
   var rect=svg.getBoundingClientRect();
-  var W=rect.width||600,H=rect.height||120;
-  var PL=30,PR=8,PT=8,PB=18;
+  var W=rect.width||600,H=rect.height||120,PL=30,PR=8,PT=8,PB=18;
   var cW=W-PL-PR,cH=H-PT-PB;
   var maxR=Math.max.apply(null,daily.map(function(p){return p.r;}));
   var minR=Math.min.apply(null,daily.map(function(p){return p.r;}));
-  if(maxR<=0)maxR=1; if(minR>0)minR=0;
-  var rng=(maxR-minR)||1;
-  var bw=cW/daily.length;
+  if(maxR<=0)maxR=1;if(minR>0)minR=0;
+  var rng=(maxR-minR)||1,bw=cW/daily.length;
   function y(v){return PT+cH-(v-minR)/rng*cH;}
-  var zy=y(0);
-  // Today index (for highlight)
-  var today=new Date().getUTCDate();
-  // Zero line
+  var zy=y(0),today=new Date().getUTCDate();
   svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+zy+'" y2="'+zy+'" stroke="rgba(255,255,255,0.1)" stroke-dasharray="2,3"/>';
-  // Y labels
   svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+8)+'" fill="#5a5f7a" text-anchor="end" font-size="8">'+maxR.toFixed(1)+'R</text>';
   svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(zy+3)+'" fill="#5a5f7a" text-anchor="end" font-size="8">0</text>';
   if(minR<0)svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+cH-2)+'" fill="#5a5f7a" text-anchor="end" font-size="8">'+minR.toFixed(1)+'R</text>';
-
-  // Daily baseline ticks — thin grey marks for every day, so the chart
-  // structure is visible even when most days have 0 R. Highlights today.
   daily.forEach(function(p,i){
-    var x=PL+i*bw+bw/2;
-    var isToday=p.day===today;
-    var col=isToday?'rgba(0,212,255,0.5)':'rgba(255,255,255,0.04)';
+    var x=PL+i*bw+bw/2,isToday=p.day===today,col=isToday?'rgba(0,212,255,0.5)':'rgba(255,255,255,0.04)';
     svg.innerHTML+='<line x1="'+x+'" x2="'+x+'" y1="'+(PT+cH-1)+'" y2="'+(PT+cH+2)+'" stroke="'+col+'" stroke-width="'+(isToday?2:1)+'"/>';
   });
-
-  // Bars — proportional width across full chart. Min visible height for
-  // tiny non-zero values so they don't disappear.
   daily.forEach(function(p,i){
     if(p.r===0)return;
-    var w=Math.max(bw-4,3);
-    var x=PL+i*bw+(bw-w)/2;
-    var bh,by,fill;
-    if(p.r>0){by=y(p.r);bh=Math.max(zy-by,2);fill='#00e5a0';}
-    else{by=zy;bh=Math.max(y(p.r)-zy,2);fill='#ff4466';}
+    var w=Math.max(bw-4,3),x=PL+i*bw+(bw-w)/2,bh,by,fill;
+    if(p.r>0){by=y(p.r);bh=Math.max(zy-by,2);fill='#00e5a0';}else{by=zy;bh=Math.max(y(p.r)-zy,2);fill='#ff4466';}
     svg.innerHTML+='<rect x="'+x+'" y="'+by+'" width="'+w+'" height="'+bh+'" rx="1" fill="'+fill+'" opacity="0.88"><title>Day '+p.day+': '+fmtR(p.r)+'</title></rect>';
   });
-  // X labels (every 5 days + today)
   daily.forEach(function(p,i){
     if(p.day%5===0||p.day===1||p.day===today){
-      var x=PL+i*bw+bw/2;
-      var col=p.day===today?'#00d4ff':'#5a5f7a';
-      var weight=p.day===today?'bold':'normal';
-      svg.innerHTML+='<text x="'+x+'" y="'+(H-4)+'" fill="'+col+'" text-anchor="middle" font-size="8" font-weight="'+weight+'">'+p.day.toString().padStart(2,'0')+'</text>';
+      var x=PL+i*bw+bw/2,col=p.day===today?'#00d4ff':'#5a5f7a',w=p.day===today?'bold':'normal';
+      svg.innerHTML+='<text x="'+x+'" y="'+(H-4)+'" fill="'+col+'" text-anchor="middle" font-size="8" font-weight="'+w+'">'+p.day.toString().padStart(2,'0')+'</text>';
     }
   });
 }
 
 // ─────────────────────────────────────────────────────────────
-// BOTTOM BAND — DYNAMIC CHARTS (one per open position)
+// KINGDOM — 4-panel chart grid
 // ─────────────────────────────────────────────────────────────
-var _chartInstances={}; // coin → { chart, series, entryLine, slLine, tpLine, beLine }
+var _panels={}; // coin -> { panelEl, chart, series, lines:[], priceEl, stateEl, signalInfoEl, lastSig:null, lastCandlesAt:0 }
+var _pairStateCache={}, _prevPairStates={};
 
-function renderBottomBand(summary){
-  var grid=document.getElementById('charts-grid');
-  var counter=document.getElementById('bottom-count');
-  var details=(summary&&summary.openPositions&&summary.openPositions.details)||{long:[],short:[]};
-  var all=[].concat(details.long||[],details.short||[]);
-  counter.textContent=all.length+' open';
-  grid.dataset.n=String(Math.min(all.length,12));
+function buildPanel(coin){
+  var info=infoFor(coin);
+  var panel=document.createElement('div');
+  panel.className='panel';
+  panel.dataset.coin=coin;
+  panel.dataset.state='idle';
+  panel.innerHTML=
+    '<div class="panel-header">'
+      +'<div class="panel-pair">'
+        +'<div class="coin-icon" style="background:'+info.color+';border:1px solid '+info.dark+'">'+info.sym+'</div>'
+        +'<span class="name">'+shortCoin(coin)+'</span>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<span class="panel-price" data-role="price">—</span>'
+        +'<span class="panel-state-tag idle" data-role="tag">IDLE</span>'
+      +'</div>'
+    +'</div>'
+    +'<div class="panel-body">'
+      +'<div class="panel-chart" data-role="chart"></div>'
+      +'<div class="panel-overlay">'
+        +'<div class="coin-char walk">'+coinSpriteSvg(coin)+'</div>'
+      +'</div>'
+      +'<div class="signal-info" data-role="signalinfo" style="display:none"></div>'
+    +'</div>';
+  var chartEl=panel.querySelector('[data-role="chart"]');
+  var chart=LightweightCharts.createChart(chartEl,{
+    layout:{background:{type:'solid',color:'#12141b'},textColor:'#7a8390',fontSize:10,fontFamily:'Courier New, monospace'},
+    grid:{vertLines:{color:'rgba(255,255,255,0.03)'},horzLines:{color:'rgba(255,255,255,0.03)'}},
+    rightPriceScale:{borderColor:'rgba(255,255,255,0.05)',scaleMargins:{top:0.1,bottom:0.1}},
+    timeScale:{borderColor:'rgba(255,255,255,0.05)',timeVisible:true,secondsVisible:false,rightOffset:3},
+    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+    handleScroll:false,handleScale:false,
+  });
+  var series=chart.addCandlestickSeries({
+    upColor:'#00e5a0',downColor:'#ff4466',
+    borderUpColor:'#00e5a0',borderDownColor:'#ff4466',
+    wickUpColor:'#00e5a0',wickDownColor:'#ff4466',
+  });
+  // Resize observer keeps chart filling its container
+  var ro=new ResizeObserver(function(){try{chart.applyOptions({width:chartEl.clientWidth,height:chartEl.clientHeight});}catch(e){}});
+  ro.observe(chartEl);
+  return{
+    panelEl:panel,chart:chart,series:series,lines:[],
+    priceEl:panel.querySelector('[data-role="price"]'),
+    stateEl:panel.querySelector('[data-role="tag"]'),
+    signalInfoEl:panel.querySelector('[data-role="signalinfo"]'),
+    lastSig:null,lastCandlesAt:0,ro:ro,
+  };
+}
 
-  if(!all.length){
-    grid.innerHTML='<div class="empty-pane">No active trades — bottom band scales 0 → N as trades open</div>';
-    // Tear down any old charts
-    Object.keys(_chartInstances).forEach(function(k){
-      try{_chartInstances[k].chart.remove();}catch(e){}
-      delete _chartInstances[k];
-    });
+function _brokerFor(coin){
+  if(coin==='GOLD')return 'gold';
+  // Public Binance Futures kline endpoint works for most pairs without auth
+  return 'binance';
+}
+
+function fetchPanelCandles(coin){
+  var broker=_brokerFor(coin);
+  if(broker==='gold'){
+    return fetch('/api/gold/candles?interval=5m&limit=80',{credentials:'same-origin'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(d){
+        if(!d||!Array.isArray(d.candles))return[];
+        return d.candles.map(function(k){return{time:Math.floor(k.time),open:+k.o,high:+k.h,low:+k.l,close:+k.c};});
+      })
+      .catch(function(){return[];});
+  }
+  // Binance Futures public
+  return fetch('https://fapi.binance.com/fapi/v1/klines?symbol='+coin+'&interval=5m&limit=80')
+    .then(function(r){return r.json();})
+    .then(function(arr){
+      if(!Array.isArray(arr))return[];
+      return arr.map(function(k){return{time:Math.floor(parseInt(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]};});
+    })
+    .catch(function(){return[];});
+}
+
+function updatePanelLevels(p, sig, beAlerted){
+  // Wipe existing
+  (p.lines||[]).forEach(function(ln){try{p.series.removePriceLine(ln);}catch(e){}});
+  p.lines=[];
+  if(!sig)return;
+  var e=parseFloat(sig.entry),sl=parseFloat(sig.sl),tp=parseFloat(sig.tp);
+  if(e)p.lines.push(p.series.createPriceLine({price:e,color:'#9aa0a6',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'ENTRY'}));
+  if(sl)p.lines.push(p.series.createPriceLine({price:sl,color:'#ff4466',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'SL'}));
+  if(tp)p.lines.push(p.series.createPriceLine({price:tp,color:'#00e5a0',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'TP'}));
+  if(beAlerted&&e)p.lines.push(p.series.createPriceLine({price:e,color:'#ffb830',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:false,title:'BE-SL'}));
+}
+
+function renderChartGrid(){
+  var grid=document.getElementById('chart-grid');
+  var counter=document.getElementById('kingdom-count');
+  var coins=Object.keys(_pairStateCache);
+  counter.textContent=coins.length+' / 4 max';
+
+  if(!coins.length){
+    grid.dataset.n='0';
+    Object.keys(_panels).forEach(function(c){try{_panels[c].chart.remove();}catch(e){}delete _panels[c];});
+    grid.innerHTML='<div class="empty">Scan inactive — click AUTO on the terminal to populate</div>';
     return;
   }
 
-  // Remove existing empty placeholder
-  var ep=grid.querySelector('.empty-pane');
-  if(ep)ep.remove();
+  // Drop the empty placeholder
+  var emptyEl=grid.querySelector('.empty');if(emptyEl)emptyEl.remove();
+  grid.dataset.n=String(Math.min(coins.length,6));
 
-  // Reconcile panes: remove any that aren't in the current set
-  var keep=new Set(all.map(function(p){return p.coin;}));
-  Array.from(grid.querySelectorAll('.chart-pane')).forEach(function(pane){
-    var c=pane.dataset.coin;
-    if(!keep.has(c)){
-      pane.remove();
-      if(_chartInstances[c]){try{_chartInstances[c].chart.remove();}catch(e){}delete _chartInstances[c];}
+  // Sort: in-trade first, waiting next, then by name
+  var stateOrder={'in-trade':0,'waiting':1,'scanning':2,'cooldown':3,'paused':4};
+  coins.sort(function(a,b){
+    var sa=stateOrder[_pairStateCache[a].state]||5;
+    var sb=stateOrder[_pairStateCache[b].state]||5;
+    if(sa!==sb)return sa-sb;
+    return a.localeCompare(b);
+  });
+
+  // Remove panels for pairs no longer in scan
+  Object.keys(_panels).forEach(function(c){
+    if(coins.indexOf(c)<0){
+      var p=_panels[c];
+      try{p.chart.remove();}catch(e){}
+      try{p.panelEl.remove();}catch(e){}
+      delete _panels[c];
     }
   });
 
-  // Upsert each open-position pane
-  all.forEach(function(pos){
-    var pane=grid.querySelector('.chart-pane[data-coin="'+pos.coin+'"]');
-    if(!pane){
-      pane=document.createElement('div');
-      pane.className='chart-pane';
-      pane.dataset.coin=pos.coin;
-      pane.innerHTML=
-        '<div class="ph">'
-        +'<span><span class="pair">'+shortCoin(pos.coin)+'</span> <span class="dir '+(pos.direction==='LONG'?'long':'short')+'">'+pos.direction+'</span></span>'
-        +'<span class="badge" data-role="badge"></span>'
-        +'</div>'
-        +'<div class="body" data-role="body"></div>';
-      grid.appendChild(pane);
-    }
-    // Update header
-    var badge=pane.querySelector('[data-role="badge"]');
-    if(pos.beAlerted){badge.className='badge be';badge.textContent='BE MOVED';}
-    else if(pos.entered){badge.className='badge entered';badge.textContent='IN TRADE · '+(pos.pctToTp||0)+'%';}
-    else{badge.className='badge waiting';badge.textContent='WAITING ENTRY';}
-
-    // Ensure chart exists
-    if(!_chartInstances[pos.coin]){
-      var body=pane.querySelector('[data-role="body"]');
-      var chart=LightweightCharts.createChart(body,{
-        layout:{background:{type:'solid',color:'#12141b'},textColor:'#9aa0a6'},
-        grid:{vertLines:{color:'rgba(255,255,255,0.03)'},horzLines:{color:'rgba(255,255,255,0.03)'}},
-        rightPriceScale:{borderColor:'rgba(255,255,255,0.05)'},
-        timeScale:{borderColor:'rgba(255,255,255,0.05)',timeVisible:true,secondsVisible:false},
-        crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-      });
-      var series=chart.addCandlestickSeries({
-        upColor:'#00e5a0',downColor:'#ff4466',
-        borderUpColor:'#00e5a0',borderDownColor:'#ff4466',
-        wickUpColor:'#00e5a0',wickDownColor:'#ff4466',
-      });
-      _chartInstances[pos.coin]={chart:chart,series:series,lines:[],lastCandles:null};
-      // Resize observer
-      var ro=new ResizeObserver(function(){
-        try{chart.applyOptions({width:body.clientWidth,height:body.clientHeight});}catch(e){}
-      });
-      ro.observe(body);
-      _chartInstances[pos.coin].ro=ro;
+  // Upsert each pair's panel
+  coins.forEach(function(coin){
+    var s=_pairStateCache[coin];
+    var p=_panels[coin];
+    if(!p){
+      p=buildPanel(coin);
+      _panels[coin]=p;
+      grid.appendChild(p.panelEl);
+    } else if(p.panelEl.parentElement!==grid){
+      grid.appendChild(p.panelEl);
     }
 
-    // Update level lines (entry / sl / tp / be)
-    var inst=_chartInstances[pos.coin];
-    (inst.lines||[]).forEach(function(ln){try{inst.series.removePriceLine(ln);}catch(e){}});
-    inst.lines=[];
-    if(pos.entry)inst.lines.push(inst.series.createPriceLine({price:pos.entry,color:'#9aa0a6',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'ENTRY'}));
-    if(pos.sl)   inst.lines.push(inst.series.createPriceLine({price:pos.sl,   color:'#ff4466',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'SL'}));
-    if(pos.tp)   inst.lines.push(inst.series.createPriceLine({price:pos.tp,   color:'#00e5a0',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'TP'}));
-    if(pos.beAlerted&&pos.entry){
-      inst.lines.push(inst.series.createPriceLine({price:pos.entry,color:'#ffb830',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:false,title:'BE-SL'}));
+    // State + tag
+    p.panelEl.dataset.state=s.state;
+    p.stateEl.className='panel-state-tag '+s.state;
+    p.stateEl.textContent=s.beAlerted?'BE MOVED':s.state.toUpperCase().replace('-',' ');
+
+    // Price
+    if(s.price!=null){
+      p.priceEl.textContent=fmtPx(s.price);
+      p.priceEl.className='panel-price '+(s.direction==='LONG'?'long':s.direction==='SHORT'?'short':'');
+    } else {
+      p.priceEl.textContent='—';
+      p.priceEl.className='panel-price';
     }
 
-    // Refresh candles (5m, 60 bars) — throttled per pane
-    if(!inst.lastFetch||Date.now()-inst.lastFetch>15000){
-      inst.lastFetch=Date.now();
-      fetchPaneCandles(pos.coin).then(function(candles){
+    // Levels (entry/SL/TP) — only when signal exists
+    if(s.signal && p.lastSig!==s.signalId){
+      updatePanelLevels(p, s.signal, s.beAlerted);
+      p.lastSig=s.signalId;
+    } else if(!s.signal && p.lastSig){
+      updatePanelLevels(p, null, false);
+      p.lastSig=null;
+    }
+
+    // Signal info badge (RR + % to TP)
+    if(s.signal){
+      var pct=s.pctToTp!=null?s.pctToTp.toFixed(0)+'%':'—';
+      p.signalInfoEl.style.display='block';
+      p.signalInfoEl.innerHTML=s.signal.direction+' · <span class="val">'+s.signal.rr+'R</span> · <span class="pct">'+pct+' to TP</span>';
+    } else {
+      p.signalInfoEl.style.display='none';
+    }
+
+    // Refresh candles at most every 30s per panel
+    if(Date.now()-p.lastCandlesAt>30000){
+      p.lastCandlesAt=Date.now();
+      fetchPanelCandles(coin).then(function(candles){
         if(!candles||!candles.length)return;
-        inst.series.setData(candles);
-        inst.lastCandles=candles;
+        p.series.setData(candles);
+        try{p.chart.timeScale().fitContent();}catch(e){}
       }).catch(function(){});
     }
   });
 }
 
-function fetchPaneCandles(coin){
-  // Use Binance Futures public candles (broker-agnostic — same data shape).
-  // 5m, last 80 bars covers a few hours of context for the trade.
-  var url='https://fapi.binance.com/fapi/v1/klines?symbol='+coin+'&interval=5m&limit=80';
-  return fetch(url).then(function(r){return r.json();}).then(function(arr){
-    if(!Array.isArray(arr))return [];
-    return arr.map(function(k){
-      return{
-        time:Math.floor(parseInt(k[0])/1000),
-        open:parseFloat(k[1]),
-        high:parseFloat(k[2]),
-        low:parseFloat(k[3]),
-        close:parseFloat(k[4]),
-      };
-    });
-  });
-}
-
 // ─────────────────────────────────────────────────────────────
-// KINGDOM — sky cycle, territories, treasury, calendar tower, raven
+// Spell burst — fires on entry confirmation transition
 // ─────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────
-// WIZARDS — sprites + spell casting
-// ─────────────────────────────────────────────────────────────
-
-// 11 advisor wizards — one per data source. Each has a distinct robe color
-// and staff-orb tint that signs their spell when they cast.
-var WIZARD_TYPES=[
-  {name:'trigger',  robe:'#a52030', dark:'#5a101a', orb:'#ff4466', label:'Trigger detection'},
-  {name:'htf',      robe:'#1e6a8a', dark:'#0e3848', orb:'#00d4ff', label:'HTF (1H+4H)'},
-  {name:'btc',      robe:'#b86820', dark:'#7a3a08', orb:'#ff8a30', label:'BTC corr / DXY'},
-  {name:'funding',  robe:'#a07c1c', dark:'#5a4408', orb:'#ffd700', label:'Funding rate'},
-  {name:'oi',       robe:'#5a2ea0', dark:'#2a1858', orb:'#a070ff', label:'Open interest'},
-  {name:'liq',      robe:'#9c3a6c', dark:'#581a38', orb:'#ff70a0', label:'Liquidity heatmap'},
-  {name:'flow',     robe:'#5a7a20', dark:'#2a4008', orb:'#a0e030', label:'Order flow'},
-  {name:'cvd',      robe:'#1f6a4a', dark:'#0e3825', orb:'#00e5a0', label:'CVD trend'},
-  {name:'broker',   robe:'#2e4ea0', dark:'#102458', orb:'#4080ff', label:'Cross-broker'},
-  {name:'news',     robe:'#6a6e7a', dark:'#3a3a45', orb:'#c0c8d0', label:'News headlines'},
-  {name:'calendar', robe:'#9a3818', dark:'#561808', orb:'#e05030', label:'Economic calendar'},
-];
-
-function wizardSvg(cfg){
-  return '<svg viewBox="0 0 36 50" width="36" height="50">'
-    +'<defs>'
-      +'<radialGradient id="orb-'+cfg.name+'">'
-        +'<stop offset="0%" stop-color="#fff"/>'
-        +'<stop offset="40%" stop-color="'+cfg.orb+'"/>'
-        +'<stop offset="100%" stop-color="'+cfg.dark+'"/>'
-      +'</radialGradient>'
-    +'</defs>'
-    +'<g>'
-      // Shadow under feet
-      +'<ellipse cx="18" cy="48" rx="9" ry="1.6" fill="rgba(0,0,0,0.55)"/>'
-      // Robe body (animated sway)
-      +'<g class="robe">'
-        +'<path d="M 11 24 L 8 44 L 28 44 L 25 24 Z" fill="'+cfg.robe+'"/>'
-        // Shaded side
-        +'<path d="M 18 24 L 28 44 L 18 44 Z" fill="'+cfg.dark+'" opacity="0.4"/>'
-        // Robe trim at bottom
-        +'<rect x="8" y="42" width="20" height="2.5" fill="'+cfg.dark+'"/>'
-      +'</g>'
-      // Sleeves
-      +'<ellipse cx="10" cy="28" rx="2.2" ry="4" fill="'+cfg.robe+'"/>'
-      +'<ellipse cx="26" cy="28" rx="2.2" ry="4" fill="'+cfg.robe+'"/>'
-      // Hands
-      +'<circle cx="10" cy="32" r="1.8" fill="#e8c595"/>'
-      +'<circle cx="26" cy="32" r="1.8" fill="#e8c595"/>'
-      // Beard
-      +'<path d="M 13 18 L 14 24 Q 18 27 22 24 L 23 18 Q 18 16 13 18 Z" fill="#e0e0e0"/>'
-      +'<path d="M 15 22 Q 18 26 21 22 L 20 25 Q 18 27 16 25 Z" fill="#cccccc"/>'
-      // Head/face
-      +'<circle cx="18" cy="16" r="4.5" fill="#e8c595"/>'
-      // Eye
-      +'<circle cx="16.5" cy="15.5" r="0.6" fill="#1a1208"/>'
-      +'<circle cx="19.5" cy="15.5" r="0.6" fill="#1a1208"/>'
-      // Hat
-      +'<polygon points="18,0 7,16 29,16" fill="'+cfg.dark+'"/>'
-      // Hat band
-      +'<rect x="7" y="14" width="22" height="2.5" fill="#1a0e08"/>'
-      // Hat gem
-      +'<circle cx="18" cy="9" r="1.6" fill="'+cfg.orb+'" filter="url(#glow)"/>'
-      // Hat tip
-      +'<circle cx="18" cy="0.5" r="1" fill="#ffd700"/>'
-      // Staff pole
-      +'<line x1="28" y1="40" x2="32" y2="2" stroke="#604530" stroke-width="2"/>'
-      // Staff knob
-      +'<rect x="30" y="6" width="4" height="2" fill="#3a2515"/>'
-      // Staff orb
-      +'<circle class="staff-orb" cx="32" cy="0" r="3.5" fill="url(#orb-'+cfg.name+')"/>'
-      // Orb outer glow
-      +'<circle cx="32" cy="0" r="6" fill="'+cfg.orb+'" opacity="0.25"/>'
-      // Legs (animated)
-      +'<rect class="leg-l" x="14.5" y="42" width="2.2" height="5" fill="#1a1208" rx="0.5"/>'
-      +'<rect class="leg-r" x="19.5" y="42" width="2.2" height="5" fill="#1a1208" rx="0.5"/>'
-      // Boot toes
-      +'<rect x="13.5" y="46" width="3.5" height="2" fill="#0a0604" rx="0.5"/>'
-      +'<rect x="19" y="46" width="3.5" height="2" fill="#0a0604" rx="0.5"/>'
-    +'</g>'
-    +'</svg>';
-}
-
-function spawnWizards(){
-  var ambient=document.getElementById('ambient');
-  if(!ambient)return;
-  // Wipe any prior wizards (idempotent — safe to call multiple times)
-  ambient.querySelectorAll('.wizard').forEach(function(w){w.remove();});
-
-  WIZARD_TYPES.forEach(function(cfg,i){
-    var w=document.createElement('div');
-    // 5 patrol patterns × 11 wizards → cycles through w1..w5
-    var patrolN=(i%5)+1;
-    w.className='wizard w'+patrolN;
-    w.id='wiz-'+cfg.name;
-    w.dataset.type=cfg.name;
-    w.dataset.label=cfg.label;
-    w.title=cfg.label;
-    // Randomize timing so they don't all step in sync
-    var duration=(24+Math.random()*22).toFixed(1)+'s';
-    var delay=(-Math.random()*36).toFixed(1)+'s';
-    w.style.animationDuration=duration;
-    w.style.animationDelay=delay;
-    // Stagger vertical position across the walkway band (62% to 76% of stage)
-    // so wizards in front appear larger relative to those further back.
-    w.style.top=(62+(i*1.3))+'%';
-    // Slightly vary z-order: wizards lower on screen (closer) on top
-    w.style.zIndex=String(5+i);
-    w.innerHTML=wizardSvg(cfg);
-    ambient.appendChild(w);
-  });
-}
-
-// Spell-burst element creator. Positioned in scene-relative coords (px).
-function spawnSpellBurst(xPct, yPct, color){
-  var box=document.getElementById('ambient');
-  if(!box)return;
+function spawnBurstOnPanel(coin, color){
+  var p=_panels[coin];
+  if(!p)return;
   var burst=document.createElement('div');
   burst.className='spell-burst';
-  burst.style.left=xPct+'%';
-  burst.style.top=yPct+'%';
+  // Centered over the panel body
+  burst.style.left='50%';
+  burst.style.top='50%';
   burst.style.setProperty('--spell-color',color||'#00d4ff');
   burst.innerHTML='<div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>';
-  // 12 sparks shooting outward in random directions
-  for(var i=0;i<12;i++){
-    var ang=(i/12)*Math.PI*2+Math.random()*0.4;
-    var dist=40+Math.random()*30;
-    var sx=Math.cos(ang)*dist;
-    var sy=Math.sin(ang)*dist;
-    var sp=document.createElement('div');
-    sp.className='spark';
-    sp.style.setProperty('--sx',sx+'px');
-    sp.style.setProperty('--sy',sy+'px');
-    sp.style.animationDelay=(Math.random()*0.2)+'s';
-    burst.appendChild(sp);
-  }
-  box.appendChild(burst);
+  p.panelEl.querySelector('.panel-overlay').appendChild(burst);
   setTimeout(function(){burst.remove();},1500);
 }
 
-// Make a wizard cast a spell at its current location.
-function wizardCast(wizardEl){
-  if(!wizardEl||wizardEl._casting)return;
-  wizardEl._casting=true;
-  wizardEl.classList.add('casting');
-  var rect=wizardEl.getBoundingClientRect();
-  var stage=document.getElementById('stage').getBoundingClientRect();
-  // Burst position in % of stage. Spell originates from staff orb (top-right of sprite).
-  var xPct=((rect.left+rect.width*0.85)-stage.left)/stage.width*100;
-  var yPct=((rect.top+rect.height*0.05)-stage.top)/stage.height*100;
-  var color=WIZARD_TYPES.find(function(w){return w.name===wizardEl.dataset.type;}).orb;
-  spawnSpellBurst(xPct,yPct,color);
-  setTimeout(function(){
-    wizardEl.classList.remove('casting');
-    wizardEl._casting=false;
-  },1500);
-}
-
-// Idle casting — pick a random wizard every 8-14s and have them cast.
-// Adds atmosphere even when no trades are firing.
-function scheduleIdleCast(){
-  var delay=8000+Math.random()*6000;
-  setTimeout(function(){
-    var wizards=document.querySelectorAll('.wizard');
-    if(wizards.length){
-      var w=wizards[Math.floor(Math.random()*wizards.length)];
-      if(!w._casting)wizardCast(w);
-    }
-    scheduleIdleCast();
-  },delay);
-}
-
-// Sky cycle: maps UTC hour to a sky preset. Kill zones (London 07-10, NY 12-17)
-// get extra glow. Dead zone 22-06 is night.
-function updateSky(){
-  var now=new Date();
-  var h=now.getUTCHours();
-  var m=now.getUTCMinutes();
-  var stage=document.getElementById('stage');
-  var sky;
-  if(h>=22||h<5)sky='night';
-  else if(h===5||h===6)sky='dawn';
-  else if((h>=7&&h<10)||(h>=12&&h<17))sky='killzone';
-  else if(h>=17&&h<21)sky='dusk';
-  else if(h===21)sky='dusk';
-  else sky='day';
-  stage.dataset.sky=sky;
-
-  // Clock label in calendar tower
-  var clk=document.getElementById('cal-clock');
-  if(clk)clk.textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' UTC';
-
-  // Animate the SVG clock hands on the tower face
-  var hHand=document.getElementById('clock-hour');
-  var mHand=document.getElementById('clock-min');
-  if(hHand&&mHand){
-    var hAngle=((h%12)+m/60)*30; // 360/12
-    var mAngle=m*6; // 360/60
-    // Center is (60, 142), hand length 6 for hour, 8 for minute
-    hHand.setAttribute('transform','rotate('+hAngle+' 60 142)');
-    mHand.setAttribute('transform','rotate('+mAngle+' 60 142)');
-  }
-}
-
-// Generate stars once (only visible at night via CSS)
-function buildStars(){
-  var box=document.getElementById('stars');
-  if(!box||box.children.length)return;
-  for(var i=0;i<60;i++){
-    var s=document.createElement('div');
-    s.className='star';
-    s.style.left=Math.random()*100+'%';
-    s.style.top=Math.random()*70+'%';
-    s.style.animationDelay=(Math.random()*3)+'s';
-    s.style.animationDuration=(2+Math.random()*3)+'s';
-    box.appendChild(s);
-  }
-}
-
-// Spawn drifting clouds
-function buildClouds(){
-  var box=document.getElementById('clouds');
-  if(!box||box.children.length)return;
-  for(var i=0;i<4;i++){
-    var c=document.createElement('div');
-    c.className='cloud';
-    var w=80+Math.random()*120;
-    c.style.width=w+'px';
-    c.style.height=(20+Math.random()*30)+'px';
-    c.style.top=(5+Math.random()*30)+'%';
-    c.style.animationDuration=(60+Math.random()*60)+'s';
-    c.style.animationDelay=(-Math.random()*60)+'s';
-    box.appendChild(c);
-  }
-}
-
 // ─────────────────────────────────────────────────────────────
-// COIN CHARACTERS — one walking sprite per scanned pair
+// SCAN STATE — pulls from /api/scan/all-pairs every 5s
 // ─────────────────────────────────────────────────────────────
-
-// Color and symbol map for the 23 supported pairs. Recognizable coins get a
-// custom logo silhouette; everyone else falls back to a colored circle with
-// 1-2 letter ticker. dark = ring outline + arm dark stroke.
-var COIN_INFO={
-  BTCUSDT:  {sym:'₿',  color:'#f7931a', dark:'#a86208', text:'#fff'},
-  ETHUSDT:  {sym:'',   color:'#3c3c5d', dark:'#1a1a30', text:'#fff', logo:'eth'},
-  SOLUSDT:  {sym:'',   color:'#1a0b2e', dark:'#0a0418', text:'#fff', logo:'sol'},
-  XRPUSDT:  {sym:'X',  color:'#23292f', dark:'#0a0d12', text:'#fff'},
-  DOGEUSDT: {sym:'D',  color:'#c2a633', dark:'#7a6510', text:'#fff'},
-  AVAXUSDT: {sym:'A',  color:'#e84142', dark:'#8e2020', text:'#fff'},
-  AAVEUSDT: {sym:'A',  color:'#b6509e', dark:'#732e62', text:'#fff'},
-  PEPEUSDT: {sym:'P',  color:'#389134', dark:'#1a4a18', text:'#fff'},
-  GOLD:     {sym:'',   color:'#ffd700', dark:'#a07c00', text:'#7a5500', logo:'gold'},
-  BNBUSDT:  {sym:'B',  color:'#f3ba2f', dark:'#a07810', text:'#fff'},
-  ADAUSDT:  {sym:'A',  color:'#3e3fff', dark:'#1a1c98', text:'#fff'},
-  DOTUSDT:  {sym:'D',  color:'#e6007a', dark:'#8a0048', text:'#fff'},
-  LINKUSDT: {sym:'L',  color:'#2a5ada', dark:'#103088', text:'#fff'},
-  SUIUSDT:  {sym:'S',  color:'#4ca3ff', dark:'#1a5aa8', text:'#fff'},
-  ARBUSDT:  {sym:'A',  color:'#28a0f0', dark:'#0a5a92', text:'#fff'},
-  OPUSDT:   {sym:'O',  color:'#ff0420', dark:'#8a0a14', text:'#fff'},
-  NEARUSDT: {sym:'N',  color:'#80828c', dark:'#3a3c44', text:'#0a0d18'},
-  INJUSDT:  {sym:'I',  color:'#00f3a8', dark:'#00a072', text:'#0a0d18'},
-  XAUTUSDT: {sym:'AU', color:'#d4af37', dark:'#7a6010', text:'#3a2a08'},
-  XAGUSDT:  {sym:'AG', color:'#c0c0c0', dark:'#7a7a7a', text:'#1a1a1a'},
-  XTIUSDT:  {sym:'WTI',color:'#1f1f1f', dark:'#0a0a0a', text:'#fff'},
-  XBRUSDT:  {sym:'BR', color:'#3a2a1a', dark:'#1a1208', text:'#fff'},
-};
-
-function _coinLogoBody(info){
-  if(info.logo==='eth'){
-    // Iconic two-stacked-diamonds Ethereum mark
-    return '<circle cx="18" cy="18" r="13" fill="#1d2540" stroke="#3a4a78" stroke-width="1"/>'
-      +'<polygon points="18,7 11,19 18,16 25,19" fill="#627eea"/>'
-      +'<polygon points="11,19 18,16 25,19 18,22" fill="#8ba2f0"/>'
-      +'<polygon points="18,30 11,20 18,23 25,20" fill="#627eea"/>';
-  }
-  if(info.logo==='sol'){
-    return '<circle cx="18" cy="18" r="13" fill="#1a0b2e" stroke="#3a1a5a" stroke-width="1"/>'
-      +'<path d="M 10 13 L 22 13 L 25 16 L 12 16 Z" fill="#9945ff"/>'
-      +'<path d="M 11 17 L 25 17 L 25 20 L 11 20 Z" fill="#00d4aa"/>'
-      +'<path d="M 11 21 L 25 21 L 22 24 L 10 24 Z" fill="#9945ff"/>';
-  }
-  if(info.logo==='gold'){
-    return '<circle cx="18" cy="18" r="13" fill="#ffd700" stroke="#a07c00" stroke-width="1.5"/>'
-      +'<text x="18" y="23" text-anchor="middle" font-size="11" font-weight="900" fill="#7a5500" font-family="Arial Black, Arial">AU</text>'
-      +'<ellipse cx="14" cy="13" rx="3" ry="2" fill="rgba(255,255,255,0.4)"/>';
-  }
-  // Generic: colored coin + symbol letter(s)
-  return '<circle cx="18" cy="18" r="13" fill="'+info.color+'" stroke="'+info.dark+'" stroke-width="1.5"/>'
-    +'<circle cx="18" cy="18" r="11" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="0.8"/>'
-    +'<text x="18" y="23" text-anchor="middle" font-size="'+(info.sym.length>1?9:13)+'" font-weight="900" fill="'+(info.text||'#fff')+'" font-family="Arial Black, Arial">'+info.sym+'</text>'
-    +'<ellipse cx="13" cy="13" rx="3" ry="2.2" fill="rgba(255,255,255,0.25)"/>';
-}
-
-function coinSprite(coin){
-  var info=COIN_INFO[coin]||{sym:coin.replace('USDT','').slice(0,2),color:'#888',dark:'#444',text:'#fff'};
-  return '<svg viewBox="0 0 36 50" width="38" height="54">'
-    // Shadow under feet
-    +'<ellipse cx="18" cy="48" rx="10" ry="1.8" fill="rgba(0,0,0,0.55)"/>'
-    // Arms (swing)
-    +'<g class="arm-l">'
-      +'<line x1="8" y1="20" x2="6" y2="30" stroke="'+info.dark+'" stroke-width="2.5" stroke-linecap="round"/>'
-      +'<circle cx="6" cy="31" r="1.8" fill="'+info.color+'"/>'
-    +'</g>'
-    +'<g class="arm-r">'
-      +'<line x1="28" y1="20" x2="30" y2="30" stroke="'+info.dark+'" stroke-width="2.5" stroke-linecap="round"/>'
-      +'<circle cx="30" cy="31" r="1.8" fill="'+info.color+'"/>'
-    +'</g>'
-    // Coin body (logo)
-    +'<g class="coin-body">'+_coinLogoBody(info)+'</g>'
-    // Legs (walk)
-    +'<g class="leg-l">'
-      +'<line x1="14" y1="30" x2="14" y2="44" stroke="#2a1a0e" stroke-width="3" stroke-linecap="round"/>'
-      +'<ellipse cx="14" cy="46" rx="3" ry="1.5" fill="#0a0604"/>'
-    +'</g>'
-    +'<g class="leg-r">'
-      +'<line x1="22" y1="30" x2="22" y2="44" stroke="#2a1a0e" stroke-width="3" stroke-linecap="round"/>'
-      +'<ellipse cx="22" cy="46" rx="3" ry="1.5" fill="#0a0604"/>'
-    +'</g>'
-    +'</svg>';
-}
-
-// Determine territory state for a pair from /api/kingdom/summary openPositions + scan state.
-// We don't get full per-pair state in the summary, so combine what we have:
-//  - if pair is in openPositions.details with entered=true → in-trade
-//  - if pair is in openPositions.details with entered=false → waiting
-//  - else → scanning (we'll cross-check via /api/scan/all-pairs to fill cooldown/paused)
-// Track prior states so we can detect transitions (e.g. waiting → in-trade
-// triggers a wizard spell on that territory).
-var _pairStateCache={};
-var _prevPairStates={};
 function refreshPairStates(){
   fetch('/api/scan/all-pairs',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
@@ -1488,142 +630,39 @@ function refreshPairStates(){
         else if(p.pauseRemaining>0)st='paused';
         else if(p.cooldownRemaining>0)st='cooldown';
         else st='scanning';
-        map[p.coin]={state:st,price:p.lastPrice,direction:p.signal?p.signal.direction:null,pctToTp:null,beAlerted:!!p.beAlerted};
-        // Compute pct-to-TP for boss HP bar
+        var pctToTp=null;
         if(p.hasSignal&&p.entryAlerted&&p.lastPrice!=null&&p.signal){
           var e=parseFloat(p.signal.entry),tp=parseFloat(p.signal.tp);
-          if(e&&tp&&e!==tp){
-            map[p.coin].pctToTp=Math.max(0,Math.min(100,Math.abs(p.lastPrice-e)/Math.abs(tp-e)*100));
-          }
+          if(e&&tp&&e!==tp)pctToTp=Math.max(0,Math.min(100,Math.abs(p.lastPrice-e)/Math.abs(tp-e)*100));
         }
+        map[p.coin]={
+          state:st,
+          price:p.lastPrice,
+          direction:p.signal?p.signal.direction:null,
+          signal:p.signal||null,
+          signalId:p.signalId||null,
+          pctToTp:pctToTp,
+          beAlerted:!!p.beAlerted,
+        };
       });
-      // Detect transitions before swapping cache
+      // Detect transitions to in-trade → spawn spell burst on the panel
       Object.keys(map).forEach(function(coin){
         var prev=_prevPairStates[coin];
         var cur=map[coin].state;
-        // waiting→in-trade or scanning→in-trade fires the entry spell on the coin
         if(prev&&prev!=='in-trade'&&cur==='in-trade'){
-          fireSpellOnCoin(coin,map[coin].direction,true);
+          var dir=map[coin].direction;
+          var color=dir==='LONG'?'#00e5a0':'#ff4466';
+          spawnBurstOnPanel(coin,color);
+          // Second burst for emphasis
+          setTimeout(function(){spawnBurstOnPanel(coin,color);},400);
         }
       });
       _prevPairStates={};
       Object.keys(map).forEach(function(c){_prevPairStates[c]=map[c].state;});
       _pairStateCache=map;
-      renderCoins();
+      renderChartGrid();
     })
     .catch(function(){});
-}
-
-// Fire a spell burst at the coin's current screen position. Used both on
-// the initial waiting→in-trade transition (with a wizard cast for theatre)
-// and on the periodic in-trade ticker (just a small burst for ambience).
-function fireSpellOnCoin(coin,direction,withWizard){
-  setTimeout(function(){
-    var coinEl=document.querySelector('.coin-char[data-coin="'+coin+'"]');
-    if(!coinEl)return;
-    var stage=document.getElementById('stage').getBoundingClientRect();
-    var rect=coinEl.getBoundingClientRect();
-    // Burst centred on the coin body (top third of sprite)
-    var xPct=((rect.left+rect.width/2)-stage.left)/stage.width*100;
-    var yPct=((rect.top+rect.height*0.32)-stage.top)/stage.height*100;
-    // LONG → green CVD wizard; SHORT → red Trigger wizard
-    var preferred=direction==='LONG'?'cvd':'trigger';
-    var cfgMatch=WIZARD_TYPES.find(function(w){return w.name===preferred;});
-    var color=cfgMatch?cfgMatch.orb:'#00d4ff';
-    spawnSpellBurst(xPct,yPct,color);
-    if(withWizard){
-      var wiz=document.querySelector('.wizard[data-type="'+preferred+'"]')
-        ||document.querySelector('.wizard');
-      if(wiz&&!wiz._casting)wizardCast(wiz);
-      // Second burst 400ms later for the entry-confirm flourish
-      setTimeout(function(){spawnSpellBurst(xPct,yPct,color);},400);
-    }
-    // Coin shake
-    coinEl.classList.remove('zapped');
-    void coinEl.getBoundingClientRect();
-    coinEl.classList.add('zapped');
-    setTimeout(function(){coinEl.classList.remove('zapped');},700);
-  },50);
-}
-
-// Periodic ambient cast on in-trade coins (every 4-7s) — the wizards keep
-// "monitoring" the active trade visually.
-setInterval(function(){
-  var inTrade=Object.keys(_pairStateCache).filter(function(c){return _pairStateCache[c].state==='in-trade';});
-  if(!inTrade.length)return;
-  // Pick one at random each tick to keep it from being noisy
-  var coin=inTrade[Math.floor(Math.random()*inTrade.length)];
-  fireSpellOnCoin(coin,_pairStateCache[coin].direction,false);
-},5500);
-
-function renderCoins(){
-  var ambient=document.getElementById('ambient');
-  var emptyHint=document.getElementById('kingdom-empty');
-  var coins=Object.keys(_pairStateCache);
-  if(!coins.length){
-    if(emptyHint)emptyHint.style.display='block';
-    ambient.querySelectorAll('.coin-char').forEach(function(c){c.remove();});
-    return;
-  }
-  if(emptyHint)emptyHint.style.display='none';
-
-  // Sort by state priority (in-trade > waiting > scanning > cooldown > paused)
-  var order={'in-trade':0,'waiting':1,'scanning':2,'cooldown':3,'paused':4};
-  coins.sort(function(a,b){return (order[_pairStateCache[a].state]||5)-(order[_pairStateCache[b].state]||5);});
-
-  // Remove coins no longer in scan
-  Array.from(ambient.querySelectorAll('.coin-char')).forEach(function(el){
-    if(coins.indexOf(el.dataset.coin)<0)el.remove();
-  });
-
-  coins.forEach(function(coin,i){
-    var s=_pairStateCache[coin];
-    var el=ambient.querySelector('.coin-char[data-coin="'+coin+'"]');
-    if(!el){
-      el=document.createElement('div');
-      // Cycle through 5 patrol patterns. Coins offset from wizard patrols
-      // by using different speeds/delays so they don't sync up.
-      var patrolN=((i+2)%5)+1;
-      el.className='coin-char cw'+patrolN;
-      el.dataset.coin=coin;
-      el.title=shortCoin(coin);
-      el.style.animationDuration=(32+Math.random()*22).toFixed(1)+'s';
-      el.style.animationDelay=(-Math.random()*30).toFixed(1)+'s';
-      // Coins walk in the front-row lane (top:73-83%) so they appear closer
-      // to camera than the wizards at top:62-76%.
-      el.style.top=(73+(i*1.6))+'%';
-      el.style.zIndex=String(20+i);
-      el.innerHTML=coinSprite(coin)
-        +'<div class="coin-name">'+shortCoin(coin)+'</div>'
-        +'<div class="coin-hp"><div class="fill" data-role="hp"></div></div>';
-      ambient.appendChild(el);
-    }
-    if(el.dataset.state!==s.state){
-      el.dataset.state=s.state;
-    }
-    // TP progress
-    var hp=el.querySelector('[data-role="hp"]');
-    if(hp){
-      hp.style.width=(s.state==='in-trade'&&s.pctToTp!=null)?(s.pctToTp+'%'):'0%';
-    }
-  });
-}
-
-// Calendar tower — class swap drives bell-swing + lightning animations
-function updateCalTower(nextEvent){
-  var towerSvg=document.getElementById('cal-tower-svg');
-  var ev=document.getElementById('cal-event');
-  if(!towerSvg||!ev)return;
-  towerSvg.classList.remove('warn','imminent');
-  if(!nextEvent){
-    ev.textContent='No high-impact event';
-    return;
-  }
-  var m=nextEvent.inMinutes;
-  var when=m<60?(m+'m'):Math.floor(m/60)+'h'+(m%60).toString().padStart(2,'0');
-  ev.textContent=nextEvent.name.slice(0,16)+' · '+when;
-  if(m<=5)towerSvg.classList.add('imminent');
-  else if(m<=60)towerSvg.classList.add('warn');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1632,28 +671,14 @@ function updateCalTower(nextEvent){
 function pollSummary(){
   fetch('/api/kingdom/summary',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){
-      if(!d)return;
-      renderSummary(d);
-      renderBottomBand(d);
-      updateCalTower(d.nextEvent);
-    })
+    .then(function(d){if(!d)return;renderSummary(d);})
     .catch(function(){});
 }
 
-// Initial setup
-buildStars();
-buildClouds();
-updateSky();
-spawnWizards();
-scheduleIdleCast();
 pollSummary();
 refreshPairStates();
-
-// Polling intervals
 setInterval(pollSummary,5000);
 setInterval(refreshPairStates,5000);
-setInterval(updateSky,60000);
 </script>
 
 </body>
