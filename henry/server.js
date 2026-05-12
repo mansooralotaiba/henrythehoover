@@ -1316,6 +1316,8 @@ app.get('/api/kingdom/summary', requireAuth, async (req, res) => {
         active: !!sub?.active,
         watchlistSize: sub?.watchlist?.length || 0,
         pairsTracked: sub?.pairs ? Object.keys(sub.pairs).length : 0,
+        tf: sub?.tf || '15m',
+        broker: sub?.broker || null,
       },
     };
 

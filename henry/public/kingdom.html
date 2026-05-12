@@ -263,7 +263,21 @@
 // HELPERS
 // ─────────────────────────────────────────────────────────────
 function fmtR(r){if(r==null)return'—';var n=parseFloat(r);if(isNaN(n))return'—';return (n>=0?'+':'')+n.toFixed(2)+'R';}
-function fmtPx(p){if(p==null)return'—';var n=parseFloat(p);if(isNaN(n))return'—';if(n>=1000)return n.toFixed(2);if(n>=10)return n.toFixed(4);return n.toFixed(6);}
+// Decimal precision by price magnitude. Pairs like SUI ($1.24) need 4 decimals
+// to be readable; PEPE ($0.000008) needs 8. BTC ($80k) only wants 2.
+function pxDecimals(n){
+  if(n==null||!isFinite(n))return 2;
+  if(n>=1000)return 2;
+  if(n>=100)return 2;
+  if(n>=10)return 3;
+  if(n>=1)return 4;
+  if(n>=0.1)return 5;
+  if(n>=0.01)return 6;
+  if(n>=0.001)return 7;
+  return 8;
+}
+function pxMinMove(n){return Math.pow(10,-pxDecimals(n));}
+function fmtPx(p){if(p==null)return'—';var n=parseFloat(p);if(isNaN(n))return'—';return n.toFixed(pxDecimals(n));}
 function clsR(r){if(r==null||r===0)return'zero';return parseFloat(r)>=0?'pos':'neg';}
 function shortCoin(c){return (c||'').replace('USDT','').replace('1000','');}
 
@@ -415,6 +429,10 @@ function drawMonthChart(daily){
 // ─────────────────────────────────────────────────────────────
 var _panels={}; // coin -> { panelEl, chart, series, lines:[], priceEl, stateEl, signalInfoEl, lastSig:null, lastCandlesAt:0 }
 var _pairStateCache={}, _prevPairStates={};
+// Scan timeframe — pulled from /api/kingdom/summary scanState. Drives the chart
+// interval so the candles match the structure the AI analysed. Defaults to 15m
+// until we hear back from the server.
+var _scanTF='15m';
 
 function buildPanel(coin){
   var info=infoFor(coin);
@@ -474,8 +492,11 @@ function _brokerFor(coin){
 
 function fetchPanelCandles(coin){
   var broker=_brokerFor(coin);
+  // Use the actual scan timeframe so the chart's candles match the structure
+  // the AI analysed (entry/SL/TP levels were sized for these bars).
+  var tf=_scanTF||'15m';
   if(broker==='gold'){
-    return fetch('/api/gold/candles?interval=5m&limit=80',{credentials:'same-origin'})
+    return fetch('/api/gold/candles?interval='+tf+'&limit=80',{credentials:'same-origin'})
       .then(function(r){return r.ok?r.json():null;})
       .then(function(d){
         if(!d||!Array.isArray(d.candles))return[];
@@ -484,7 +505,7 @@ function fetchPanelCandles(coin){
       .catch(function(){return[];});
   }
   // Binance Futures public
-  return fetch('https://fapi.binance.com/fapi/v1/klines?symbol='+coin+'&interval=5m&limit=80')
+  return fetch('https://fapi.binance.com/fapi/v1/klines?symbol='+coin+'&interval='+tf+'&limit=80')
     .then(function(r){return r.json();})
     .then(function(arr){
       if(!Array.isArray(arr))return[];
@@ -590,6 +611,16 @@ function renderChartGrid(){
       p.lastCandlesAt=Date.now();
       fetchPanelCandles(coin).then(function(candles){
         if(!candles||!candles.length)return;
+        // Set the right Y-axis decimals based on the price magnitude.
+        // SUI at $1.24 needs 4 decimals or the axis just shows 1.20 → 1.30.
+        var sampleClose=candles[candles.length-1].close;
+        var dec=pxDecimals(sampleClose);
+        if(p.lastDecimals!==dec){
+          p.series.applyOptions({
+            priceFormat:{type:'price',precision:dec,minMove:pxMinMove(sampleClose)},
+          });
+          p.lastDecimals=dec;
+        }
         p.series.setData(candles);
         try{p.chart.timeScale().fitContent();}catch(e){}
       }).catch(function(){});
