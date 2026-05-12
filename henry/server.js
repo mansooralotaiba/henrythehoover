@@ -1022,8 +1022,13 @@ async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr, 
   // a P/L event — should never contribute to a "losing streak" pause).
   if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE' || outcome === 'EXPIRED')) {
     const stats = await getUserStats(userId).catch(() => null);
-    postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
-      .catch(e => console.error('[journal post]', e.message));
+    // Suppress journal Discord post for silent-expiry signals (pending
+    // confirmation that never fired). They land in stats but not the channel.
+    const silentExpiry = outcome === 'EXPIRED' && fallbackSignal && fallbackSignal._silentExpiry;
+    if (!silentExpiry) {
+      postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
+        .catch(e => console.error('[journal post]', e.message));
+    }
     // Record into circuit breaker history (only on first outcome) so losing
     // streaks pause future scans automatically.
     if (signalForJournal && signalForJournal.pair && outcome !== 'EXPIRED') {
@@ -2071,6 +2076,12 @@ function getPairState(sub, coin) {
       pendSignal: null, signalId: null, signalTimestamp: null,
       _entryAlerted: false, _beAlerted: false, _tpAlerted: false, _expiryAlerted: false,
       _outcomeLogged: false,
+      // Silent-pending state — auto-scan generates a signal but holds the
+      // notification (push + Discord embed) until the entry-confirmation
+      // gate confirms a real LTF pattern. Matches manual analyse behavior.
+      _confirmationPending: false,
+      _trigger: null,
+      _broker: null,
       // Entry-confirmation state (ICT/S&D candle-pattern gate before ENTRY HIT)
       _zoneFirstTouchAt: 0,    // ms when price first entered ±0.3% entry zone
       _confirmFailedAt: 0,     // ms last time confirmation check ran without firing
@@ -2101,6 +2112,9 @@ function clearPairState(ps) {
   ps._tpAlerted = false;
   ps._expiryAlerted = false;
   ps._outcomeLogged = false;
+  ps._confirmationPending = false;
+  ps._trigger = null;
+  ps._broker = null;
   ps._zoneFirstTouchAt = 0;
   ps._confirmFailedAt = 0;
   ps._confirmAttempts = 0;
@@ -2339,6 +2353,9 @@ app.get('/api/scan/all-pairs', requireAuth, async (req, res) => {
       entryAlerted: !!(ps && ps._entryAlerted),
       beAlerted:    !!(ps && ps._beAlerted),
       tpAlerted:    !!(ps && ps._tpAlerted),
+      // True while AI has produced a signal but the LTF confirmation gate
+      // hasn't fired yet — drives the new "WAITING CONFIRMATION" UI state.
+      awaitingConfirmation: !!(ps && ps._confirmationPending),
       stats: stats[coin] || null, // { tp, sl, be, totalR, total, winRate }
     });
   }
@@ -2556,6 +2573,49 @@ const ENTRY_CONFIRM_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // Zone width ±0.3% of entry — must match browser watcher.
 const ENTRY_CONFIRM_ZONE_PCT = 0.003;
 
+// Fire the deferred signal embed + entry-hit alert. Called by the monitor
+// when LTF confirmation lands (or 2h timeout) to flip a silent
+// _confirmationPending signal into the user's notification stream.
+async function firePendingSignalAlerts(userId, sub, coin, ps, signal, price, confirmLabel, isTimeout) {
+  const isAdmin = sub.isAdmin || (sub.email && sub.email === ADMIN_EMAIL);
+  const broker = ps._broker || sub.broker;
+  const trigger = ps._trigger || { type: 'auto', desc: 'auto-scan trigger' };
+  const tf = sub.tf;
+
+  // 1) Rich push — same shape as the original at-AI-output push, plus the
+  //    confirmation label so the user knows what fired the entry.
+  const dirEmoji = signal.direction === 'LONG' ? '🟢' : '🔴';
+  const tag = isTimeout ? ' (UNCONFIRMED)' : '';
+  await sendPushTo(userId, {
+    title: `⚡ ${dirEmoji} ${coin.replace('USDT', '')} ${signal.direction}${tag}`,
+    body: `Entry ${signal.entry} hit @ ${price} | SL ${signal.sl} | TP ${signal.tp} | ${signal.rr || '—'}R · ${confirmLabel}`,
+    icon: '/manifest.json',
+    data: { coin, tf, broker, signalId: ps.signalId, signal },
+  });
+
+  // 2) Full Discord signal embed (the one that was suppressed at AI-output)
+  if (isAdmin) {
+    const annotatedSignal = isTimeout
+      ? Object.assign({}, signal, { entry_reason: (signal.entry_reason || '') + ' | UNCONFIRMED — fired on 2h timeout, no LTF pattern' })
+      : Object.assign({}, signal, { entry_reason: (signal.entry_reason || '') + ' | CONFIRMED: ' + confirmLabel });
+    await postServerSignalToDiscord(annotatedSignal, trigger, broker, tf)
+      .catch(e => console.error('[discord auto deferred]', e.message));
+  }
+
+  // 3) Plain ENTRY HIT alert (push + Discord auto-monitor embed) so the
+  //    journal channel and phone get the explicit "trade is now active" line.
+  await notifyUser(userId, isAdmin, {
+    title: `🎯 ENTRY HIT${tag}: ${coin.replace('USDT', '')} ${signal.direction}`,
+    body: isTimeout
+      ? `Entry @ ${price}. 2h watch elapsed without LTF pattern — trade ACTIVE as unconfirmed.`
+      : `Entry filled @ ${price} — confirmed by ${confirmLabel}. Trade is now ACTIVE.`,
+    color: isTimeout ? 'am' : 'cy',
+  });
+
+  // Clear the pending flag so we don't double-fire on subsequent monitor ticks
+  ps._confirmationPending = false;
+}
+
 async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverride) {
   const { tf, isAdmin } = sub;
   // Route to the pair's appropriate broker (GOLD → massive, others → user choice)
@@ -2612,11 +2672,17 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         ps._entryAlerted = true;
         ps._expiryAlerted = true;
         ps.lastStatus = 'in-trade';
-        await notifyUser(userId, isAdmin, {
-          title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-          body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
-          color: 'cy',
-        });
+        // If this signal was auto-generated and is still pending (browser-side
+        // _confirmed flag was set externally), fire the deferred embed too.
+        if (ps._confirmationPending) {
+          await firePendingSignalAlerts(userId, sub, coin, ps, pendSignal, price, 'browser-confirmed', false);
+        } else {
+          await notifyUser(userId, isAdmin, {
+            title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+            body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
+            color: 'cy',
+          });
+        }
       }
     } else if (inZone || touchedEntry) {
       if (!ps._zoneFirstTouchAt) ps._zoneFirstTouchAt = Date.now();
@@ -2643,25 +2709,20 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
           ps.lastStatus = 'in-trade';
           const label = `${picked.r.summary} (score ${picked.r.score}, ${picked.tf})`;
           console.log('[entry-confirm]', coin, 'CONFIRMED:', label, 'price=' + price);
-          await notifyUser(userId, isAdmin, {
-            title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-            body: `Entry filled @ ${price} — confirmed by ${label}. Trade is now ACTIVE.`,
-            color: 'cy',
-          });
+
+          // Fire the deferred signal embed (suppressed at AI-output time)
+          // alongside the entry-hit alert. Single coherent notification flow.
+          await firePendingSignalAlerts(userId, sub, coin, ps, pendSignal, price, label, false);
         } else if (elapsed >= ENTRY_CONFIRM_TIMEOUT_MS) {
           // Fallback: 2h elapsed, fire anyway as UNCONFIRMED so trade isn't lost
           ps._entryAlerted = true;
           ps._expiryAlerted = true;
           ps.lastStatus = 'in-trade';
           console.log('[entry-confirm]', coin, 'TIMEOUT — firing unconfirmed', 'attempts=' + ps._confirmAttempts);
-          await notifyUser(userId, isAdmin, {
-            title: `🎯 ENTRY HIT (UNCONFIRMED): ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-            body: `Entry @ ${price}. 2h confirmation window elapsed — no qualifying ICT/S&D pattern fired. Trade is ACTIVE.`,
-            color: 'am',
-          });
+          await firePendingSignalAlerts(userId, sub, coin, ps, pendSignal, price, '2h timeout — no LTF pattern', true);
         } else {
           ps._confirmFailedAt = now;
-          ps.lastStatus = 'waiting'; // still watching for confirmation
+          ps.lastStatus = 'waiting-confirm'; // still watching for confirmation
           // Quiet log so we can debug in Railway logs without spamming Discord
           console.log('[entry-confirm]', coin, 'waiting',
             `1m[${r1m.score}]:${r1m.summary} | 5m[${r5m.score}]:${r5m.summary}`,
@@ -2755,17 +2816,27 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     const maxMs = pendSignal.expiry_candles * (tfMs[tf] || 900000);
     if (Date.now() - ps.signalTimestamp > maxMs) {
       ps._expiryAlerted = true;
-      console.log('[monitor]', coin, 'EXPIRED (never entered)', 'signalId=' + ps.signalId);
-      await notifyUser(userId, isAdmin, {
-        title: '⏱ SIGNAL EXPIRED',
-        body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles (no entry).`,
-        color: 'am',
-      });
+      const wasPending = !!ps._confirmationPending;
+      console.log('[monitor]', coin, 'EXPIRED (never entered)' + (wasPending ? ' [silent — pending confirmation]' : ''), 'signalId=' + ps.signalId);
+      // Suppress the user-facing "SIGNAL EXPIRED" push when the signal was
+      // never announced (_confirmationPending). The user didn't know about
+      // it — telling them it expired is just noise. Still log to /performance
+      // so stats reflect every AI call, just silently.
+      if (!wasPending) {
+        await notifyUser(userId, isAdmin, {
+          title: '⏱ SIGNAL EXPIRED',
+          body: `Cancel limit order — ${coin.replace('USDT', '')} signal expired after ${pendSignal.expiry_candles} candles (no entry).`,
+          color: 'am',
+        });
+      }
       if (!ps._outcomeLogged) {
         ps._outcomeLogged = true;
-        // Record EXPIRED outcome so /performance reflects it and the journal
-        // posts a per-pair stat update. rr=0 (no entry → no P/L).
-        await logSignalOutcomeAndJournal(userId, ps.signalId, 'EXPIRED', 0, pendSignal, broker, tf)
+        // Record EXPIRED outcome so /performance reflects it. Skip journal Discord
+        // post for silent pending-expiry signals — those go to stats only.
+        const journalSignal = wasPending
+          ? Object.assign({}, pendSignal, { _silentExpiry: true })
+          : pendSignal;
+        await logSignalOutcomeAndJournal(userId, ps.signalId, 'EXPIRED', 0, journalSignal, broker, tf)
           .catch(e => console.error('[server EXPIRED outcome]', e.message));
       }
       clearPairState(ps);
@@ -4148,22 +4219,18 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
 
   const signalId = await saveServerSignal(userId, signal, trigger, broker, tf);
 
-  // Rich push with the full signal — phone shows entry/SL/TP/RR/confidence inline
-  await sendPushTo(userId, {
-    title: `⚡ ${signal.direction === 'LONG' ? '🟢' : '🔴'} ${coin.replace('USDT', '')} ${signal.direction}`,
-    body: `Entry ${signal.entry} | SL ${signal.sl} | TP ${signal.tp} | ${signal.rr || '—'}R @ ${signal.confidence || '—'}%`,
-    icon: '/manifest.json',
-    data: { coin, tf, broker, signalId, trigger, signal },
-  });
+  // ── SILENT PENDING SIGNAL ──────────────────────────────────────────────
+  // Don't send the push / Discord embed yet — same as manual analyse, the
+  // signal stays quiet until the entry-confirmation gate catches an LTF
+  // pattern. When confirmation fires (or 2h timeout) the monitor posts the
+  // full signal embed alongside the entry-hit alert.
+  //
+  // Stash the trigger + broker on the pair state so the monitor can build
+  // the deferred Discord embed when confirmation lands.
+  console.log('[auto-signal]', coin, signal.direction,
+    '→ holding for LTF confirmation. entry=' + signal.entry,
+    'sl=' + signal.sl, 'tp=' + signal.tp, 'rr=' + (signal.rr || '—'));
 
-  // Discord (admin-only — auto-scan is admin-only anyway, but defensive).
-  // Fall back to email check so a stale sub.isAdmin=false (from before today's
-  // email-fallback fix) doesn't silently swallow Discord posts.
-  if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
-    await postServerSignalToDiscord(signal, trigger, broker, tf).catch(e => console.error('[discord auto]', e.message));
-  }
-
-  // Activate the trade monitor for THIS pair — other pairs continue scanning independently.
   ps.pendSignal = signal;
   ps.signalId = signalId;
   ps.signalTimestamp = Date.now();
@@ -4172,7 +4239,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   ps._tpAlerted = false;
   ps._expiryAlerted = false;
   ps._outcomeLogged = false;
-  ps.lastStatus = 'waiting';
+  ps._confirmationPending = true;   // new: drives 'waiting-confirm' UI state + deferred post
+  ps._trigger = trigger;            // store for later deferred Discord embed
+  ps._broker = broker;
+  ps.lastStatus = 'waiting-confirm';
 
   return signal;
 }

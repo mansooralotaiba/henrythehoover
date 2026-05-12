@@ -88,6 +88,8 @@
   /* PANEL */
   .panel{position:relative;background:var(--bg2);border:1.5px solid var(--b1);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;transition:border-color 0.3s, box-shadow 0.3s}
   .panel[data-state="scanning"]{border-color:rgba(0,229,160,0.25)}
+  .panel[data-state="waiting-confirm"]{border-color:rgba(255,154,64,0.55);box-shadow:inset 0 0 28px rgba(255,154,64,0.1);animation:waiting-confirm-pulse 2.8s ease-in-out infinite}
+  @keyframes waiting-confirm-pulse{0%,100%{box-shadow:inset 0 0 22px rgba(255,154,64,0.08),0 0 8px rgba(255,154,64,0.1)}50%{box-shadow:inset 0 0 36px rgba(255,154,64,0.18),0 0 16px rgba(255,154,64,0.25)}}
   .panel[data-state="waiting"]{border-color:rgba(255,184,48,0.45);box-shadow:inset 0 0 24px rgba(255,184,48,0.08)}
   .panel[data-state="in-trade"]{border-color:rgba(0,212,255,0.6);box-shadow:0 0 18px rgba(0,212,255,0.25),inset 0 0 28px rgba(0,212,255,0.06);animation:in-trade-pulse 2.2s ease-in-out infinite}
   .panel[data-state="cooldown"]{border-color:rgba(255,255,255,0.08);opacity:0.75}
@@ -100,6 +102,7 @@
   .panel-pair .name{font-weight:bold;font-size:12px;letter-spacing:.08em}
   .panel-state-tag{font-size:9px;padding:2px 7px;border-radius:2px;letter-spacing:.12em;font-weight:bold}
   .panel-state-tag.scanning{color:var(--gr);background:rgba(0,229,160,0.08);border:1px solid rgba(0,229,160,0.3)}
+  .panel-state-tag.waiting-confirm{color:#ff9a40;background:rgba(255,154,64,0.12);border:1px solid rgba(255,154,64,0.5)}
   .panel-state-tag.waiting{color:var(--am);background:rgba(255,184,48,0.1);border:1px solid rgba(255,184,48,0.4)}
   .panel-state-tag.in-trade{color:var(--cy);background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.5)}
   .panel-state-tag.cooldown{color:var(--mu);background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1)}
@@ -662,6 +665,7 @@ function refreshPairStates(){
       d.pairs.forEach(function(p){
         var st;
         if(p.hasSignal&&p.entryAlerted)st='in-trade';
+        else if(p.hasSignal&&p.awaitingConfirmation)st='waiting-confirm';
         else if(p.hasSignal)st='waiting';
         else if(p.pauseRemaining>0)st='paused';
         else if(p.cooldownRemaining>0)st='cooldown';
