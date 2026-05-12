@@ -2982,22 +2982,81 @@ async function fetchNewsContext() {
 }
 
 // ── 2. ECONOMIC CALENDAR CONTEXT — high/medium impact next 4h ──
+// Times stored as wall-clock LOCAL time in the event's home tz. UTC is
+// derived at runtime so daylight-saving boundaries don't shift things by
+// an hour twice a year. This list is the LAST-RESORT fallback only —
+// the live FF feed at faireconomy.media is the primary source.
 const CALENDAR_EVENTS_SERVER = [
-  { time: 'Mon 08:30', zone: 'USD', name: 'ISM Manufacturing PMI',           imp: 'high' },
-  { time: 'Tue 10:00', zone: 'USD', name: 'JOLTS Job Openings',              imp: 'high' },
-  { time: 'Wed 14:30', zone: 'USD', name: 'ADP Employment Change',           imp: 'high' },
-  { time: 'Wed 14:30', zone: 'USD', name: 'US CPI m/m',                      imp: 'high' },
-  { time: 'Wed 20:00', zone: 'USD', name: 'FOMC Statement / Rate Decision',  imp: 'high' },
-  { time: 'Thu 14:30', zone: 'USD', name: 'Initial Jobless Claims',          imp: 'med'  },
-  { time: 'Thu 14:30', zone: 'USD', name: 'US PPI m/m',                      imp: 'med'  },
-  { time: 'Fri 14:30', zone: 'USD', name: 'Non-Farm Payrolls',               imp: 'high' },
-  { time: 'Fri 14:30', zone: 'USD', name: 'Unemployment Rate',               imp: 'high' },
-  { time: 'Tue 09:30', zone: 'GBP', name: 'UK CPI y/y',                      imp: 'high' },
-  { time: 'Wed 09:00', zone: 'EUR', name: 'Eurozone CPI Flash',              imp: 'high' },
-  { time: 'Thu 13:45', zone: 'EUR', name: 'ECB Rate Decision',               imp: 'high' },
-  { time: 'Fri 09:30', zone: 'GBP', name: 'UK GDP m/m',                      imp: 'high' },
+  { day: 'Mon', local: '10:00', tz: 'America/New_York', zone: 'USD', name: 'ISM Manufacturing PMI',          imp: 'high' },
+  { day: 'Tue', local: '10:00', tz: 'America/New_York', zone: 'USD', name: 'JOLTS Job Openings',             imp: 'high' },
+  { day: 'Wed', local: '08:15', tz: 'America/New_York', zone: 'USD', name: 'ADP Employment Change',          imp: 'high' },
+  { day: 'Wed', local: '08:30', tz: 'America/New_York', zone: 'USD', name: 'US CPI m/m',                     imp: 'high' },
+  { day: 'Wed', local: '14:00', tz: 'America/New_York', zone: 'USD', name: 'FOMC Statement / Rate Decision', imp: 'high' },
+  { day: 'Thu', local: '08:30', tz: 'America/New_York', zone: 'USD', name: 'Initial Jobless Claims',         imp: 'med'  },
+  { day: 'Thu', local: '08:30', tz: 'America/New_York', zone: 'USD', name: 'US PPI m/m',                     imp: 'med'  },
+  { day: 'Fri', local: '08:30', tz: 'America/New_York', zone: 'USD', name: 'Non-Farm Payrolls',              imp: 'high' },
+  { day: 'Fri', local: '08:30', tz: 'America/New_York', zone: 'USD', name: 'Unemployment Rate',              imp: 'high' },
+  { day: 'Tue', local: '07:00', tz: 'Europe/London',    zone: 'GBP', name: 'UK CPI y/y',                     imp: 'high' },
+  { day: 'Wed', local: '11:00', tz: 'Europe/Berlin',    zone: 'EUR', name: 'Eurozone CPI Flash',             imp: 'high' },
+  { day: 'Thu', local: '14:15', tz: 'Europe/Berlin',    zone: 'EUR', name: 'ECB Rate Decision',              imp: 'high' },
+  { day: 'Fri', local: '07:00', tz: 'Europe/London',    zone: 'GBP', name: 'UK GDP m/m',                     imp: 'high' },
 ];
+
+// Reads the wall-clock weekday + HH:MM in a given IANA tz for a UTC Date.
+function _wallClockInTz(date, tz) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false, weekday: 'short',
+    hour: '2-digit', minute: '2-digit',
+  });
+  const parts = fmt.formatToParts(date);
+  const w = parts.find(p => p.type === 'weekday').value;
+  const hh = parseInt(parts.find(p => p.type === 'hour').value, 10) % 24;
+  const mm = parseInt(parts.find(p => p.type === 'minute').value, 10);
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return { dow: days.indexOf(w), hh, mm };
+}
+
+// Converts "dayName HH:MM in tz" to the UTC millisecond timestamp of the
+// upcoming occurrence (within ±1 day of the target wall-clock day).
+// Handles DST automatically via Intl.DateTimeFormat.
+function _tzDayTimeToUTC(dayName, hhmm, tz) {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const targetDow = days.indexOf(dayName);
+  if (targetDow < 0) return null;
+  const [hh, mm] = hhmm.split(':').map(Number);
+  const now = Date.now();
+  for (let d = -1; d < 9; d++) {
+    const candidate = new Date(now);
+    candidate.setUTCDate(candidate.getUTCDate() + d);
+    candidate.setUTCHours(hh, mm, 0, 0);
+    const wall = _wallClockInTz(candidate, tz);
+    // Adjust by the wall-clock delta (handles DST + tz offset in one shot)
+    const deltaMin = (hh - wall.hh) * 60 + (mm - wall.mm);
+    const adjusted = candidate.getTime() + deltaMin * 60_000;
+    const verify = _wallClockInTz(new Date(adjusted), tz);
+    if (verify.dow === targetDow && verify.hh === hh && verify.mm === mm
+        && adjusted >= now - 3_600_000) {
+      return adjusted;
+    }
+  }
+  return null;
+}
 let _calendarCache = { ts: 0, items: [] };
+
+// Public endpoint so the browser can pull the calendar through Henry's own
+// server (which can reach FF reliably) instead of depending on the flaky
+// allorigins CORS proxy. Returns the full week's high/med events plus the
+// raw FF date strings so the browser can render in any tz.
+app.get('/api/calendar/events', requireAuth, async (req, res) => {
+  try {
+    // Reuse the same cache fetchCalendarContext warms up
+    await fetchCalendarContext();
+    res.json({ events: _calendarCache.items || [] });
+  } catch (e) {
+    console.error('[calendar endpoint]', e.message);
+    res.status(500).json({ error: 'calendar_failed', events: [] });
+  }
+});
 
 async function fetchCalendarContext() {
   const now = Date.now();
@@ -3009,9 +3068,13 @@ async function fetchCalendarContext() {
       const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', {
         headers: { 'user-agent': 'HenryHoover/1.0' },
       });
-      if (r.ok) {
+      if (!r.ok) {
+        console.warn('[calendar] FF feed returned', r.status);
+      } else {
         const raw = await r.json();
-        if (Array.isArray(raw)) {
+        if (!Array.isArray(raw)) {
+          console.warn('[calendar] FF feed not an array');
+        } else {
           live = raw
             .filter(e => e.impact === 'High' || e.impact === 'Medium')
             .map(e => ({
@@ -3020,25 +3083,20 @@ async function fetchCalendarContext() {
               imp: e.impact === 'High' ? 'high' : 'med',
               forecast: e.forecast, prev: e.previous, actual: e.actual,
             }));
+          console.log('[calendar] fetched', live.length, 'high/med events from FF');
         }
       }
-    } catch {}
+    } catch (e) {
+      console.error('[calendar] FF fetch failed:', e.message);
+    }
     if (!live.length) {
-      // Fallback: build static events with current-week dates (UTC)
-      const dnow = new Date();
-      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      // Fallback: build static events using IANA tz so DST is handled
+      // correctly (event-local wall-clock → real UTC, not naive UTC).
+      console.warn('[calendar] using static fallback — live FF feed unavailable');
       live = CALENDAR_EVENTS_SERVER.map(e => {
-        const parts = e.time.split(' ');
-        if (parts.length < 2) return null;
-        const dayIdx = days.indexOf(parts[0]);
-        if (dayIdx < 0) return null;
-        const hm = parts[1].split(':');
-        const dt = new Date(dnow);
-        let diff = dayIdx - dnow.getUTCDay();
-        if (diff < 0) diff += 7;
-        dt.setUTCDate(dnow.getUTCDate() + diff);
-        dt.setUTCHours(parseInt(hm[0]), parseInt(hm[1]), 0, 0);
-        return { dt: dt.getTime(), zone: e.zone, name: e.name, imp: e.imp };
+        const dt = _tzDayTimeToUTC(e.day, e.local, e.tz);
+        if (dt == null) return null;
+        return { dt, zone: e.zone, name: e.name, imp: e.imp };
       }).filter(Boolean);
     }
     _calendarCache = { ts: now, items: live };

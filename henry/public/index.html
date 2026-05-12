@@ -5116,43 +5116,75 @@ function updateDXYBias(){
 // ═══════════════════════════════════════════
 // ECONOMIC CALENDAR
 // ═══════════════════════════════════════════
+// Static fallback — uses IANA tz + Intl.DateTimeFormat so DST is handled
+// automatically. Last resort only; primary source is /api/calendar/events.
 var CALENDAR_EVENTS=[
-  // Static high-impact events — updated weekly
-  {time:'Mon 08:30',zone:'USD',name:'ISM Manufacturing PMI',imp:'high'},
-  {time:'Tue 10:00',zone:'USD',name:'JOLTS Job Openings',imp:'high'},
-  {time:'Wed 14:30',zone:'USD',name:'ADP Employment Change',imp:'high'},
-  {time:'Wed 14:30',zone:'USD',name:'US CPI m/m',imp:'high'},
-  {time:'Wed 20:00',zone:'USD',name:'FOMC Statement / Rate Decision',imp:'high'},
-  {time:'Thu 14:30',zone:'USD',name:'Initial Jobless Claims',imp:'med'},
-  {time:'Thu 14:30',zone:'USD',name:'US PPI m/m',imp:'med'},
-  {time:'Fri 14:30',zone:'USD',name:'Non-Farm Payrolls',imp:'high'},
-  {time:'Fri 14:30',zone:'USD',name:'Unemployment Rate',imp:'high'},
-  {time:'Mon 09:00',zone:'EUR',name:'ECB President Speech',imp:'med'},
-  {time:'Tue 09:30',zone:'GBP',name:'UK CPI y/y',imp:'high'},
-  {time:'Wed 09:00',zone:'EUR',name:'Eurozone CPI Flash',imp:'high'},
-  {time:'Thu 13:45',zone:'EUR',name:'ECB Rate Decision',imp:'high'},
-  {time:'Fri 09:30',zone:'GBP',name:'UK GDP m/m',imp:'high'},
+  {day:'Mon',local:'10:00',tz:'America/New_York',zone:'USD',name:'ISM Manufacturing PMI',imp:'high'},
+  {day:'Tue',local:'10:00',tz:'America/New_York',zone:'USD',name:'JOLTS Job Openings',imp:'high'},
+  {day:'Wed',local:'08:15',tz:'America/New_York',zone:'USD',name:'ADP Employment Change',imp:'high'},
+  {day:'Wed',local:'08:30',tz:'America/New_York',zone:'USD',name:'US CPI m/m',imp:'high'},
+  {day:'Wed',local:'14:00',tz:'America/New_York',zone:'USD',name:'FOMC Statement / Rate Decision',imp:'high'},
+  {day:'Thu',local:'08:30',tz:'America/New_York',zone:'USD',name:'Initial Jobless Claims',imp:'med'},
+  {day:'Thu',local:'08:30',tz:'America/New_York',zone:'USD',name:'US PPI m/m',imp:'med'},
+  {day:'Fri',local:'08:30',tz:'America/New_York',zone:'USD',name:'Non-Farm Payrolls',imp:'high'},
+  {day:'Fri',local:'08:30',tz:'America/New_York',zone:'USD',name:'Unemployment Rate',imp:'high'},
+  {day:'Tue',local:'07:00',tz:'Europe/London',zone:'GBP',name:'UK CPI y/y',imp:'high'},
+  {day:'Wed',local:'11:00',tz:'Europe/Berlin',zone:'EUR',name:'Eurozone CPI Flash',imp:'high'},
+  {day:'Thu',local:'14:15',tz:'Europe/Berlin',zone:'EUR',name:'ECB Rate Decision',imp:'high'},
+  {day:'Fri',local:'07:00',tz:'Europe/London',zone:'GBP',name:'UK GDP m/m',imp:'high'},
 ];
+
+// Wall-clock + weekday for a UTC date in the given IANA tz.
+function _wallClockInTz(date,tz){
+  var fmt=new Intl.DateTimeFormat('en-US',{
+    timeZone:tz,hour12:false,weekday:'short',
+    hour:'2-digit',minute:'2-digit',
+  });
+  var parts=fmt.formatToParts(date);
+  var w=parts.find(function(p){return p.type==='weekday';}).value;
+  var hh=parseInt(parts.find(function(p){return p.type==='hour';}).value,10)%24;
+  var mm=parseInt(parts.find(function(p){return p.type==='minute';}).value,10);
+  var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  return{dow:days.indexOf(w),hh:hh,mm:mm};
+}
+
+// Convert "dayName HH:MM in tz" → UTC ms for the upcoming occurrence.
+function _tzDayTimeToUTC(dayName,hhmm,tz){
+  var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var targetDow=days.indexOf(dayName);
+  if(targetDow<0)return null;
+  var parts=hhmm.split(':');
+  var hh=parseInt(parts[0],10),mm=parseInt(parts[1],10);
+  var now=Date.now();
+  for(var d=-1;d<9;d++){
+    var candidate=new Date(now);
+    candidate.setUTCDate(candidate.getUTCDate()+d);
+    candidate.setUTCHours(hh,mm,0,0);
+    var wall=_wallClockInTz(candidate,tz);
+    var deltaMin=(hh-wall.hh)*60+(mm-wall.mm);
+    var adjusted=candidate.getTime()+deltaMin*60000;
+    var verify=_wallClockInTz(new Date(adjusted),tz);
+    if(verify.dow===targetDow&&verify.hh===hh&&verify.mm===mm&&adjusted>=now-3600000){
+      return adjusted;
+    }
+  }
+  return null;
+}
 
 function loadCalendar(){
   var el=document.getElementById('callist');if(!el)return;
   el.innerHTML='<div style="padding:10px 14px;font-size:10px;color:var(--mu)">Loading calendar...</div>';
 
-  // Build static events with proper Date objects for current week
+  // Build static events as a tz-aware fallback. UTC is computed via Intl
+  // so DST is handled automatically; no more "always off by 2h in summer".
   var now=new Date();
-  var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var staticWithDates=CALENDAR_EVENTS.map(function(e){
-    var parts=e.time.split(' ');
-    if(parts.length<2)return e;
-    var dayIdx=days.indexOf(parts[0]);
-    if(dayIdx<0)return e;
-    var hm=parts[1].split(':');
-    var dt=new Date(now);
-    var diff=dayIdx-now.getUTCDay();
-    if(diff<0)diff+=7;
-    dt.setUTCDate(now.getUTCDate()+diff);
-    dt.setUTCHours(parseInt(hm[0]),parseInt(hm[1]),0,0);
-    return Object.assign({},e,{dt:dt});
+    var dtMs=_tzDayTimeToUTC(e.day,e.local,e.tz);
+    if(dtMs==null)return e;
+    return Object.assign({},e,{
+      dt:new Date(dtMs),
+      time:p2(new Date(dtMs).getUTCHours())+':'+p2(new Date(dtMs).getUTCMinutes()),
+    });
   });
 
   // Try live first, fall back to static
@@ -5171,20 +5203,19 @@ function loadCalendar(){
 }
 
 function fetchLiveCalendar(){
-  // Try to get upcoming events from a free economic calendar API
-  var url='https://api.allorigins.win/get?url='+encodeURIComponent('https://nfs.faireconomy.media/ff_calendar_thisweek.json?version='+Date.now());
-  return fetch(url)
-    .then(function(r){return r.json();})
-    .then(function(d){
-      var raw=d.contents?JSON.parse(d.contents):null;
-      if(!Array.isArray(raw))return null;
+  // Primary: Henry's own /api/calendar/events endpoint (server-side fetch
+  // of faireconomy.media — works reliably, no CORS proxy needed). Falls
+  // back to direct allorigins fetch if Henry's endpoint errors.
+  return fetch('/api/calendar/events',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      var raw=j&&Array.isArray(j.events)?j.events:null;
+      if(!raw)throw new Error('henry calendar endpoint empty');
+      // Server returns { dt, zone, name, imp, forecast, prev, actual }
       var now=new Date();
       return raw
-        .filter(function(e){
-          return e.impact==='High'||e.impact==='Medium';
-        })
         .map(function(e){
-          var dt=new Date(e.date);
+          var dt=new Date(e.dt);
           var diff=dt-now;
           var countdown='';
           if(diff>0&&diff<86400000){
@@ -5193,18 +5224,53 @@ function fetchLiveCalendar(){
           }
           return{
             time:p2(dt.getUTCHours())+':'+p2(dt.getUTCMinutes()),
-            zone:e.country,
-            name:e.title,
-            imp:e.impact==='High'?'high':'med',
+            zone:e.zone,
+            name:e.name,
+            imp:e.imp,
             actual:e.actual,
             forecast:e.forecast,
-            prev:e.previous,
+            prev:e.prev,
             countdown:countdown,
             dt:dt
           };
         })
         .sort(function(a,b){return a.dt-b.dt;})
         .slice(0,15);
+    })
+    .catch(function(){
+      // Last-resort backup: allorigins CORS proxy
+      var url='https://api.allorigins.win/get?url='+encodeURIComponent('https://nfs.faireconomy.media/ff_calendar_thisweek.json?version='+Date.now());
+      return fetch(url)
+        .then(function(r){return r.json();})
+        .then(function(d){
+          var raw=d.contents?JSON.parse(d.contents):null;
+          if(!Array.isArray(raw))return null;
+          var now=new Date();
+          return raw
+            .filter(function(e){return e.impact==='High'||e.impact==='Medium';})
+            .map(function(e){
+              var dt=new Date(e.date);
+              var diff=dt-now;
+              var countdown='';
+              if(diff>0&&diff<86400000){
+                var h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
+                countdown=h+'h '+p2(m)+'m';
+              }
+              return{
+                time:p2(dt.getUTCHours())+':'+p2(dt.getUTCMinutes()),
+                zone:e.country,
+                name:e.title,
+                imp:e.impact==='High'?'high':'med',
+                actual:e.actual,
+                forecast:e.forecast,
+                prev:e.previous,
+                countdown:countdown,
+                dt:dt
+              };
+            })
+            .sort(function(a,b){return a.dt-b.dt;})
+            .slice(0,15);
+        });
     });
 }
 
