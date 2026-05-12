@@ -4095,10 +4095,16 @@ function _isAnthropicOverload(status, body) {
   const t = body && body.error && body.error.type;
   return t === 'overloaded_error' || t === 'rate_limit_error' || t === 'api_error';
 }
-const ANTHROPIC_RETRY_DELAYS_MS = [2000, 5000, 12000]; // 3 retries, ~20s total
+// Overload events on Anthropic can last 5-15+ minutes. Extended retry sequence
+// (~3 min total wait) catches the vast majority. Auto-scan pairs are independent
+// so a stuck pair doesn't block others. ±20% jitter prevents thundering-herd
+// behaviour when many concurrent pair-scans all retry on the same tick.
+const ANTHROPIC_RETRY_DELAYS_MS = [2000, 5000, 10000, 20000, 30000, 45000, 60000];
+function _jittered(ms) { return Math.round(ms * (0.8 + Math.random() * 0.4)); }
 async function _anthropicFetchWithRetry(payload) {
   let lastErr = null;
-  for (let attempt = 0; attempt <= ANTHROPIC_RETRY_DELAYS_MS.length; attempt++) {
+  const totalAttempts = ANTHROPIC_RETRY_DELAYS_MS.length + 1; // initial + retries
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
     let r, d;
     try {
       r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -4114,24 +4120,30 @@ async function _anthropicFetchWithRetry(payload) {
     } catch (netErr) {
       lastErr = netErr;
       if (attempt < ANTHROPIC_RETRY_DELAYS_MS.length) {
-        const delay = ANTHROPIC_RETRY_DELAYS_MS[attempt];
-        console.warn(`[anthropic] network error (attempt ${attempt + 1}), retrying in ${delay}ms:`, netErr.message);
+        const delay = _jittered(ANTHROPIC_RETRY_DELAYS_MS[attempt]);
+        console.warn(`[anthropic] network error (attempt ${attempt + 1}/${totalAttempts}), retrying in ${delay}ms:`, netErr.message);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
       throw netErr;
     }
-    if (r.ok && !d.error) return d;
+    if (r.ok && !d.error) {
+      if (attempt > 0) console.log(`[anthropic] recovered after ${attempt + 1} attempts`);
+      return d;
+    }
     // Retryable?
     if (_isAnthropicOverload(r.status, d) && attempt < ANTHROPIC_RETRY_DELAYS_MS.length) {
-      const delay = ANTHROPIC_RETRY_DELAYS_MS[attempt];
-      const errType = d && d.error && d.error.type || ('http_' + r.status);
-      console.warn(`[anthropic] ${errType} (attempt ${attempt + 1}), retrying in ${delay}ms`);
+      const delay = _jittered(ANTHROPIC_RETRY_DELAYS_MS[attempt]);
+      const errType = (d && d.error && d.error.type) || ('http_' + r.status);
+      console.warn(`[anthropic] ${errType} (attempt ${attempt + 1}/${totalAttempts}), retrying in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
     // Non-retryable or out of retries
     const msg = (d && d.error && d.error.message) || `HTTP ${r.status}`;
+    if (_isAnthropicOverload(r.status, d)) {
+      console.error(`[anthropic] gave up after ${totalAttempts} attempts (~3min) — still overloaded`);
+    }
     const err = new Error(msg);
     err.status = r.status;
     err.anthropicError = d && d.error;
