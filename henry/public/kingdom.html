@@ -115,30 +115,12 @@
   @keyframes flag-wave-svg{0%,100%{transform:skewX(-4deg)}50%{transform:skewX(4deg)}}
   .flag-cloth{transform-origin:left top;animation:flag-wave-svg 2.4s ease-in-out infinite}
 
-  @keyframes coin-shine-svg{0%,100%{opacity:0.7}50%{opacity:1}}
-  .coin{animation:coin-shine-svg 3s ease-in-out infinite}
-
   @keyframes bell-swing{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}
   .cal-tower-svg.warn .bell{animation:bell-swing 1.4s ease-in-out infinite;transform-origin:50% 0%}
   .cal-tower-svg.imminent .bell{animation:bell-swing 0.5s ease-in-out infinite;transform-origin:50% 0%}
   .lightning-bolt{opacity:0;transition:opacity 0.1s}
   .cal-tower-svg.imminent .lightning-bolt{animation:lightning-flash 0.6s ease-in-out infinite}
   @keyframes lightning-flash{0%,100%{opacity:0}40%,60%{opacity:1}}
-
-  /* Discord raven */
-  .raven-svg{transition:transform 0.2s;transform-origin:50% 50%;cursor:pointer}
-  .raven-svg.flying{animation:raven-fly-svg 2s ease-out forwards}
-  @keyframes raven-fly-svg{
-    0%{transform:translate(0,0) scale(1) rotate(0deg)}
-    20%{transform:translate(-40px,-30px) scale(0.95) rotate(-12deg)}
-    55%{transform:translate(-300px,-100px) scale(0.7) rotate(-8deg);opacity:1}
-    100%{transform:translate(-700px,-160px) scale(0.4) rotate(0deg);opacity:0}
-  }
-  @keyframes wing-flap{0%,100%{transform:scaleY(1)}50%{transform:scaleY(0.4)}}
-  .raven-svg.flying .wing-l,.raven-svg.flying .wing-r{animation:wing-flap 0.15s ease-in-out infinite;transform-origin:bottom}
-
-  @keyframes treasury-glow{0%,100%{filter:drop-shadow(0 0 8px rgba(255,184,48,0.3))}50%{filter:drop-shadow(0 0 16px rgba(255,184,48,0.6))}}
-  .treasury-svg .vault{animation:treasury-glow 4s ease-in-out infinite}
 
   /* HTML text overlays on top of SVG */
   .scene-overlay{position:absolute;inset:0;pointer-events:none}
@@ -147,39 +129,89 @@
 
   .cal-clock-label{left:6%;top:24%;font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:.15em}
   .cal-event-label{left:2%;top:30%;width:18%;font-size:9px;color:rgba(255,184,48,0.7);letter-spacing:.05em}
-  .raven-label{right:3%;top:25%;font-size:9px;color:rgba(255,255,255,0.5);letter-spacing:.2em}
-  .treasury-r{right:11%;bottom:18%;font-size:22px;font-weight:bold;color:#ffb830;letter-spacing:.04em;text-shadow:0 0 10px rgba(255,184,48,0.5),0 0 2px rgba(0,0,0,0.9);width:180px}
-  .treasury-label{right:11%;bottom:14%;font-size:8px;letter-spacing:.25em;color:rgba(255,184,48,0.7);width:180px}
-
-  /* Pair territories — minimal chrome, blend into world */
-  .territories{position:absolute;left:14%;right:14%;bottom:4%;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:flex-end;overflow:visible;pointer-events:auto}
-  .territory{position:relative;flex:0 1 118px;min-width:100px;max-width:135px;padding:4px 8px 6px;font-size:10px;transition:all 0.4s ease}
-  /* Scanning (idle) — no card chrome, just the biome + name + price float on the world */
-  .territory[data-state="scanning"]{background:transparent;border:none;box-shadow:none}
-  /* Active states keep a subtle card */
-  .territory[data-state="waiting"]{background:linear-gradient(180deg,rgba(255,184,48,0.12) 0%,rgba(0,0,0,0.4) 100%);border:1px solid rgba(255,184,48,0.4);border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.35)}
-  .territory[data-state="in-trade"]{background:linear-gradient(180deg,rgba(0,212,255,0.18) 0%,rgba(0,0,0,0.4) 100%);border:1px solid rgba(0,212,255,0.6);border-radius:5px;box-shadow:0 0 16px rgba(0,212,255,0.3),0 2px 8px rgba(0,0,0,0.35)}
-  .territory[data-state="cooldown"]{background:transparent;border:1px dashed rgba(255,255,255,0.1);border-radius:5px;opacity:0.55}
-  .territory[data-state="paused"]{background:linear-gradient(180deg,rgba(255,68,102,0.12) 0%,rgba(0,0,0,0.4) 100%);border:1px solid rgba(255,68,102,0.5);border-radius:5px;animation:pause-flicker 2s ease-in-out infinite}
-  @keyframes pause-flicker{0%,100%{box-shadow:0 0 8px rgba(255,68,102,0.15)}50%{box-shadow:0 0 18px rgba(255,68,102,0.5)}}
-  .territory[data-state="in-trade"]{animation:trade-pulse 1.8s ease-in-out infinite}
-  @keyframes trade-pulse{0%,100%{box-shadow:0 0 14px rgba(0,212,255,0.22),0 2px 8px rgba(0,0,0,0.35)}50%{box-shadow:0 0 28px rgba(0,212,255,0.55),0 2px 8px rgba(0,0,0,0.35)}}
-  .territory .biome-svg{width:100%;height:38px;display:block;margin-bottom:2px}
-  .territory .name{font-weight:bold;font-size:10.5px;letter-spacing:.06em;text-align:center;color:var(--fg);text-shadow:0 1px 3px rgba(0,0,0,0.95)}
-  .territory .state-tag{font-size:8px;color:var(--mu);text-align:center;letter-spacing:.12em;margin-top:1px;text-shadow:0 1px 2px rgba(0,0,0,0.9)}
-  .territory[data-state="in-trade"] .state-tag{color:var(--cy)}
-  .territory[data-state="waiting"] .state-tag{color:var(--am)}
-  .territory[data-state="paused"] .state-tag{color:var(--re)}
-  .territory[data-state="scanning"] .state-tag{color:rgba(0,229,160,0.7)}
-  .territory .price{font-size:9px;color:var(--mu);text-align:center;margin-top:2px;letter-spacing:.04em;text-shadow:0 1px 2px rgba(0,0,0,0.9)}
-  .territory .boss-hp{margin-top:5px;height:3px;background:rgba(255,68,102,0.2);border-radius:2px;overflow:hidden;display:none}
-  .territory[data-state="in-trade"] .boss-hp{display:block}
-  .territory .boss-hp .fill{height:100%;background:linear-gradient(90deg,#ff4466 0%,#ffb830 50%,#00e5a0 100%);transition:width 0.6s ease}
-  .territory .pos-flag{position:absolute;top:-6px;right:-2px;width:16px;height:20px}
 
   .kingdom-empty{position:absolute;top:62%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.32);font-size:11px;letter-spacing:.18em;text-align:center;pointer-events:none}
   .kingdom-empty .label{margin-bottom:4px}
   .kingdom-empty .sub{font-size:9px;color:rgba(255,255,255,0.2)}
+
+  /* ══════════════════ COIN CHARACTERS ══════════════════ */
+  /* Each scanned pair is a small humanoid coin walking the same walkway as
+   * the wizards. Logo on body, tiny name label below feet. State drives
+   * behaviour: scanning = walks, waiting = paces in place, in-trade = stops
+   * and gets zapped by a wizard. */
+  .coin-char{position:absolute;width:38px;height:54px;z-index:8;will-change:transform,left,top;cursor:pointer}
+  .coin-char svg{display:block;animation:coin-bob 0.52s ease-in-out infinite;transform-origin:bottom center}
+  @keyframes coin-bob{
+    0%,100%{transform:translateY(0)}
+    25%{transform:translateY(-2px)}
+    50%{transform:translateY(0)}
+    75%{transform:translateY(-2px)}
+  }
+  .coin-char .arm-l{animation:arm-swing-l 0.52s ease-in-out infinite;transform-origin:9px 20px;transform-box:fill-box}
+  .coin-char .arm-r{animation:arm-swing-r 0.52s ease-in-out infinite;transform-origin:27px 20px;transform-box:fill-box}
+  .coin-char .leg-l{animation:coin-leg-l 0.52s ease-in-out infinite;transform-origin:14px 30px;transform-box:fill-box}
+  .coin-char .leg-r{animation:coin-leg-r 0.52s ease-in-out infinite;transform-origin:22px 30px;transform-box:fill-box}
+  @keyframes coin-leg-l{0%,100%{transform:rotate(-18deg)}50%{transform:rotate(18deg)}}
+  @keyframes coin-leg-r{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-18deg)}}
+  @keyframes arm-swing-l{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-18deg)}}
+  @keyframes arm-swing-r{0%,100%{transform:rotate(-18deg)}50%{transform:rotate(18deg)}}
+
+  /* Reuse the wizard patrol keyframes — coins walk the same walkway */
+  .coin-char.cw1{animation-name:patrol-1}
+  .coin-char.cw2{animation-name:patrol-2}
+  .coin-char.cw3{animation-name:patrol-3}
+  .coin-char.cw4{animation-name:patrol-4}
+  .coin-char.cw5{animation-name:patrol-5}
+  .coin-char{animation-timing-function:linear;animation-iteration-count:infinite}
+
+  /* State behaviours */
+  .coin-char[data-state="scanning"]{}
+  .coin-char[data-state="waiting"]{animation-play-state:paused}
+  .coin-char[data-state="waiting"] .arm-l,.coin-char[data-state="waiting"] .arm-r{animation:arm-wave 1.4s ease-in-out infinite;transform-origin:inherit}
+  @keyframes arm-wave{0%,100%{transform:rotate(0)}50%{transform:rotate(-25deg)}}
+  .coin-char[data-state="in-trade"]{animation-play-state:paused}
+  .coin-char[data-state="in-trade"] .leg-l,.coin-char[data-state="in-trade"] .leg-r{animation-play-state:paused}
+  .coin-char[data-state="in-trade"] .arm-l,.coin-char[data-state="in-trade"] .arm-r{animation:arm-up 1s ease-in-out infinite;transform-origin:inherit}
+  @keyframes arm-up{0%,100%{transform:rotate(-90deg)}50%{transform:rotate(-100deg)}}
+  /* In-trade glow halo */
+  .coin-char[data-state="in-trade"]::before{
+    content:'';position:absolute;left:50%;top:32%;transform:translate(-50%,-50%);
+    width:60px;height:60px;border-radius:50%;
+    background:radial-gradient(circle,rgba(0,212,255,0.25) 0%,transparent 70%);
+    animation:in-trade-pulse 1.4s ease-in-out infinite;pointer-events:none;
+  }
+  @keyframes in-trade-pulse{0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(0.9)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.15)}}
+  .coin-char[data-state="cooldown"]{opacity:0.55}
+  .coin-char[data-state="paused"]{animation-play-state:paused;opacity:0.6}
+  .coin-char[data-state="paused"] .leg-l,.coin-char[data-state="paused"] .leg-r,.coin-char[data-state="paused"] .arm-l,.coin-char[data-state="paused"] .arm-r{animation-play-state:paused}
+  .coin-char[data-state="paused"]::after{
+    content:'';position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);
+    width:46px;height:46px;border-radius:50%;
+    border:2px solid rgba(255,68,102,0.5);
+    box-shadow:0 0 12px rgba(255,68,102,0.4);pointer-events:none;
+  }
+
+  /* Zap shake when wizard casts on coin */
+  @keyframes coin-zap{
+    0%,100%{transform:translateX(0)}
+    15%{transform:translateX(-3px)}
+    30%{transform:translateX(3px)}
+    45%{transform:translateX(-2px)}
+    60%{transform:translateX(2px)}
+    75%{transform:translateX(-1px)}
+  }
+  .coin-char.zapped svg{animation:coin-zap 0.6s ease-out, coin-bob 0.52s ease-in-out infinite}
+
+  /* Floating name label below the coin's feet */
+  .coin-name{position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);font-size:8.5px;font-weight:bold;letter-spacing:.1em;color:#e8eaf0;text-shadow:0 1px 3px rgba(0,0,0,0.95),0 0 2px rgba(0,0,0,0.9);white-space:nowrap;pointer-events:none}
+  .coin-char[data-state="in-trade"] .coin-name{color:var(--cy)}
+  .coin-char[data-state="waiting"] .coin-name{color:var(--am)}
+  .coin-char[data-state="paused"] .coin-name{color:var(--re)}
+
+  /* TP progress bar — only visible in-trade */
+  .coin-hp{position:absolute;bottom:-22px;left:50%;transform:translateX(-50%);width:38px;height:3px;background:rgba(255,68,102,0.25);border-radius:2px;overflow:hidden;display:none;pointer-events:none}
+  .coin-char[data-state="in-trade"] .coin-hp{display:block}
+  .coin-hp .fill{height:100%;background:linear-gradient(90deg,#ff4466 0%,#ffb830 50%,#00e5a0 100%);transition:width 0.6s ease;width:0%}
 
   /* ══════════════════ AMBIENT LIFE LAYER ══════════════════ */
   .kingdom-ambient{position:absolute;inset:0;pointer-events:none;z-index:5;overflow:hidden}
@@ -726,76 +758,6 @@
         </g>
       </g>
 
-      <!-- ═══ RAVEN PERCH (top-right) ═══ -->
-      <g transform="translate(1380,60)">
-        <!-- Stone perch with banner -->
-        <rect x="60" y="50" width="80" height="12" fill="#2a3344" rx="2"/>
-        <line x1="100" y1="62" x2="100" y2="110" stroke="#2a3344" stroke-width="3"/>
-        <!-- Banner -->
-        <path class="flag-cloth" d="M 80 80 L 120 84 L 116 92 L 120 100 L 80 96 Z" fill="rgba(255,68,102,0.15)" stroke="rgba(255,68,102,0.5)" stroke-width="1"/>
-        <!-- Raven -->
-        <g class="raven-svg" id="raven-svg" transform="translate(80,30)">
-          <!-- Body -->
-          <ellipse cx="20" cy="14" rx="14" ry="9" fill="#0a0d18" stroke="#1c2230" stroke-width="1"/>
-          <!-- Head -->
-          <circle cx="34" cy="8" r="6" fill="#0a0d18" stroke="#1c2230" stroke-width="1"/>
-          <!-- Beak -->
-          <polygon points="40,8 46,9 40,11" fill="#1a1f2e"/>
-          <!-- Eye -->
-          <circle cx="35" cy="7" r="1.4" fill="#ff4466"/>
-          <circle cx="35.4" cy="6.6" r="0.4" fill="#fff"/>
-          <!-- Tail -->
-          <polygon points="6,14 0,10 0,18" fill="#0a0d18"/>
-          <!-- Wings (animate when flying) -->
-          <path class="wing-l" d="M 12 8 Q 6 -2 18 4 Q 22 10 12 8" fill="#1a1f2e"/>
-          <path class="wing-r" d="M 22 8 Q 28 -2 18 4 Q 16 10 22 8" fill="#1a1f2e" opacity="0.7"/>
-          <!-- Talons on perch -->
-          <line x1="14" y1="22" x2="14" y2="26" stroke="#1c2230" stroke-width="1"/>
-          <line x1="22" y1="22" x2="22" y2="26" stroke="#1c2230" stroke-width="1"/>
-        </g>
-      </g>
-
-      <!-- ═══ TREASURY VAULT (bottom-right) ═══ -->
-      <g class="treasury-svg" transform="translate(1240,360)">
-        <!-- Stone arch frame -->
-        <path d="M 0 200 L 0 80 Q 0 0 100 0 L 200 0 Q 300 0 300 80 L 300 200 Z" fill="url(#stoneGrad)"/>
-        <!-- Inner arch (vault recess) -->
-        <path d="M 20 200 L 20 88 Q 20 20 100 20 L 200 20 Q 280 20 280 88 L 280 200 Z" fill="#0a0e1a"/>
-        <!-- Vault door (circular) -->
-        <g class="vault">
-          <circle cx="150" cy="120" r="72" fill="url(#vaultGrad)" stroke="#3a2818" stroke-width="3"/>
-          <circle cx="150" cy="120" r="60" fill="none" stroke="#1a0e08" stroke-width="2"/>
-          <!-- Vault bolts -->
-          <g fill="url(#goldGrad)">
-            <circle cx="150" cy="56" r="3"/>
-            <circle cx="200" cy="78" r="3"/>
-            <circle cx="218" cy="120" r="3"/>
-            <circle cx="200" cy="162" r="3"/>
-            <circle cx="150" cy="184" r="3"/>
-            <circle cx="100" cy="162" r="3"/>
-            <circle cx="82" cy="120" r="3"/>
-            <circle cx="100" cy="78" r="3"/>
-          </g>
-          <!-- Vault wheel handle -->
-          <circle cx="150" cy="120" r="14" fill="#2e1d12" stroke="#604530" stroke-width="2"/>
-          <g stroke="url(#goldGrad)" stroke-width="3" fill="none">
-            <line x1="138" y1="120" x2="162" y2="120"/>
-            <line x1="150" y1="108" x2="150" y2="132"/>
-          </g>
-          <!-- Engraved R panel -->
-          <rect x="100" y="92" width="100" height="20" fill="rgba(0,0,0,0.55)" rx="2"/>
-        </g>
-        <!-- Gold coin pile in front -->
-        <g id="coin-pile" transform="translate(60,200)">
-          <!-- Coins drawn dynamically via JS in updateTreasury -->
-        </g>
-        <!-- Crown atop the arch -->
-        <g transform="translate(150,8)">
-          <polygon points="-22,8 -16,-2 -10,6 -4,-6 0,8 4,-6 10,6 16,-2 22,8" fill="url(#goldGrad)"/>
-          <circle cx="0" cy="6" r="2" fill="#c08410"/>
-        </g>
-      </g>
-
     </svg>
     <!-- ═════════ END SCENE SVG ═════════ -->
 
@@ -854,16 +816,10 @@
     <div class="scene-overlay">
       <div class="overlay-text cal-clock-label" id="cal-clock">--:-- UTC</div>
       <div class="overlay-text cal-event-label" id="cal-event">scanning…</div>
-      <div class="overlay-text raven-label">DISCORD</div>
-      <div class="overlay-text treasury-r" id="treasury-r">+0.00R</div>
-      <div class="overlay-text treasury-label">CUMULATIVE TREASURY</div>
-
-      <!-- Pair territories — bigger, centered -->
-      <div class="territories" id="territories">
-        <div class="kingdom-empty">
-          <div class="label">SCAN INACTIVE</div>
-          <div class="sub">Start auto-scan from the terminal to populate the kingdom</div>
-        </div>
+      <!-- Coin character names float anchored to their sprite (rendered in JS) -->
+      <div class="kingdom-empty" id="kingdom-empty" style="display:none">
+        <div class="label">SCAN INACTIVE</div>
+        <div class="sub">Start auto-scan from the terminal to populate the kingdom</div>
       </div>
     </div>
   </div>
@@ -1424,107 +1380,90 @@ function buildClouds(){
   }
 }
 
-// Custom SVG biome illustrations per state — drawn into the territory card.
-// Each returns an <svg> string sized to 100% × 46px.
-function biomeSvg(state, direction){
-  var c={
-    stone:'#3a4257',stoneL:'#525d76',shadow:'#1a1f2e',
-    leaf:'#1d6948',leafL:'#2a8f63',
-    sword:'#9aa0a6',hilt:'#604530',gold:'#ffb830',
-    fire:'#ff4466',wood:'#5d4536',
-    shield:'#4a5571',shieldL:'#7080a0',red:'#ff4466',
-    tent:'#5a3038',tentL:'#7d4250',
-  };
-  if(state==='scanning'){
-    // Pine forest cluster
-    return '<svg class="biome-svg" viewBox="0 0 100 46">'
-      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
-      +'<polygon points="20,38 26,12 32,38" fill="'+c.leaf+'"/>'
-      +'<polygon points="20,34 26,8 32,34" fill="'+c.leafL+'"/>'
-      +'<rect x="24" y="38" width="4" height="4" fill="'+c.wood+'"/>'
-      +'<polygon points="46,38 54,4 62,38" fill="'+c.leaf+'"/>'
-      +'<polygon points="46,33 54,0 62,33" fill="'+c.leafL+'"/>'
-      +'<rect x="52" y="38" width="4" height="4" fill="'+c.wood+'"/>'
-      +'<polygon points="70,38 76,14 82,38" fill="'+c.leaf+'"/>'
-      +'<polygon points="70,34 76,10 82,34" fill="'+c.leafL+'"/>'
-      +'<rect x="74" y="38" width="4" height="4" fill="'+c.wood+'"/>'
-      +'</svg>';
+// ─────────────────────────────────────────────────────────────
+// COIN CHARACTERS — one walking sprite per scanned pair
+// ─────────────────────────────────────────────────────────────
+
+// Color and symbol map for the 23 supported pairs. Recognizable coins get a
+// custom logo silhouette; everyone else falls back to a colored circle with
+// 1-2 letter ticker. dark = ring outline + arm dark stroke.
+var COIN_INFO={
+  BTCUSDT:  {sym:'₿',  color:'#f7931a', dark:'#a86208', text:'#fff'},
+  ETHUSDT:  {sym:'',   color:'#3c3c5d', dark:'#1a1a30', text:'#fff', logo:'eth'},
+  SOLUSDT:  {sym:'',   color:'#1a0b2e', dark:'#0a0418', text:'#fff', logo:'sol'},
+  XRPUSDT:  {sym:'X',  color:'#23292f', dark:'#0a0d12', text:'#fff'},
+  DOGEUSDT: {sym:'D',  color:'#c2a633', dark:'#7a6510', text:'#fff'},
+  AVAXUSDT: {sym:'A',  color:'#e84142', dark:'#8e2020', text:'#fff'},
+  AAVEUSDT: {sym:'A',  color:'#b6509e', dark:'#732e62', text:'#fff'},
+  PEPEUSDT: {sym:'P',  color:'#389134', dark:'#1a4a18', text:'#fff'},
+  GOLD:     {sym:'',   color:'#ffd700', dark:'#a07c00', text:'#7a5500', logo:'gold'},
+  BNBUSDT:  {sym:'B',  color:'#f3ba2f', dark:'#a07810', text:'#fff'},
+  ADAUSDT:  {sym:'A',  color:'#3e3fff', dark:'#1a1c98', text:'#fff'},
+  DOTUSDT:  {sym:'D',  color:'#e6007a', dark:'#8a0048', text:'#fff'},
+  LINKUSDT: {sym:'L',  color:'#2a5ada', dark:'#103088', text:'#fff'},
+  SUIUSDT:  {sym:'S',  color:'#4ca3ff', dark:'#1a5aa8', text:'#fff'},
+  ARBUSDT:  {sym:'A',  color:'#28a0f0', dark:'#0a5a92', text:'#fff'},
+  OPUSDT:   {sym:'O',  color:'#ff0420', dark:'#8a0a14', text:'#fff'},
+  NEARUSDT: {sym:'N',  color:'#80828c', dark:'#3a3c44', text:'#0a0d18'},
+  INJUSDT:  {sym:'I',  color:'#00f3a8', dark:'#00a072', text:'#0a0d18'},
+  XAUTUSDT: {sym:'AU', color:'#d4af37', dark:'#7a6010', text:'#3a2a08'},
+  XAGUSDT:  {sym:'AG', color:'#c0c0c0', dark:'#7a7a7a', text:'#1a1a1a'},
+  XTIUSDT:  {sym:'WTI',color:'#1f1f1f', dark:'#0a0a0a', text:'#fff'},
+  XBRUSDT:  {sym:'BR', color:'#3a2a1a', dark:'#1a1208', text:'#fff'},
+};
+
+function _coinLogoBody(info){
+  if(info.logo==='eth'){
+    // Iconic two-stacked-diamonds Ethereum mark
+    return '<circle cx="18" cy="18" r="13" fill="#1d2540" stroke="#3a4a78" stroke-width="1"/>'
+      +'<polygon points="18,7 11,19 18,16 25,19" fill="#627eea"/>'
+      +'<polygon points="11,19 18,16 25,19 18,22" fill="#8ba2f0"/>'
+      +'<polygon points="18,30 11,20 18,23 25,20" fill="#627eea"/>';
   }
-  if(state==='waiting'){
-    // Training camp tent
-    return '<svg class="biome-svg" viewBox="0 0 100 46">'
-      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
-      +'<polygon points="30,38 50,8 70,38" fill="'+c.tent+'"/>'
-      +'<polygon points="30,38 50,12 70,38" fill="'+c.tentL+'"/>'
-      +'<polygon points="44,38 50,26 56,38 50,38" fill="'+c.shadow+'"/>'
-      +'<line x1="50" y1="8" x2="50" y2="2" stroke="'+c.wood+'" stroke-width="1.5"/>'
-      +'<path d="M 50 2 L 58 4 L 56 8 L 58 12 L 50 10 Z" fill="'+c.gold+'"/>'
-      +'<rect x="20" y="36" width="8" height="6" fill="'+c.wood+'" opacity="0.6"/>'
-      +'<rect x="74" y="36" width="6" height="6" fill="'+c.wood+'" opacity="0.6"/>'
-      +'</svg>';
+  if(info.logo==='sol'){
+    return '<circle cx="18" cy="18" r="13" fill="#1a0b2e" stroke="#3a1a5a" stroke-width="1"/>'
+      +'<path d="M 10 13 L 22 13 L 25 16 L 12 16 Z" fill="#9945ff"/>'
+      +'<path d="M 11 17 L 25 17 L 25 20 L 11 20 Z" fill="#00d4aa"/>'
+      +'<path d="M 11 21 L 25 21 L 22 24 L 10 24 Z" fill="#9945ff"/>';
   }
-  if(state==='in-trade'){
-    // Crossed swords with banner
-    var bColor=direction==='LONG'?'#00e5a0':'#ff4466';
-    return '<svg class="biome-svg" viewBox="0 0 100 46">'
-      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
-      +'<rect x="48" y="6" width="2" height="32" fill="'+c.wood+'"/>'
-      +'<path d="M 50 6 L 70 10 L 64 16 L 70 22 L 50 18 Z" fill="'+bColor+'" class="flag-cloth"/>'
-      +'<g transform="translate(50,30) rotate(-30)">'
-        +'<rect x="-2" y="-20" width="4" height="24" fill="'+c.sword+'"/>'
-        +'<polygon points="0,-24 -2,-20 2,-20" fill="'+c.sword+'"/>'
-        +'<rect x="-7" y="2" width="14" height="3" fill="'+c.hilt+'"/>'
-        +'<rect x="-2" y="4" width="4" height="6" fill="'+c.hilt+'"/>'
-      +'</g>'
-      +'<g transform="translate(50,30) rotate(30)">'
-        +'<rect x="-2" y="-20" width="4" height="24" fill="'+c.sword+'"/>'
-        +'<polygon points="0,-24 -2,-20 2,-20" fill="'+c.sword+'"/>'
-        +'<rect x="-7" y="2" width="14" height="3" fill="'+c.hilt+'"/>'
-        +'<rect x="-2" y="4" width="4" height="6" fill="'+c.hilt+'"/>'
-      +'</g>'
-      +'</svg>';
+  if(info.logo==='gold'){
+    return '<circle cx="18" cy="18" r="13" fill="#ffd700" stroke="#a07c00" stroke-width="1.5"/>'
+      +'<text x="18" y="23" text-anchor="middle" font-size="11" font-weight="900" fill="#7a5500" font-family="Arial Black, Arial">AU</text>'
+      +'<ellipse cx="14" cy="13" rx="3" ry="2" fill="rgba(255,255,255,0.4)"/>';
   }
-  if(state==='cooldown'){
-    // Closed gate with bars
-    return '<svg class="biome-svg" viewBox="0 0 100 46">'
-      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
-      +'<rect x="20" y="6" width="60" height="32" fill="'+c.stone+'"/>'
-      +'<path d="M 20 14 Q 50 -2 80 14 L 80 6 L 20 6 Z" fill="'+c.shadow+'"/>'
-      +'<g stroke="'+c.stoneL+'" stroke-width="2" fill="none">'
-        +'<line x1="32" y1="14" x2="32" y2="36"/>'
-        +'<line x1="42" y1="14" x2="42" y2="36"/>'
-        +'<line x1="52" y1="14" x2="52" y2="36"/>'
-        +'<line x1="62" y1="14" x2="62" y2="36"/>'
-        +'<line x1="72" y1="14" x2="72" y2="36"/>'
-        +'<line x1="20" y1="20" x2="80" y2="20"/>'
-        +'<line x1="20" y1="32" x2="80" y2="32"/>'
-      +'</g>'
-      +'<circle cx="14" cy="22" r="3" fill="'+c.stoneL+'"/>'
-      +'<rect x="14" y="22" width="6" height="2" fill="'+c.stoneL+'"/>'
-      +'</svg>';
-  }
-  if(state==='paused'){
-    // Force field shield
-    return '<svg class="biome-svg" viewBox="0 0 100 46">'
-      +'<rect y="38" width="100" height="8" fill="'+c.shadow+'" opacity="0.5"/>'
-      +'<g opacity="0.5">'
-        +'<polygon points="50,6 80,18 76,38 50,42 24,38 20,18" fill="none" stroke="'+c.red+'" stroke-width="1.5"/>'
-        +'<polygon points="50,12 72,22 70,36 50,38 30,36 28,22" fill="none" stroke="'+c.red+'" stroke-width="1" opacity="0.6"/>'
-      +'</g>'
-      +'<path d="M 50 16 L 64 22 L 62 34 L 50 38 L 38 34 L 36 22 Z" fill="'+c.stone+'" opacity="0.6"/>'
-      +'<g stroke="'+c.red+'" stroke-width="2" fill="none">'
-        +'<line x1="44" y1="22" x2="56" y2="32"/>'
-        +'<line x1="56" y1="22" x2="44" y2="32"/>'
-      +'</g>'
-      +'</svg>';
-  }
-  return '';
+  // Generic: colored coin + symbol letter(s)
+  return '<circle cx="18" cy="18" r="13" fill="'+info.color+'" stroke="'+info.dark+'" stroke-width="1.5"/>'
+    +'<circle cx="18" cy="18" r="11" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="0.8"/>'
+    +'<text x="18" y="23" text-anchor="middle" font-size="'+(info.sym.length>1?9:13)+'" font-weight="900" fill="'+(info.text||'#fff')+'" font-family="Arial Black, Arial">'+info.sym+'</text>'
+    +'<ellipse cx="13" cy="13" rx="3" ry="2.2" fill="rgba(255,255,255,0.25)"/>';
 }
 
-// Build a small flag SVG for in-trade territories
-function flagSvg(direction){
-  var color=direction==='LONG'?'#00e5a0':'#ff4466';
-  return '<svg viewBox="0 0 18 22" width="18" height="22"><line x1="3" y1="2" x2="3" y2="22" stroke="#604530" stroke-width="1.5"/><path d="M 3 2 L 16 5 L 12 10 L 16 16 L 3 13 Z" fill="'+color+'" class="flag-cloth"/></svg>';
+function coinSprite(coin){
+  var info=COIN_INFO[coin]||{sym:coin.replace('USDT','').slice(0,2),color:'#888',dark:'#444',text:'#fff'};
+  return '<svg viewBox="0 0 36 50" width="38" height="54">'
+    // Shadow under feet
+    +'<ellipse cx="18" cy="48" rx="10" ry="1.8" fill="rgba(0,0,0,0.55)"/>'
+    // Arms (swing)
+    +'<g class="arm-l">'
+      +'<line x1="8" y1="20" x2="6" y2="30" stroke="'+info.dark+'" stroke-width="2.5" stroke-linecap="round"/>'
+      +'<circle cx="6" cy="31" r="1.8" fill="'+info.color+'"/>'
+    +'</g>'
+    +'<g class="arm-r">'
+      +'<line x1="28" y1="20" x2="30" y2="30" stroke="'+info.dark+'" stroke-width="2.5" stroke-linecap="round"/>'
+      +'<circle cx="30" cy="31" r="1.8" fill="'+info.color+'"/>'
+    +'</g>'
+    // Coin body (logo)
+    +'<g class="coin-body">'+_coinLogoBody(info)+'</g>'
+    // Legs (walk)
+    +'<g class="leg-l">'
+      +'<line x1="14" y1="30" x2="14" y2="44" stroke="#2a1a0e" stroke-width="3" stroke-linecap="round"/>'
+      +'<ellipse cx="14" cy="46" rx="3" ry="1.5" fill="#0a0604"/>'
+    +'</g>'
+    +'<g class="leg-r">'
+      +'<line x1="22" y1="30" x2="22" y2="44" stroke="#2a1a0e" stroke-width="3" stroke-linecap="round"/>'
+      +'<ellipse cx="22" cy="46" rx="3" ry="1.5" fill="#0a0604"/>'
+    +'</g>'
+    +'</svg>';
 }
 
 // Determine territory state for a pair from /api/kingdom/summary openPositions + scan state.
@@ -1562,136 +1501,112 @@ function refreshPairStates(){
       Object.keys(map).forEach(function(coin){
         var prev=_prevPairStates[coin];
         var cur=map[coin].state;
-        // Transition to in-trade → fire a spell on that territory
+        // waiting→in-trade or scanning→in-trade fires the entry spell on the coin
         if(prev&&prev!=='in-trade'&&cur==='in-trade'){
-          fireSpellOnTerritory(coin,map[coin].direction);
+          fireSpellOnCoin(coin,map[coin].direction,true);
         }
       });
       _prevPairStates={};
       Object.keys(map).forEach(function(c){_prevPairStates[c]=map[c].state;});
       _pairStateCache=map;
-      renderTerritories();
+      renderCoins();
     })
     .catch(function(){});
 }
 
-// When a pair enters in-trade, dispatch the closest wizard to that territory
-// (visually — move it via JS over 1s) and have it cast a spell there.
-function fireSpellOnTerritory(coin,direction){
+// Fire a spell burst at the coin's current screen position. Used both on
+// the initial waiting→in-trade transition (with a wizard cast for theatre)
+// and on the periodic in-trade ticker (just a small burst for ambience).
+function fireSpellOnCoin(coin,direction,withWizard){
   setTimeout(function(){
-    var card=document.querySelector('.territory[data-coin="'+coin+'"]');
-    if(!card)return;
+    var coinEl=document.querySelector('.coin-char[data-coin="'+coin+'"]');
+    if(!coinEl)return;
     var stage=document.getElementById('stage').getBoundingClientRect();
-    var cardRect=card.getBoundingClientRect();
-    // Spell burst at the territory's top-center
-    var xPct=((cardRect.left+cardRect.width/2)-stage.left)/stage.width*100;
-    var yPct=((cardRect.top-stage.top)/stage.height*100)-2;
-    // Pick wizard based on direction: LONG = green CVD, SHORT = red Trigger
+    var rect=coinEl.getBoundingClientRect();
+    // Burst centred on the coin body (top third of sprite)
+    var xPct=((rect.left+rect.width/2)-stage.left)/stage.width*100;
+    var yPct=((rect.top+rect.height*0.32)-stage.top)/stage.height*100;
+    // LONG → green CVD wizard; SHORT → red Trigger wizard
     var preferred=direction==='LONG'?'cvd':'trigger';
-    var wiz=document.querySelector('.wizard[data-type="'+preferred+'"]');
-    if(!wiz)wiz=document.querySelector('.wizard');
-    if(!wiz)return;
     var cfgMatch=WIZARD_TYPES.find(function(w){return w.name===preferred;});
     var color=cfgMatch?cfgMatch.orb:'#00d4ff';
     spawnSpellBurst(xPct,yPct,color);
-    if(!wiz._casting)wizardCast(wiz);
-    // Second smaller burst 400ms later for emphasis
-    setTimeout(function(){spawnSpellBurst(xPct,yPct,color);},400);
+    if(withWizard){
+      var wiz=document.querySelector('.wizard[data-type="'+preferred+'"]')
+        ||document.querySelector('.wizard');
+      if(wiz&&!wiz._casting)wizardCast(wiz);
+      // Second burst 400ms later for the entry-confirm flourish
+      setTimeout(function(){spawnSpellBurst(xPct,yPct,color);},400);
+    }
+    // Coin shake
+    coinEl.classList.remove('zapped');
+    void coinEl.getBoundingClientRect();
+    coinEl.classList.add('zapped');
+    setTimeout(function(){coinEl.classList.remove('zapped');},700);
   },50);
 }
 
-function renderTerritories(){
-  var box=document.getElementById('territories');
+// Periodic ambient cast on in-trade coins (every 4-7s) — the wizards keep
+// "monitoring" the active trade visually.
+setInterval(function(){
+  var inTrade=Object.keys(_pairStateCache).filter(function(c){return _pairStateCache[c].state==='in-trade';});
+  if(!inTrade.length)return;
+  // Pick one at random each tick to keep it from being noisy
+  var coin=inTrade[Math.floor(Math.random()*inTrade.length)];
+  fireSpellOnCoin(coin,_pairStateCache[coin].direction,false);
+},5500);
+
+function renderCoins(){
+  var ambient=document.getElementById('ambient');
+  var emptyHint=document.getElementById('kingdom-empty');
   var coins=Object.keys(_pairStateCache);
   if(!coins.length){
-    box.innerHTML='<div class="kingdom-empty"><div class="label">SCAN INACTIVE</div><div class="sub">Start auto-scan from the terminal to populate the kingdom</div></div>';
+    if(emptyHint)emptyHint.style.display='block';
+    ambient.querySelectorAll('.coin-char').forEach(function(c){c.remove();});
     return;
   }
-  // Sort: in-trade first, then waiting, then scanning, then cooldown, then paused
+  if(emptyHint)emptyHint.style.display='none';
+
+  // Sort by state priority (in-trade > waiting > scanning > cooldown > paused)
   var order={'in-trade':0,'waiting':1,'scanning':2,'cooldown':3,'paused':4};
   coins.sort(function(a,b){return (order[_pairStateCache[a].state]||5)-(order[_pairStateCache[b].state]||5);});
 
-  // Reconcile DOM: remove any not in current set
-  Array.from(box.querySelectorAll('.territory')).forEach(function(el){
+  // Remove coins no longer in scan
+  Array.from(ambient.querySelectorAll('.coin-char')).forEach(function(el){
     if(coins.indexOf(el.dataset.coin)<0)el.remove();
   });
-  var ph=box.querySelector('.kingdom-empty');if(ph)ph.remove();
 
-  coins.forEach(function(coin){
+  coins.forEach(function(coin,i){
     var s=_pairStateCache[coin];
-    var el=box.querySelector('.territory[data-coin="'+coin+'"]');
+    var el=ambient.querySelector('.coin-char[data-coin="'+coin+'"]');
     if(!el){
       el=document.createElement('div');
-      el.className='territory';
+      // Cycle through 5 patrol patterns. Coins offset from wizard patrols
+      // by using different speeds/delays so they don't sync up.
+      var patrolN=((i+2)%5)+1;
+      el.className='coin-char cw'+patrolN;
       el.dataset.coin=coin;
-      el.innerHTML=
-        '<div data-role="biome"></div>'
-        +'<div class="name">'+shortCoin(coin)+'</div>'
-        +'<div class="state-tag" data-role="tag"></div>'
-        +'<div class="price" data-role="price"></div>'
-        +'<div class="boss-hp"><div class="fill" data-role="hp"></div></div>';
-      box.appendChild(el);
+      el.title=shortCoin(coin);
+      el.style.animationDuration=(32+Math.random()*22).toFixed(1)+'s';
+      el.style.animationDelay=(-Math.random()*30).toFixed(1)+'s';
+      // Coins walk in the front-row lane (top:73-83%) so they appear closer
+      // to camera than the wizards at top:62-76%.
+      el.style.top=(73+(i*1.6))+'%';
+      el.style.zIndex=String(20+i);
+      el.innerHTML=coinSprite(coin)
+        +'<div class="coin-name">'+shortCoin(coin)+'</div>'
+        +'<div class="coin-hp"><div class="fill" data-role="hp"></div></div>';
+      ambient.appendChild(el);
     }
-    var prevState=el.dataset.state;
-    if(prevState!==s.state){
+    if(el.dataset.state!==s.state){
       el.dataset.state=s.state;
-      // Plant/remove flag on state transition
-      var flag=el.querySelector('.pos-flag');
-      if(s.state==='in-trade'){
-        if(!flag){
-          flag=document.createElement('div');
-          flag.className='pos-flag';
-          el.appendChild(flag);
-        }
-        flag.innerHTML=flagSvg(s.direction);
-      } else if(flag){
-        flag.remove();
-      }
     }
-    var biomeBox=el.querySelector('[data-role="biome"]');
-    var newBiome=biomeSvg(s.state,s.direction);
-    if(biomeBox.dataset.cached!==s.state+(s.direction||'')){
-      biomeBox.innerHTML=newBiome;
-      biomeBox.dataset.cached=s.state+(s.direction||'');
-    }
-    el.querySelector('[data-role="tag"]').textContent=s.beAlerted?'BE MOVED':s.state.toUpperCase();
-    el.querySelector('[data-role="price"]').textContent=s.price!=null?fmtPx(s.price):'—';
+    // TP progress
     var hp=el.querySelector('[data-role="hp"]');
-    hp.style.width=(s.state==='in-trade'&&s.pctToTp!=null)?(s.pctToTp+'%'):'0%';
+    if(hp){
+      hp.style.width=(s.state==='in-trade'&&s.pctToTp!=null)?(s.pctToTp+'%'):'0%';
+    }
   });
-}
-
-// Treasury — engrave Total R on the vault door + scatter gold coin SVG
-// circles in front of it. One coin per +2R, capped at 22.
-function updateTreasury(totalR){
-  var el=document.getElementById('treasury-r');
-  if(!el)return;
-  el.textContent=fmtR(totalR);
-  el.style.color=totalR>=0?'#ffb830':'#ff4466';
-
-  var pile=document.getElementById('coin-pile');
-  if(!pile)return;
-  pile.innerHTML='';
-  var n=Math.min(Math.max(Math.floor(Math.abs(totalR)/2),0),22);
-  // Draw coins in three rows of stacked golden disks
-  // Pile coordinates are inside the treasury's <g transform="translate(1240,360)">, with the pile at translate(60,200)
-  // So coordinates inside the pile group are relative to that origin.
-  var positions=[];
-  // Bottom row (10 coins)
-  for(var i=0;i<10;i++)positions.push({x:i*16+4,y:0,r:7});
-  // Mid row (7 coins offset)
-  for(var i=0;i<7;i++)positions.push({x:i*16+12,y:-10,r:7});
-  // Top row (5 coins)
-  for(var i=0;i<5;i++)positions.push({x:i*16+28,y:-20,r:7});
-  for(var i=0;i<n&&i<positions.length;i++){
-    var p=positions[i];
-    var delay=(Math.random()*3).toFixed(2);
-    var c='<g class="coin" style="animation-delay:'+delay+'s">'
-      +'<ellipse cx="'+p.x+'" cy="'+p.y+'" rx="'+p.r+'" ry="'+(p.r*0.55)+'" fill="url(#goldGrad)" stroke="#c08410" stroke-width="0.5"/>'
-      +'<ellipse cx="'+p.x+'" cy="'+(p.y-1.5)+'" rx="'+(p.r*0.7)+'" ry="'+(p.r*0.35)+'" fill="#ffe890" opacity="0.5"/>'
-      +'</g>';
-    pile.insertAdjacentHTML('beforeend',c);
-  }
 }
 
 // Calendar tower — class swap drives bell-swing + lightning animations
@@ -1711,26 +1626,9 @@ function updateCalTower(nextEvent){
   else if(m<=60)towerSvg.classList.add('warn');
 }
 
-// Discord raven — fly off, then respawn back on the perch
-var _ravenLastFlight=0;
-function flyRaven(){
-  if(Date.now()-_ravenLastFlight<3000)return;
-  _ravenLastFlight=Date.now();
-  var r=document.getElementById('raven-svg');
-  if(!r)return;
-  r.classList.remove('flying');
-  void r.getBoundingClientRect();
-  r.classList.add('flying');
-  setTimeout(function(){
-    r.classList.remove('flying');
-  },2100);
-}
-
 // ─────────────────────────────────────────────────────────────
 // MAIN POLL LOOP
 // ─────────────────────────────────────────────────────────────
-var _lastTotalCount=0;
-var _lastDiscordTrigger=null;
 function pollSummary(){
   fetch('/api/kingdom/summary',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
@@ -1738,13 +1636,7 @@ function pollSummary(){
       if(!d)return;
       renderSummary(d);
       renderBottomBand(d);
-      updateTreasury((d.allTime&&d.allTime.totalR)||0);
       updateCalTower(d.nextEvent);
-
-      // Detect new trade events → raven fly
-      var totalCount=(d.openPositions&&d.openPositions.totalCount)||0;
-      if(totalCount>_lastTotalCount){flyRaven();}
-      _lastTotalCount=totalCount;
     })
     .catch(function(){});
 }
@@ -1762,9 +1654,6 @@ refreshPairStates();
 setInterval(pollSummary,5000);
 setInterval(refreshPairStates,5000);
 setInterval(updateSky,60000);
-
-// Click raven to test fly animation
-document.getElementById('raven-svg').addEventListener('click',flyRaven);
 </script>
 
 </body>
