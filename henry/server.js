@@ -2056,6 +2056,11 @@ function getPairState(sub, coin) {
       // the analysis branch (before any await). Prevents a second 30s tick
       // from racing into AI on the same trigger while the first is mid-flight.
       _scanInFlight: false,
+      // Diagnostics — populated by processPair every tick so /api/scan/debug
+      // can show "is the scan loop alive? how many ticks since last trigger?"
+      lastTickAt: 0,        // ms timestamp of most recent processPair call
+      tickCount: 0,         // total processPair ticks for this pair this session
+      ticksSinceTrigger: 0, // counter reset to 0 when a trigger fires
       _scanLockAt: 0,
       lastPrice: null,
       lastTrigger: null,
@@ -2219,6 +2224,50 @@ async function getUserPairStats(userId) {
 }
 
 // Returns state for ALL pairs in the watchlist — used by mini-cards UI.
+// Debug endpoint — shows raw scan state for the authenticated user.
+// Hit this in your browser to verify the scan loop is alive: lastTickAt
+// should be < 60s old per pair, tickCount should be growing, and
+// ticksSinceTrigger tells you how long a pair has gone without a trigger.
+app.get('/api/scan/debug', requireAuth, (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (!sub) return res.json({ active: false, error: 'No scan subscription. Click AUTO to start.' });
+  const now = Date.now();
+  const pairs = {};
+  for (const [coin, ps] of Object.entries(sub.pairs || {})) {
+    pairs[coin] = {
+      lastStatus: ps.lastStatus,
+      lastPrice: ps.lastPrice,
+      lastTrigger: ps.lastTrigger,
+      tickCount: ps.tickCount || 0,
+      ticksSinceTrigger: ps.ticksSinceTrigger || 0,
+      lastTickAt: ps.lastTickAt || 0,
+      lastTickAgoSec: ps.lastTickAt ? Math.round((now - ps.lastTickAt) / 1000) : null,
+      cooldownUntil: ps.cooldownUntil,
+      cooldownRemainingSec: ps.cooldownUntil ? Math.max(0, Math.round((ps.cooldownUntil - now) / 1000)) : 0,
+      hasSignal: !!ps.pendSignal,
+      entryAlerted: !!ps._entryAlerted,
+      scanInFlight: !!ps._scanInFlight,
+      pauseUntil: ps.pauseUntil || 0,
+      pauseReason: ps.pauseReason || null,
+    };
+  }
+  res.json({
+    active: !!sub.active,
+    isAdmin: !!sub.isAdmin,
+    email: sub.email || null,
+    adminEmailMatch: sub.email === ADMIN_EMAIL,
+    coin: sub.coin,
+    tf: sub.tf,
+    broker: sub.broker,
+    cooldownMs: sub.cooldownMs,
+    watchlist: sub.watchlist || [],
+    pairsTracked: Object.keys(sub.pairs || {}).length,
+    now: now,
+    serverUptimeSec: Math.round(process.uptime()),
+    pairs,
+  });
+});
+
 app.get('/api/scan/all-pairs', requireAuth, async (req, res) => {
   const sub = scanSubscriptions.get(req.user.id);
   if (!sub) return res.json({ active: false, pairs: [] });
@@ -4110,6 +4159,11 @@ async function processPair(userId, sub, coin) {
   // Each pair routes to its appropriate broker (e.g. GOLD → 'massive'/Polygon)
   const broker = brokerForPair(coin, sub.broker);
 
+  // Diagnostic counters — updated every tick regardless of branch taken,
+  // so /api/scan/debug can show "scan loop alive? how stale is the data?"
+  ps.lastTickAt = Date.now();
+  ps.tickCount = (ps.tickCount || 0) + 1;
+
   // 1) If pair has an active signal → monitor it (entry/BE/TP/SL/expiry)
   //    Trade monitor still runs even if circuit breaker is on — once you're IN
   //    a trade, you need exit alerts regardless.
@@ -4169,7 +4223,12 @@ async function processPair(userId, sub, coin) {
       return;
     }
     if (candles && candles.length) ps.lastPrice = candles[candles.length - 1].c;
-    if (!trigger) return;
+    if (!trigger) {
+      ps.ticksSinceTrigger = (ps.ticksSinceTrigger || 0) + 1;
+      return;
+    }
+    // A trigger fired — reset the counter
+    ps.ticksSinceTrigger = 0;
 
     // 4) HARD VETOES — pre-compute indicators, run defensive filters before AI
     const adx = computeADX(candles, 14);
