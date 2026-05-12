@@ -181,6 +181,161 @@
   .kingdom-empty .label{margin-bottom:4px}
   .kingdom-empty .sub{font-size:9px;color:rgba(255,255,255,0.2)}
 
+  /* ══════════════════ AMBIENT LIFE LAYER ══════════════════ */
+  .kingdom-ambient{position:absolute;inset:0;pointer-events:none;z-index:5;overflow:hidden}
+
+  /* ── WIZARDS ── */
+  .wizard{position:absolute;width:36px;height:50px;will-change:transform,left,top}
+  .wizard svg{display:block;animation:wizard-bob 0.55s ease-in-out infinite;transform-origin:bottom center}
+  @keyframes wizard-bob{
+    0%,100%{transform:translateY(0) rotate(0deg)}
+    25%{transform:translateY(-2px) rotate(-2deg)}
+    50%{transform:translateY(0) rotate(0deg)}
+    75%{transform:translateY(-2px) rotate(2deg)}
+  }
+  .wizard .leg-l{transform-origin:6px 0;animation:leg-l 0.55s ease-in-out infinite}
+  .wizard .leg-r{transform-origin:6px 0;animation:leg-r 0.55s ease-in-out infinite}
+  @keyframes leg-l{0%,100%{transform:rotate(-15deg)}50%{transform:rotate(15deg)}}
+  @keyframes leg-r{0%,100%{transform:rotate(15deg)}50%{transform:rotate(-15deg)}}
+  /* Robe sway */
+  .wizard .robe{transform-origin:16px 22px;animation:robe-sway 1.1s ease-in-out infinite}
+  @keyframes robe-sway{0%,100%{transform:skewX(-2deg)}50%{transform:skewX(2deg)}}
+  /* Staff orb subtle glow pulse */
+  .wizard .staff-orb{animation:orb-pulse 1.6s ease-in-out infinite;transform-origin:center}
+  @keyframes orb-pulse{0%,100%{filter:brightness(0.9)}50%{filter:brightness(1.4)}}
+
+  /* Patrol routes — 4 wizards, different paths and speeds */
+  .wizard.w1{animation:patrol-1 28s linear infinite}
+  .wizard.w2{animation:patrol-2 36s linear infinite;animation-delay:-9s}
+  .wizard.w3{animation:patrol-3 32s linear infinite;animation-delay:-18s}
+  .wizard.w4{animation:patrol-4 40s linear infinite;animation-delay:-27s}
+  @keyframes patrol-1{
+    0%{left:22%;top:56%}
+    24%{left:70%;top:58%}
+    25%{left:70%;top:58%;transform:scaleX(-1)}
+    49%{left:22%;top:56%;transform:scaleX(-1)}
+    50%{left:22%;top:56%;transform:scaleX(1)}
+    74%{left:60%;top:62%;transform:scaleX(1)}
+    75%{left:60%;top:62%;transform:scaleX(-1)}
+    99%{left:22%;top:56%;transform:scaleX(-1)}
+    100%{left:22%;top:56%;transform:scaleX(1)}
+  }
+  @keyframes patrol-2{
+    0%{left:78%;top:60%;transform:scaleX(-1)}
+    48%{left:34%;top:58%;transform:scaleX(-1)}
+    50%{left:34%;top:58%;transform:scaleX(1)}
+    98%{left:78%;top:60%;transform:scaleX(1)}
+    100%{left:78%;top:60%;transform:scaleX(-1)}
+  }
+  @keyframes patrol-3{
+    0%{left:40%;top:54%}
+    30%{left:65%;top:56%}
+    32%{left:65%;top:56%;transform:scaleX(-1)}
+    62%{left:25%;top:58%;transform:scaleX(-1)}
+    64%{left:25%;top:58%;transform:scaleX(1)}
+    100%{left:40%;top:54%;transform:scaleX(1)}
+  }
+  @keyframes patrol-4{
+    0%{left:55%;top:62%;transform:scaleX(-1)}
+    35%{left:18%;top:60%;transform:scaleX(-1)}
+    37%{left:18%;top:60%;transform:scaleX(1)}
+    72%{left:75%;top:58%;transform:scaleX(1)}
+    74%{left:75%;top:58%;transform:scaleX(-1)}
+    100%{left:55%;top:62%;transform:scaleX(-1)}
+  }
+
+  /* Wizard casting state: pauses patrol, raises staff, glows */
+  .wizard.casting{animation-play-state:paused}
+  .wizard.casting svg{animation:wizard-cast 1.4s ease-out forwards}
+  @keyframes wizard-cast{
+    0%{transform:translateY(0)}
+    20%{transform:translateY(-8px) scale(1.08)}
+    40%{transform:translateY(-12px) scale(1.1)}
+    70%{transform:translateY(-6px) scale(1.05)}
+    100%{transform:translateY(0) scale(1)}
+  }
+  .wizard.casting .staff-orb{animation:orb-cast 1.4s ease-out forwards;transform-origin:center}
+  @keyframes orb-cast{
+    0%{filter:brightness(1) drop-shadow(0 0 0 currentColor)}
+    40%{filter:brightness(2) drop-shadow(0 0 12px currentColor)}
+    100%{filter:brightness(1) drop-shadow(0 0 0 currentColor)}
+  }
+
+  /* Spell burst — concentric expanding ring + sparks */
+  .spell-burst{position:absolute;width:90px;height:90px;margin-left:-45px;margin-top:-45px;pointer-events:none;z-index:6}
+  .spell-burst .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--spell-color,#00d4ff);opacity:0.9;animation:burst-ring 1.2s ease-out forwards}
+  .spell-burst .ring.r2{animation-delay:0.15s}
+  .spell-burst .ring.r3{animation-delay:0.3s}
+  @keyframes burst-ring{
+    0%{transform:scale(0.1);opacity:0.9}
+    100%{transform:scale(2.4);opacity:0}
+  }
+  .spell-burst .spark{position:absolute;width:3px;height:3px;left:50%;top:50%;margin-left:-1.5px;margin-top:-1.5px;background:var(--spell-color,#00d4ff);border-radius:50%;box-shadow:0 0 6px currentColor;color:var(--spell-color,#00d4ff);animation:spark-fly 1.0s ease-out forwards}
+  @keyframes spark-fly{
+    0%{transform:translate(0,0) scale(1);opacity:1}
+    100%{transform:translate(var(--sx),var(--sy)) scale(0.2);opacity:0}
+  }
+
+  /* ── BIRDS ── */
+  .bird-flock{position:absolute;width:90px;height:18px;opacity:0.65}
+  .bird-flock.b1{animation:bird-fly-1 22s linear infinite;animation-delay:-3s}
+  .bird-flock.b2{animation:bird-fly-2 28s linear infinite;animation-delay:-15s}
+  @keyframes bird-fly-1{
+    0%{left:-10%;top:10%}
+    50%{top:14%}
+    100%{left:110%;top:8%}
+  }
+  @keyframes bird-fly-2{
+    0%{left:110%;top:14%;transform:scaleX(-1)}
+    50%{top:8%}
+    100%{left:-10%;top:12%;transform:scaleX(-1)}
+  }
+  .bird-flock .bird{animation:bird-wing 0.4s ease-in-out infinite;transform-origin:center}
+  .bird-flock .bird.b2-w{animation-delay:0.1s}
+  .bird-flock .bird.b3-w{animation-delay:0.05s}
+  @keyframes bird-wing{0%,100%{transform:scaleY(1)}50%{transform:scaleY(0.45)}}
+
+  /* ── FIREFLIES ── */
+  .firefly{position:absolute;width:4px;height:4px;background:rgba(255,220,100,0.85);border-radius:50%;filter:blur(0.5px);box-shadow:0 0 8px rgba(255,220,100,0.6),0 0 16px rgba(255,220,100,0.3);animation:firefly-drift 8s ease-in-out infinite,firefly-blink 2.2s ease-in-out infinite}
+  @keyframes firefly-drift{
+    0%,100%{transform:translate(0,0)}
+    25%{transform:translate(18px,-15px)}
+    50%{transform:translate(-12px,-26px)}
+    75%{transform:translate(14px,-12px)}
+  }
+  @keyframes firefly-blink{0%,100%{opacity:0.25}50%{opacity:1}}
+
+  /* ── SMOKE FROM SPIRE ── */
+  .smoke-puff{position:absolute;width:8px;height:8px;background:rgba(200,200,210,0.35);border-radius:50%;filter:blur(4px);animation:smoke-rise 4.5s ease-out infinite}
+  @keyframes smoke-rise{
+    0%{opacity:0;transform:translate(0,0) scale(0.4)}
+    15%{opacity:0.7}
+    100%{opacity:0;transform:translate(var(--sx,5px),-80px) scale(2.5)}
+  }
+
+  /* ── TORCH FLAMES ON CASTLE WALLS ── */
+  .torch{position:absolute;width:8px;height:14px;pointer-events:none}
+  .torch::before{content:'';position:absolute;left:50%;top:0;width:6px;height:10px;margin-left:-3px;background:radial-gradient(ellipse at center bottom,#fff5b8 0%,#ffb830 35%,#ff6020 80%,transparent 100%);border-radius:50% 50% 50% 50% / 60% 60% 40% 40%;filter:blur(0.5px);animation:torch-flicker 0.25s ease-in-out infinite alternate;transform-origin:bottom center}
+  .torch::after{content:'';position:absolute;left:50%;top:10px;width:3px;height:4px;margin-left:-1.5px;background:#3a2515;border-radius:1px}
+  @keyframes torch-flicker{
+    0%{transform:scaleY(1) scaleX(1) translateX(0);opacity:0.9}
+    100%{transform:scaleY(1.15) scaleX(0.85) translateX(1px);opacity:1}
+  }
+  /* Torch glow halo */
+  .torch::after{box-shadow:0 -6px 12px rgba(255,184,48,0.5),0 -2px 6px rgba(255,100,32,0.4)}
+
+  /* ── CASTLE AURA RAYS (volumetric light) ── */
+  .castle-rays{position:absolute;top:5%;left:50%;transform:translateX(-50%);width:520px;height:380px;pointer-events:none;opacity:0.4;mix-blend-mode:screen}
+  .castle-rays .ray{position:absolute;top:40%;left:50%;width:2px;height:300px;background:linear-gradient(to bottom,transparent,rgba(0,212,255,0.4),transparent);transform-origin:top center;animation:ray-sweep 8s ease-in-out infinite}
+  .castle-rays .ray.r1{transform:rotate(-25deg)}
+  .castle-rays .ray.r2{transform:rotate(-10deg);animation-delay:-2s}
+  .castle-rays .ray.r3{transform:rotate(5deg);animation-delay:-4s}
+  .castle-rays .ray.r4{transform:rotate(20deg);animation-delay:-6s}
+  @keyframes ray-sweep{
+    0%,100%{opacity:0.2;height:280px}
+    50%{opacity:0.6;height:340px}
+  }
+
   /* BOTTOM BAND */
   .bottom-band{min-height:280px;display:flex;flex-direction:column;gap:8px}
   .bottom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
@@ -576,6 +731,61 @@
     </svg>
     <!-- ═════════ END SCENE SVG ═════════ -->
 
+    <!-- ═════════ AMBIENT LIFE LAYER ═════════ -->
+    <div class="kingdom-ambient" id="ambient">
+      <!-- Castle volumetric light rays -->
+      <div class="castle-rays">
+        <div class="ray r1"></div>
+        <div class="ray r2"></div>
+        <div class="ray r3"></div>
+        <div class="ray r4"></div>
+      </div>
+
+      <!-- Birds (continuously flying across) -->
+      <div class="bird-flock b1">
+        <svg viewBox="0 0 90 18" width="90" height="18">
+          <path class="bird b1-w" d="M 8 8 Q 12 3 16 8 Q 20 3 24 8" stroke="#0a0d18" stroke-width="1.6" fill="none"/>
+          <path class="bird b2-w" d="M 35 10 Q 39 5 43 10 Q 47 5 51 10" stroke="#0a0d18" stroke-width="1.6" fill="none"/>
+          <path class="bird b3-w" d="M 60 7 Q 64 2 68 7 Q 72 2 76 7" stroke="#0a0d18" stroke-width="1.6" fill="none"/>
+        </svg>
+      </div>
+      <div class="bird-flock b2">
+        <svg viewBox="0 0 90 18" width="90" height="18">
+          <path class="bird b1-w" d="M 8 8 Q 12 3 16 8 Q 20 3 24 8" stroke="#0a0d18" stroke-width="1.4" fill="none"/>
+          <path class="bird b2-w" d="M 35 10 Q 39 5 43 10 Q 47 5 51 10" stroke="#0a0d18" stroke-width="1.4" fill="none"/>
+        </svg>
+      </div>
+
+      <!-- Smoke from central spire -->
+      <div class="smoke-puff" style="left:50%;top:18%;--sx:5px;animation-delay:0s"></div>
+      <div class="smoke-puff" style="left:50%;top:18%;--sx:-3px;animation-delay:-1.5s"></div>
+      <div class="smoke-puff" style="left:50%;top:18%;--sx:7px;animation-delay:-3s"></div>
+
+      <!-- Fireflies drifting around castle and territories -->
+      <div class="firefly" style="left:38%;top:46%;animation-delay:0s"></div>
+      <div class="firefly" style="left:62%;top:48%;animation-delay:-1s"></div>
+      <div class="firefly" style="left:46%;top:52%;animation-delay:-2.4s"></div>
+      <div class="firefly" style="left:55%;top:55%;animation-delay:-3.8s"></div>
+      <div class="firefly" style="left:42%;top:60%;animation-delay:-1.2s"></div>
+      <div class="firefly" style="left:58%;top:62%;animation-delay:-2.9s"></div>
+      <div class="firefly" style="left:30%;top:64%;animation-delay:-4.2s"></div>
+      <div class="firefly" style="left:68%;top:64%;animation-delay:-0.5s"></div>
+      <div class="firefly" style="left:50%;top:68%;animation-delay:-3.1s"></div>
+      <div class="firefly" style="left:35%;top:50%;animation-delay:-1.8s"></div>
+
+      <!-- Torches on castle walls (positioned absolutely over the SVG castle) -->
+      <div class="torch" style="left:39%;top:46%"></div>
+      <div class="torch" style="left:60%;top:46%"></div>
+      <div class="torch" style="left:43%;top:54%"></div>
+      <div class="torch" style="left:56%;top:54%"></div>
+
+      <!-- 4 walking wizards — sprites built by JS -->
+      <div class="wizard w1" id="wiz1"></div>
+      <div class="wizard w2" id="wiz2"></div>
+      <div class="wizard w3" id="wiz3"></div>
+      <div class="wizard w4" id="wiz4"></div>
+    </div>
+
     <!-- HTML overlays on top of the SVG (dynamic text) -->
     <div class="scene-overlay">
       <div class="overlay-text cal-clock-label" id="cal-clock">--:-- UTC</div>
@@ -919,6 +1129,151 @@ function fetchPaneCandles(coin){
 // KINGDOM — sky cycle, territories, treasury, calendar tower, raven
 // ─────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────
+// WIZARDS — sprites + spell casting
+// ─────────────────────────────────────────────────────────────
+
+// Wizard archetype configs — one per major ICT/S&D pattern. Each has a
+// distinct robe color, hat band, and staff-orb tint that becomes the
+// signature color of their spell when they cast.
+var WIZARD_TYPES=[
+  {name:'mss',     robe:'#8a2a3a', dark:'#4a1620', orb:'#ff4466', label:'MSS+disp'},
+  {name:'fvg',     robe:'#4a2a8a', dark:'#2a1a5a', orb:'#a070ff', label:'FVG retest'},
+  {name:'sweep',   robe:'#1f4a8a', dark:'#102e5a', orb:'#00d4ff', label:'Sweep+reclaim'},
+  {name:'pin',     robe:'#1f5a3a', dark:'#103a25', orb:'#00e5a0', label:'Pin/Hammer'},
+];
+
+function wizardSvg(cfg){
+  return '<svg viewBox="0 0 36 50" width="36" height="50">'
+    +'<defs>'
+      +'<radialGradient id="orb-'+cfg.name+'">'
+        +'<stop offset="0%" stop-color="#fff"/>'
+        +'<stop offset="40%" stop-color="'+cfg.orb+'"/>'
+        +'<stop offset="100%" stop-color="'+cfg.dark+'"/>'
+      +'</radialGradient>'
+    +'</defs>'
+    +'<g>'
+      // Shadow under feet
+      +'<ellipse cx="18" cy="48" rx="9" ry="1.6" fill="rgba(0,0,0,0.55)"/>'
+      // Robe body (animated sway)
+      +'<g class="robe">'
+        +'<path d="M 11 24 L 8 44 L 28 44 L 25 24 Z" fill="'+cfg.robe+'"/>'
+        // Shaded side
+        +'<path d="M 18 24 L 28 44 L 18 44 Z" fill="'+cfg.dark+'" opacity="0.4"/>'
+        // Robe trim at bottom
+        +'<rect x="8" y="42" width="20" height="2.5" fill="'+cfg.dark+'"/>'
+      +'</g>'
+      // Sleeves
+      +'<ellipse cx="10" cy="28" rx="2.2" ry="4" fill="'+cfg.robe+'"/>'
+      +'<ellipse cx="26" cy="28" rx="2.2" ry="4" fill="'+cfg.robe+'"/>'
+      // Hands
+      +'<circle cx="10" cy="32" r="1.8" fill="#e8c595"/>'
+      +'<circle cx="26" cy="32" r="1.8" fill="#e8c595"/>'
+      // Beard
+      +'<path d="M 13 18 L 14 24 Q 18 27 22 24 L 23 18 Q 18 16 13 18 Z" fill="#e0e0e0"/>'
+      +'<path d="M 15 22 Q 18 26 21 22 L 20 25 Q 18 27 16 25 Z" fill="#cccccc"/>'
+      // Head/face
+      +'<circle cx="18" cy="16" r="4.5" fill="#e8c595"/>'
+      // Eye
+      +'<circle cx="16.5" cy="15.5" r="0.6" fill="#1a1208"/>'
+      +'<circle cx="19.5" cy="15.5" r="0.6" fill="#1a1208"/>'
+      // Hat
+      +'<polygon points="18,0 7,16 29,16" fill="'+cfg.dark+'"/>'
+      // Hat band
+      +'<rect x="7" y="14" width="22" height="2.5" fill="#1a0e08"/>'
+      // Hat gem
+      +'<circle cx="18" cy="9" r="1.6" fill="'+cfg.orb+'" filter="url(#glow)"/>'
+      // Hat tip
+      +'<circle cx="18" cy="0.5" r="1" fill="#ffd700"/>'
+      // Staff pole
+      +'<line x1="28" y1="40" x2="32" y2="2" stroke="#604530" stroke-width="2"/>'
+      // Staff knob
+      +'<rect x="30" y="6" width="4" height="2" fill="#3a2515"/>'
+      // Staff orb
+      +'<circle class="staff-orb" cx="32" cy="0" r="3.5" fill="url(#orb-'+cfg.name+')"/>'
+      // Orb outer glow
+      +'<circle cx="32" cy="0" r="6" fill="'+cfg.orb+'" opacity="0.25"/>'
+      // Legs (animated)
+      +'<rect class="leg-l" x="14.5" y="42" width="2.2" height="5" fill="#1a1208" rx="0.5"/>'
+      +'<rect class="leg-r" x="19.5" y="42" width="2.2" height="5" fill="#1a1208" rx="0.5"/>'
+      // Boot toes
+      +'<rect x="13.5" y="46" width="3.5" height="2" fill="#0a0604" rx="0.5"/>'
+      +'<rect x="19" y="46" width="3.5" height="2" fill="#0a0604" rx="0.5"/>'
+    +'</g>'
+    +'</svg>';
+}
+
+function spawnWizards(){
+  for(var i=0;i<4;i++){
+    var el=document.getElementById('wiz'+(i+1));
+    if(!el)continue;
+    var cfg=WIZARD_TYPES[i];
+    el.innerHTML=wizardSvg(cfg);
+    el.dataset.type=cfg.name;
+    el.dataset.label=cfg.label;
+    el.title=cfg.label+' wizard';
+  }
+}
+
+// Spell-burst element creator. Positioned in scene-relative coords (px).
+function spawnSpellBurst(xPct, yPct, color){
+  var box=document.getElementById('ambient');
+  if(!box)return;
+  var burst=document.createElement('div');
+  burst.className='spell-burst';
+  burst.style.left=xPct+'%';
+  burst.style.top=yPct+'%';
+  burst.style.setProperty('--spell-color',color||'#00d4ff');
+  burst.innerHTML='<div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>';
+  // 12 sparks shooting outward in random directions
+  for(var i=0;i<12;i++){
+    var ang=(i/12)*Math.PI*2+Math.random()*0.4;
+    var dist=40+Math.random()*30;
+    var sx=Math.cos(ang)*dist;
+    var sy=Math.sin(ang)*dist;
+    var sp=document.createElement('div');
+    sp.className='spark';
+    sp.style.setProperty('--sx',sx+'px');
+    sp.style.setProperty('--sy',sy+'px');
+    sp.style.animationDelay=(Math.random()*0.2)+'s';
+    burst.appendChild(sp);
+  }
+  box.appendChild(burst);
+  setTimeout(function(){burst.remove();},1500);
+}
+
+// Make a wizard cast a spell at its current location.
+function wizardCast(wizardEl){
+  if(!wizardEl||wizardEl._casting)return;
+  wizardEl._casting=true;
+  wizardEl.classList.add('casting');
+  var rect=wizardEl.getBoundingClientRect();
+  var stage=document.getElementById('stage').getBoundingClientRect();
+  // Burst position in % of stage. Spell originates from staff orb (top-right of sprite).
+  var xPct=((rect.left+rect.width*0.85)-stage.left)/stage.width*100;
+  var yPct=((rect.top+rect.height*0.05)-stage.top)/stage.height*100;
+  var color=WIZARD_TYPES.find(function(w){return w.name===wizardEl.dataset.type;}).orb;
+  spawnSpellBurst(xPct,yPct,color);
+  setTimeout(function(){
+    wizardEl.classList.remove('casting');
+    wizardEl._casting=false;
+  },1500);
+}
+
+// Idle casting — pick a random wizard every 8-14s and have them cast.
+// Adds atmosphere even when no trades are firing.
+function scheduleIdleCast(){
+  var delay=8000+Math.random()*6000;
+  setTimeout(function(){
+    var wizards=document.querySelectorAll('.wizard');
+    if(wizards.length){
+      var w=wizards[Math.floor(Math.random()*wizards.length)];
+      if(!w._casting)wizardCast(w);
+    }
+    scheduleIdleCast();
+  },delay);
+}
+
 // Sky cycle: maps UTC hour to a sky preset. Kill zones (London 07-10, NY 12-17)
 // get extra glow. Dead zone 22-06 is night.
 function updateSky(){
@@ -1091,7 +1446,10 @@ function flagSvg(direction){
 //  - if pair is in openPositions.details with entered=true → in-trade
 //  - if pair is in openPositions.details with entered=false → waiting
 //  - else → scanning (we'll cross-check via /api/scan/all-pairs to fill cooldown/paused)
+// Track prior states so we can detect transitions (e.g. waiting → in-trade
+// triggers a wizard spell on that territory).
 var _pairStateCache={};
+var _prevPairStates={};
 function refreshPairStates(){
   fetch('/api/scan/all-pairs',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
@@ -1114,10 +1472,45 @@ function refreshPairStates(){
           }
         }
       });
+      // Detect transitions before swapping cache
+      Object.keys(map).forEach(function(coin){
+        var prev=_prevPairStates[coin];
+        var cur=map[coin].state;
+        // Transition to in-trade → fire a spell on that territory
+        if(prev&&prev!=='in-trade'&&cur==='in-trade'){
+          fireSpellOnTerritory(coin,map[coin].direction);
+        }
+      });
+      _prevPairStates={};
+      Object.keys(map).forEach(function(c){_prevPairStates[c]=map[c].state;});
       _pairStateCache=map;
       renderTerritories();
     })
     .catch(function(){});
+}
+
+// When a pair enters in-trade, dispatch the closest wizard to that territory
+// (visually — move it via JS over 1s) and have it cast a spell there.
+function fireSpellOnTerritory(coin,direction){
+  setTimeout(function(){
+    var card=document.querySelector('.territory[data-coin="'+coin+'"]');
+    if(!card)return;
+    var stage=document.getElementById('stage').getBoundingClientRect();
+    var cardRect=card.getBoundingClientRect();
+    // Spell burst at the territory's top-center
+    var xPct=((cardRect.left+cardRect.width/2)-stage.left)/stage.width*100;
+    var yPct=((cardRect.top-stage.top)/stage.height*100)-2;
+    // Pick wizard based on direction: LONG = green pin, SHORT = red MSS
+    var preferred=direction==='LONG'?'pin':'mss';
+    var wiz=document.querySelector('.wizard[data-type="'+preferred+'"]');
+    if(!wiz)wiz=document.querySelector('.wizard');
+    if(!wiz)return;
+    var color=WIZARD_TYPES.find(function(w){return w.name===preferred;}).orb;
+    spawnSpellBurst(xPct,yPct,color);
+    if(!wiz._casting)wizardCast(wiz);
+    // Second smaller burst 400ms later for emphasis
+    setTimeout(function(){spawnSpellBurst(xPct,yPct,color);},400);
+  },50);
 }
 
 function renderTerritories(){
@@ -1289,6 +1682,8 @@ function pollSummary(){
 buildStars();
 buildClouds();
 updateSky();
+spawnWizards();
+scheduleIdleCast();
 pollSummary();
 refreshPairStates();
 
