@@ -1861,10 +1861,19 @@ async function preAiConfluenceScore(coin, tf, broker, baseCandles, trigger) {
   score += kzScore;
   reasons.push(`KZ=${kzName}+${kzScore}`);
 
-  // 2) Trigger strength (0-20) — bigger reward for vol-confirmed triggers
+  // 2) Trigger strength (0-20) — bigger reward for vol-confirmed triggers.
+  // For synthetic-volume pairs (Polygon spot gold/forex/oil), volume is always
+  // 0, so we use range-displacement as the strength proxy instead.
   const last = baseCandles[baseCandles.length - 1];
   const histAvgVol = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / Math.max(baseCandles.length - 1, 1);
-  const volSpike = histAvgVol > 0 && last.v > histAvgVol * 1.5;
+  let volSpike;
+  if (histAvgVol > 0) {
+    volSpike = last.v > histAvgVol * 1.5;
+  } else {
+    const histAvgRange = baseCandles.slice(-21, -1).reduce((s, c) => s + Math.max(c.h - c.l, 0), 0) / Math.max(baseCandles.length - 1, 1);
+    const lastRange = Math.max(last.h - last.l, 0);
+    volSpike = histAvgRange > 0 && lastRange >= histAvgRange * 1.4;
+  }
   let tScore = 0;
   // Price-action types (legacy)
   if (trigger.type === 'bos')             tScore = volSpike ? 20 : 12;
@@ -2082,18 +2091,18 @@ app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
     ? prev.recentOutcomes
     : await loadRecentOutcomes(req.user.id);
   // isAdmin: trust either the profile flag OR an exact email match against
-  // ADMIN_EMAIL. The DB profile.is_admin column can legitimately be null/
-  // false even for the ADMIN_EMAIL account (e.g. profile row was inserted
-  // by /api/auth/register before the admin flag was set), and that silently
-  // blocks postAlertToDiscord — so push fires but TP/SL/BE/ENTRY HIT alerts
-  // never reach Discord. Mirror the fallback used in requireAdmin.
-  const adminEmail = (req.user.email || '').toLowerCase();
-  const isAdminSub = !!req.profile?.is_admin || adminEmail === ADMIN_EMAIL;
+  // ADMIN_EMAIL. Also stash the email itself in the sub so subsequent gate
+  // checks can re-verify against ADMIN_EMAIL without depending on the cached
+  // boolean (which would otherwise stay stale across deploys if ADMIN_EMAIL
+  // changes or if the profile gets its is_admin flag updated post-scan-start).
+  const userEmail = (req.user.email || '').toLowerCase();
+  const isAdminSub = !!req.profile?.is_admin || userEmail === ADMIN_EMAIL;
   scanSubscriptions.set(req.user.id, {
     active: true, coin, tf, broker: broker || 'weex',
     cooldownMs: cooldownMs || 180000,
     watchlist: Array.isArray(watchlist) ? watchlist : [],
     isAdmin: isAdminSub,
+    email: userEmail,
     pairs: prev?.pairs || {},
     recentOutcomes,
   });
@@ -2360,7 +2369,15 @@ async function postAlertToDiscord(title, msg, color, isAdmin) {
 
 async function notifyUser(userId, isAdmin, { title, body, color, data }) {
   await sendPushTo(userId, { title, body, icon: '/manifest.json', data: data || {} });
-  await postAlertToDiscord(title, body, color || 'cy', isAdmin);
+  // Self-heal isAdmin by checking the sub's stored email against ADMIN_EMAIL.
+  // Catches the stale-sub case where sub.isAdmin was captured as false before
+  // today's email-fallback patch landed.
+  let effective = isAdmin;
+  if (!effective) {
+    const sub = scanSubscriptions.get(userId);
+    if (sub && sub.email && sub.email === ADMIN_EMAIL) effective = true;
+  }
+  await postAlertToDiscord(title, body, color || 'cy', effective);
 }
 
 // ICT + S/D entry confirmation detector — mirror of public/index.html's
@@ -2833,14 +2850,25 @@ function _detectMSSDisplacement(candles) {
   const body = Math.abs(last.c - last.o);
   const bodyPct = body / range;
   const avgVol = recent.reduce((s, c) => s + (c.v || 0), 0) / 10;
-  const volSpike = avgVol > 0 && (last.v || 0) > avgVol * 1.5;
-  if (!volSpike || bodyPct < 0.6) return null;
+  // Volume gating only applies when volume data is real (exchange-traded).
+  // Polygon's spot-gold/forex/oil aggregates return v=0 — for those pairs we
+  // fall back to range-displacement as the strength proxy: the last candle's
+  // range must be >= 1.4× the 10-bar average range to qualify as displacement.
+  let strengthOk;
+  if (avgVol > 0) {
+    strengthOk = (last.v || 0) > avgVol * 1.5;
+  } else {
+    const avgRange = recent.reduce((s, c) => s + Math.max(c.h - c.l, 0), 0) / 10;
+    strengthOk = avgRange > 0 && range >= avgRange * 1.4;
+  }
+  if (!strengthOk || bodyPct < 0.6) return null;
 
+  const volTag = avgVol > 0 ? `, vol ${(last.v / avgVol).toFixed(1)}x` : ', range-disp';
   if (last.c > maxH && last.c > last.o) {
-    return { type: 'mss_disp', desc: `Bullish MSS+displacement — close ${last.c.toFixed(4)} > prev high ${maxH.toFixed(4)} (body ${Math.round(bodyPct * 100)}%, vol ${(last.v / avgVol).toFixed(1)}x)` };
+    return { type: 'mss_disp', desc: `Bullish MSS+displacement — close ${last.c.toFixed(4)} > prev high ${maxH.toFixed(4)} (body ${Math.round(bodyPct * 100)}%${volTag})` };
   }
   if (last.c < minL && last.c < last.o) {
-    return { type: 'mss_disp', desc: `Bearish MSS+displacement — close ${last.c.toFixed(4)} < prev low ${minL.toFixed(4)} (body ${Math.round(bodyPct * 100)}%, vol ${(last.v / avgVol).toFixed(1)}x)` };
+    return { type: 'mss_disp', desc: `Bearish MSS+displacement — close ${last.c.toFixed(4)} < prev low ${minL.toFixed(4)} (body ${Math.round(bodyPct * 100)}%${volTag})` };
   }
   return null;
 }
@@ -2859,7 +2887,15 @@ function _detectSweepDisplacement(candles) {
   const range = last.h - last.l;
   if (range <= 0) return null;
   const avgVol = recent.reduce((s, c) => s + (c.v || 0), 0) / 10;
-  const volOk = avgVol > 0 && (last.v || 0) > avgVol * 1.2;
+  // Volume gating only when volume is real. For synthetic-volume pairs
+  // (Polygon spot gold/forex/oil → v=0), use range-displacement as the proxy.
+  let volOk;
+  if (avgVol > 0) {
+    volOk = (last.v || 0) > avgVol * 1.2;
+  } else {
+    const avgRange = recent.reduce((s, c) => s + Math.max(c.h - c.l, 0), 0) / 10;
+    volOk = avgRange > 0 && range >= avgRange * 1.2;
+  }
   if (!volOk) return null;
 
   // Bullish: wick below range, close in upper 60% of bar
@@ -4034,8 +4070,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
     data: { coin, tf, broker, signalId, trigger, signal },
   });
 
-  // Discord (admin-only — auto-scan is admin-only anyway, but defensive)
-  if (isAdmin) {
+  // Discord (admin-only — auto-scan is admin-only anyway, but defensive).
+  // Fall back to email check so a stale sub.isAdmin=false (from before today's
+  // email-fallback fix) doesn't silently swallow Discord posts.
+  if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
     await postServerSignalToDiscord(signal, trigger, broker, tf).catch(e => console.error('[discord auto]', e.message));
   }
 
@@ -4312,6 +4350,11 @@ app.post('/api/status/now', requireAuth, async (req, res) => {
 const _scanLoopHandle = setInterval(() => {
   for (const [userId, sub] of scanSubscriptions.entries()) {
     if (!sub.active) continue;
+    // Self-heal isAdmin every tick. If sub.email matches ADMIN_EMAIL, force
+    // isAdmin=true even if the profile flag is stale. This prevents the
+    // "Discord posts go silent after a deploy" bug where the cached sub.isAdmin
+    // is false but the user is genuinely the admin email.
+    if (sub.email && sub.email === ADMIN_EMAIL) sub.isAdmin = true;
     runServerScan(userId, sub).catch(e => console.error('[scan loop]', userId, e.message));
   }
 }, SCAN_INTERVAL_MS);
