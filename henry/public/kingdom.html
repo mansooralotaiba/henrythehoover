@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry The Hoover — Kingdom</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root{
+    --bg:#08090d;--bg2:#12141b;--bg3:#1a1d28;--bg4:#0e1117;
+    --fg:#e8eaf0;--mu:#9aa0a6;--di:#5a5f7a;
+    --b1:rgba(255,255,255,0.06);--b2:rgba(255,255,255,0.12);
+    --cy:#00d4ff;--gr:#00e5a0;--re:#ff4466;--am:#ffb830;--pu:#9966ff;
+    --mn:'Courier New',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--fg);font-family:var(--mn);font-size:12px;line-height:1.5;padding:12px;display:flex;flex-direction:column;gap:12px;min-height:100vh}
+
+  /* HEADER */
+  header{display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--b1);padding-bottom:10px}
+  header h1{font-size:14px;letter-spacing:.18em;color:var(--cy);font-weight:bold}
+  header h1 .crown{margin-right:6px}
+  header .nav{display:flex;gap:6px;margin-left:auto}
+  header .nav a{padding:5px 12px;background:transparent;border:1px solid var(--b2);color:var(--mu);text-decoration:none;border-radius:3px;font-size:10px;letter-spacing:.1em}
+  header .nav a:hover{color:var(--cy);border-color:var(--cy)}
+  header .live{font-size:10px;color:var(--gr);letter-spacing:.1em}
+  header .live::before{content:'● ';color:var(--gr);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+
+  /* TOP BAND */
+  .top-band{display:grid;grid-template-columns:280px 1fr 360px;gap:12px}
+  .card{background:var(--bg2);border:1px solid var(--b1);border-radius:6px;padding:12px;position:relative;overflow:hidden}
+  .card-title{font-size:9px;color:var(--mu);letter-spacing:.18em;margin-bottom:8px}
+  .card-sub{font-size:9px;color:var(--di);letter-spacing:.1em;margin-bottom:6px}
+
+  /* Card 1: Today */
+  .today-r{font-size:34px;font-weight:bold;letter-spacing:.04em;line-height:1.2;text-align:right;margin-bottom:8px}
+  .today-r.pos{color:var(--gr)}.today-r.neg{color:var(--re)}.today-r.zero{color:var(--mu)}
+  .today-row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px solid var(--b1);font-size:11px}
+  .today-row .lbl{color:var(--mu);letter-spacing:.08em;font-size:10px}
+  .today-row .val{font-weight:bold;color:var(--fg)}
+  .api-strip{margin-top:8px;font-size:9px;color:var(--di);letter-spacing:.05em}
+  .api-strip::before{content:'● ';color:var(--gr)}
+
+  /* Card 2: Month chart */
+  .month-headers{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+  .month-headers .left{font-size:10px;color:var(--mu);letter-spacing:.1em}
+  .month-headers .right{font-size:10px;color:var(--mu);letter-spacing:.1em}
+  .month-bignums{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}
+  .month-bignum{background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:10px 12px;text-align:center}
+  .month-bignum .lbl{font-size:9px;color:var(--mu);letter-spacing:.12em;margin-bottom:4px}
+  .month-bignum .val{font-size:22px;font-weight:bold;letter-spacing:.02em}
+  .month-bignum .sub{font-size:9px;color:var(--di);margin-top:2px}
+  .month-bignum.pos .val{color:var(--gr)}
+  .month-bignum.neg .val{color:var(--re)}
+  .month-bignum.zero .val{color:var(--mu)}
+  .month-chart-wrap{height:120px;background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:6px 4px}
+
+  /* Card 3: Open positions */
+  .openpos-count{position:absolute;top:12px;right:12px;font-size:11px;font-weight:bold;color:var(--cy)}
+  .openpos-section{margin-top:10px}
+  .openpos-section .head{display:flex;justify-content:space-between;align-items:center;font-size:9px;letter-spacing:.15em;color:var(--mu);margin-bottom:4px}
+  .openpos-section.long .head .tag{color:var(--gr)}
+  .openpos-section.short .head .tag{color:var(--re)}
+  .openpos-table{background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:8px 10px;font-size:10px}
+  .openpos-row{display:flex;justify-content:space-between;padding:3px 0}
+  .openpos-row .l{color:var(--mu);letter-spacing:.05em}
+  .openpos-row .v{font-weight:bold}
+
+  /* QUICK STRIP */
+  .quick-strip{display:flex;gap:18px;flex-wrap:wrap;padding:6px 12px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;font-size:10px;color:var(--mu);letter-spacing:.05em}
+  .quick-strip .item{display:flex;gap:6px;align-items:baseline}
+  .quick-strip .item .l{color:var(--di)}
+  .quick-strip .item .v{color:var(--fg);font-weight:bold}
+  .quick-strip .item .v.pos{color:var(--gr)}.quick-strip .item .v.neg{color:var(--re)}.quick-strip .item .v.am{color:var(--am)}
+
+  /* MIDDLE BAND placeholder for kingdom */
+  .middle-band{flex:1;min-height:380px;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .middle-band .placeholder{text-align:center;color:var(--di);font-size:11px;letter-spacing:.15em}
+  .middle-band .placeholder .crown{font-size:36px;margin-bottom:10px;opacity:0.5}
+  .middle-band .placeholder .label{margin-bottom:4px}
+  .middle-band .placeholder .hint{color:var(--di);font-size:9px;letter-spacing:.05em;opacity:0.6}
+  /* Subtle animated dotted grid as a hint of the kingdom to come */
+  .middle-band::before{
+    content:'';position:absolute;inset:0;
+    background-image:
+      radial-gradient(circle at 20% 30%, rgba(0,212,255,0.04), transparent 35%),
+      radial-gradient(circle at 80% 70%, rgba(0,229,160,0.04), transparent 35%),
+      linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size:auto, auto, 24px 24px, 24px 24px;
+    animation:drift 30s linear infinite;
+  }
+  @keyframes drift{from{background-position:0 0, 0 0, 0 0, 0 0}to{background-position:0 0, 0 0, 24px 24px, 24px 24px}}
+
+  /* BOTTOM BAND */
+  .bottom-band{min-height:280px;display:flex;flex-direction:column;gap:8px}
+  .bottom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
+  .bottom-header .l{font-size:10px;color:var(--mu);letter-spacing:.15em}
+  .bottom-header .c{font-size:10px;color:var(--cy);letter-spacing:.05em}
+  .charts-grid{display:grid;gap:10px;min-height:260px}
+  .charts-grid[data-n="0"]{display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px solid var(--b1);border-radius:6px}
+  .charts-grid[data-n="1"]{grid-template-columns:1fr}
+  .charts-grid[data-n="2"]{grid-template-columns:1fr 1fr}
+  .charts-grid[data-n="3"]{grid-template-columns:repeat(3,1fr)}
+  .charts-grid[data-n="4"]{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr)}
+  .charts-grid[data-n="5"],.charts-grid[data-n="6"]{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr)}
+  .charts-grid[data-n="7"],.charts-grid[data-n="8"],.charts-grid[data-n="9"]{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr)}
+  .charts-grid[data-n="10"],.charts-grid[data-n="11"],.charts-grid[data-n="12"]{grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(3,1fr)}
+  .charts-grid .empty-pane{color:var(--di);font-size:11px;letter-spacing:.1em}
+
+  .chart-pane{background:var(--bg2);border:1px solid var(--b1);border-radius:6px;display:flex;flex-direction:column;overflow:hidden;min-height:230px}
+  .chart-pane .ph{padding:8px 10px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--b1);font-size:10px}
+  .chart-pane .ph .pair{font-weight:bold;letter-spacing:.05em}
+  .chart-pane .ph .dir.long{color:var(--gr)}.chart-pane .ph .dir.short{color:var(--re)}
+  .chart-pane .ph .levels{color:var(--mu);font-size:9px;letter-spacing:.02em}
+  .chart-pane .ph .progress{color:var(--cy);font-weight:bold}
+  .chart-pane .ph .badge{padding:1px 6px;border-radius:2px;font-size:9px;letter-spacing:.08em}
+  .chart-pane .ph .badge.entered{color:var(--gr);background:rgba(0,229,160,0.08);border:1px solid rgba(0,229,160,0.3)}
+  .chart-pane .ph .badge.waiting{color:var(--am);background:rgba(255,184,48,0.08);border:1px solid rgba(255,184,48,0.3)}
+  .chart-pane .ph .badge.be{color:var(--am);background:rgba(255,184,48,0.16);border:1px solid rgba(255,184,48,0.5)}
+  .chart-pane .body{flex:1;position:relative}
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="crown">♛</span>HENRY · AI TRADING KINGDOM</h1>
+  <span class="live">LIVE</span>
+  <div class="nav">
+    <a href="/terminal">← TERMINAL</a>
+    <a href="/performance">STATS</a>
+  </div>
+</header>
+
+<!-- ═══ TOP BAND ═══ -->
+<div class="top-band">
+
+  <!-- Card 1: Today -->
+  <div class="card">
+    <div class="card-title">TODAY'S R</div>
+    <div id="today-r" class="today-r zero">+0.00R</div>
+    <div class="today-row"><span class="lbl">TP</span><span class="val v-gr" id="t-tp">0</span></div>
+    <div class="today-row"><span class="lbl">SL</span><span class="val v-re" id="t-sl">0</span></div>
+    <div class="today-row"><span class="lbl">BE</span><span class="val v-am" id="t-be">0</span></div>
+    <div class="today-row"><span class="lbl">EXPIRED</span><span class="val v-mu" id="t-exp">0</span></div>
+    <div class="today-row"><span class="lbl">WIN RATE</span><span class="val" id="t-wr">—</span></div>
+    <div class="today-row"><span class="lbl">AI CALLS</span><span class="val" id="t-ai">0</span></div>
+    <div class="api-strip" id="api-strip">API Connected — scanning 0 pairs</div>
+  </div>
+
+  <!-- Card 2: Month chart + cumulative -->
+  <div class="card">
+    <div class="month-headers">
+      <span class="left">THIS MONTH R<br><span style="color:var(--di);font-size:9px" id="m-month-label">—</span></span>
+      <span class="right">TOTAL R<br><span style="color:var(--di);font-size:9px" id="m-start-label">—</span></span>
+    </div>
+    <div class="month-bignums">
+      <div class="month-bignum zero" id="m-month-card">
+        <div class="lbl">THIS MONTH</div>
+        <div class="val" id="m-month">+0.00R</div>
+        <div class="sub" id="m-month-sub">0 closed</div>
+      </div>
+      <div class="month-bignum zero" id="m-total-card">
+        <div class="lbl">CUMULATIVE</div>
+        <div class="val" id="m-total">+0.00R</div>
+        <div class="sub" id="m-total-sub">0 closed</div>
+      </div>
+    </div>
+    <div class="month-chart-wrap"><svg id="m-chart" preserveAspectRatio="none"></svg></div>
+  </div>
+
+  <!-- Card 3: Open positions -->
+  <div class="card">
+    <div class="card-title">OPEN POSITIONS</div>
+    <div class="openpos-count" id="op-count">0 POS</div>
+
+    <div class="openpos-section long">
+      <div class="head"><span class="tag">▲ LONG</span><span id="op-long-count">0 POS</span></div>
+      <div class="openpos-table">
+        <div class="openpos-row"><span class="l">R AT RISK</span><span class="v v-re" id="op-long-risk">0R</span></div>
+        <div class="openpos-row"><span class="l">PLANNED R</span><span class="v v-gr" id="op-long-planned">0R</span></div>
+        <div class="openpos-row"><span class="l">AVG CONF</span><span class="v" id="op-long-conf">—</span></div>
+        <div class="openpos-row"><span class="l">PAIRS</span><span class="v v-cy" id="op-long-pairs">—</span></div>
+      </div>
+    </div>
+
+    <div class="openpos-section short">
+      <div class="head"><span class="tag">▼ SHORT</span><span id="op-short-count">0 POS</span></div>
+      <div class="openpos-table">
+        <div class="openpos-row"><span class="l">R AT RISK</span><span class="v v-re" id="op-short-risk">0R</span></div>
+        <div class="openpos-row"><span class="l">PLANNED R</span><span class="v v-gr" id="op-short-planned">0R</span></div>
+        <div class="openpos-row"><span class="l">AVG CONF</span><span class="v" id="op-short-conf">—</span></div>
+        <div class="openpos-row"><span class="l">PAIRS</span><span class="v v-cy" id="op-short-pairs">—</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Quick stat strip -->
+<div class="quick-strip" id="quick-strip">
+  <div class="item"><span class="l">EXPECTANCY</span><span class="v" id="q-exp">—</span></div>
+  <div class="item"><span class="l">STREAK</span><span class="v" id="q-streak">—</span></div>
+  <div class="item"><span class="l">BEST TODAY</span><span class="v" id="q-best">—</span></div>
+  <div class="item"><span class="l">WORST TODAY</span><span class="v" id="q-worst">—</span></div>
+  <div class="item"><span class="l">NEXT EVENT</span><span class="v am" id="q-next">—</span></div>
+</div>
+
+<!-- ═══ MIDDLE BAND — Kingdom (placeholder) ═══ -->
+<div class="middle-band">
+  <div class="placeholder">
+    <div class="crown">♛</div>
+    <div class="label">THE KINGDOM</div>
+    <div class="hint">isometric world coming in the next round</div>
+  </div>
+</div>
+
+<!-- ═══ BOTTOM BAND — Active Trades ═══ -->
+<div class="bottom-band">
+  <div class="bottom-header">
+    <span class="l">ACTIVE TRADES</span>
+    <span class="c" id="bottom-count">—</span>
+  </div>
+  <div id="charts-grid" class="charts-grid" data-n="0">
+    <div class="empty-pane">No active trades</div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────
+function fmtR(r){
+  if(r==null)return'—';
+  var n=parseFloat(r);
+  if(isNaN(n))return'—';
+  return (n>=0?'+':'')+n.toFixed(2)+'R';
+}
+function fmtPx(p){
+  if(p==null)return'—';
+  var n=parseFloat(p);
+  if(isNaN(n))return'—';
+  if(n>=1000)return n.toFixed(2);
+  if(n>=10)return n.toFixed(4);
+  return n.toFixed(6);
+}
+function clsR(r){
+  if(r==null||r===0)return'zero';
+  return parseFloat(r)>=0?'pos':'neg';
+}
+function shortCoin(c){return c.replace('USDT','').replace('1000','');}
+
+// ─────────────────────────────────────────────────────────────
+// TOP BAND RENDER
+// ─────────────────────────────────────────────────────────────
+function renderSummary(d){
+  if(!d)return;
+  var t=d.today||{};
+  var m=d.month||{};
+  var a=d.allTime||{};
+
+  // Today card
+  var tEl=document.getElementById('today-r');
+  tEl.textContent=fmtR(t.totalR);
+  tEl.className='today-r '+clsR(t.totalR);
+  document.getElementById('t-tp').textContent=t.tp||0;
+  document.getElementById('t-sl').textContent=t.sl||0;
+  document.getElementById('t-be').textContent=t.be||0;
+  document.getElementById('t-exp').textContent=t.expired||0;
+  var wr=document.getElementById('t-wr');
+  wr.textContent=(t.winRate!=null?t.winRate+'%':'—');
+  wr.className='val '+(t.winRate>=60?'v-gr':t.winRate>=40?'v-am':t.winRate>0?'v-re':'v-mu');
+  document.getElementById('t-ai').textContent=t.aiCalls||0;
+
+  // API strip
+  var scan=d.scanState||{};
+  var apiEl=document.getElementById('api-strip');
+  apiEl.textContent=(scan.active?'API Connected':'Scan idle')+' — '+(scan.watchlistSize||0)+' pairs watchlist, '+(scan.pairsTracked||0)+' tracked';
+
+  // Month card
+  var monthCard=document.getElementById('m-month-card');
+  var totalCard=document.getElementById('m-total-card');
+  document.getElementById('m-month').textContent=fmtR(m.totalR);
+  monthCard.className='month-bignum '+clsR(m.totalR);
+  document.getElementById('m-month-sub').textContent=(m.closed||0)+' closed · '+(m.tp||0)+'W '+(m.sl||0)+'L '+(m.be||0)+'BE';
+  document.getElementById('m-total').textContent=fmtR(a.totalR);
+  totalCard.className='month-bignum '+clsR(a.totalR);
+  document.getElementById('m-total-sub').textContent=(a.closed||0)+' closed · WR '+(a.winRate||0)+'%';
+
+  var now=new Date();
+  var mNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  document.getElementById('m-month-label').textContent=mNames[now.getUTCMonth()]+' '+now.getUTCFullYear();
+  if(a.startedAt){
+    var s=new Date(a.startedAt);
+    document.getElementById('m-start-label').textContent='Start '+s.toISOString().slice(0,10);
+  } else {
+    document.getElementById('m-start-label').textContent='No trades yet';
+  }
+
+  drawMonthChart(d.dailyR||[]);
+
+  // Open positions
+  var op=d.openPositions||{};
+  var lg=op.long||{count:0,plannedR:0,avgConf:0,pairs:[],rAtRisk:0};
+  var sh=op.short||{count:0,plannedR:0,avgConf:0,pairs:[],rAtRisk:0};
+  document.getElementById('op-count').textContent=(op.totalCount||0)+' POS';
+  document.getElementById('op-long-count').textContent=lg.count+' POS';
+  document.getElementById('op-short-count').textContent=sh.count+' POS';
+
+  document.getElementById('op-long-risk').textContent=fmtR(lg.rAtRisk);
+  document.getElementById('op-long-planned').textContent=fmtR(lg.plannedR);
+  document.getElementById('op-long-conf').textContent=lg.count?(lg.avgConf+'%'):'—';
+  document.getElementById('op-long-pairs').textContent=lg.pairs.length?lg.pairs.join(' · '):'—';
+
+  document.getElementById('op-short-risk').textContent=fmtR(sh.rAtRisk);
+  document.getElementById('op-short-planned').textContent=fmtR(sh.plannedR);
+  document.getElementById('op-short-conf').textContent=sh.count?(sh.avgConf+'%'):'—';
+  document.getElementById('op-short-pairs').textContent=sh.pairs.length?sh.pairs.join(' · '):'—';
+
+  // Quick strip
+  var exp=a.expectancy;
+  var expEl=document.getElementById('q-exp');
+  expEl.textContent=exp!=null?fmtR(exp)+'/trade':'—';
+  expEl.className='v '+(exp>0?'pos':exp<0?'neg':'');
+
+  var sEl=document.getElementById('q-streak');
+  if(d.streak){
+    sEl.textContent=(d.streak.type==='W'?'+':'-')+d.streak.count+(d.streak.type==='W'?'W':'L');
+    sEl.className='v '+(d.streak.type==='W'?'pos':'neg');
+  } else {
+    sEl.textContent='—';
+    sEl.className='v';
+  }
+
+  var bEl=document.getElementById('q-best');
+  if(d.bestToday){
+    bEl.textContent=fmtR(d.bestToday.r)+' '+shortCoin(d.bestToday.pair);
+    bEl.className='v pos';
+  } else {bEl.textContent='—';bEl.className='v'}
+
+  var wEl=document.getElementById('q-worst');
+  if(d.worstToday&&d.worstToday.r<0){
+    wEl.textContent=fmtR(d.worstToday.r)+' '+shortCoin(d.worstToday.pair);
+    wEl.className='v neg';
+  } else {wEl.textContent='—';wEl.className='v'}
+
+  var nEl=document.getElementById('q-next');
+  if(d.nextEvent){
+    var m2=d.nextEvent.inMinutes;
+    var when=m2<60?(m2+'m'):Math.floor(m2/60)+'h'+(m2%60).toString().padStart(2,'0');
+    nEl.textContent=d.nextEvent.name+' ('+d.nextEvent.zone+') in '+when;
+  } else {nEl.textContent='No high-impact in 4h'}
+}
+
+// ─────────────────────────────────────────────────────────────
+// MONTH BAR CHART (SVG)
+// ─────────────────────────────────────────────────────────────
+function drawMonthChart(daily){
+  var svg=document.getElementById('m-chart');
+  svg.innerHTML='';
+  if(!daily||!daily.length){svg.innerHTML='<text x="50%" y="50%" fill="#5a5f7a" text-anchor="middle" font-size="10">No data</text>';return;}
+  var rect=svg.getBoundingClientRect();
+  var W=rect.width||600,H=rect.height||120;
+  var PL=30,PR=8,PT=8,PB=18;
+  var cW=W-PL-PR,cH=H-PT-PB;
+  var maxR=Math.max.apply(null,daily.map(function(p){return p.r;}));
+  var minR=Math.min.apply(null,daily.map(function(p){return p.r;}));
+  if(maxR<0)maxR=0; if(minR>0)minR=0;
+  var rng=(maxR-minR)||1;
+  var bw=cW/daily.length;
+  function y(v){return PT+cH-(v-minR)/rng*cH;}
+  // Zero line
+  var zy=y(0);
+  svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+zy+'" y2="'+zy+'" stroke="rgba(255,255,255,0.1)" stroke-dasharray="2,3"/>';
+  // Y labels
+  svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+8)+'" fill="#5a5f7a" text-anchor="end" font-size="8">'+maxR.toFixed(1)+'R</text>';
+  svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(zy+3)+'" fill="#5a5f7a" text-anchor="end" font-size="8">0</text>';
+  if(minR<0)svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+cH-2)+'" fill="#5a5f7a" text-anchor="end" font-size="8">'+minR.toFixed(1)+'R</text>';
+  // Bars
+  daily.forEach(function(p,i){
+    var x=PL+i*bw+1;
+    var w=Math.max(bw-2,2);
+    var bh,by,fill;
+    if(p.r>=0){by=y(p.r);bh=zy-by;fill='#00e5a0';}
+    else{by=zy;bh=y(p.r)-zy;fill='#ff4466';}
+    if(bh<1&&p.r!==0)bh=1.5;
+    svg.innerHTML+='<rect x="'+x+'" y="'+by+'" width="'+w+'" height="'+bh+'" fill="'+fill+'" opacity="0.85"><title>Day '+p.day+': '+fmtR(p.r)+'</title></rect>';
+  });
+  // X labels (every 5 days)
+  daily.forEach(function(p,i){
+    if(p.day%5===0||p.day===1){
+      var x=PL+i*bw+bw/2;
+      svg.innerHTML+='<text x="'+x+'" y="'+(H-4)+'" fill="#5a5f7a" text-anchor="middle" font-size="8">'+p.day.toString().padStart(2,'0')+'</text>';
+    }
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// BOTTOM BAND — DYNAMIC CHARTS (one per open position)
+// ─────────────────────────────────────────────────────────────
+var _chartInstances={}; // coin → { chart, series, entryLine, slLine, tpLine, beLine }
+
+function renderBottomBand(summary){
+  var grid=document.getElementById('charts-grid');
+  var counter=document.getElementById('bottom-count');
+  var details=(summary&&summary.openPositions&&summary.openPositions.details)||{long:[],short:[]};
+  var all=[].concat(details.long||[],details.short||[]);
+  counter.textContent=all.length+' open';
+  grid.dataset.n=String(Math.min(all.length,12));
+
+  if(!all.length){
+    grid.innerHTML='<div class="empty-pane">No active trades — bottom band scales 0 → N as trades open</div>';
+    // Tear down any old charts
+    Object.keys(_chartInstances).forEach(function(k){
+      try{_chartInstances[k].chart.remove();}catch(e){}
+      delete _chartInstances[k];
+    });
+    return;
+  }
+
+  // Remove existing empty placeholder
+  var ep=grid.querySelector('.empty-pane');
+  if(ep)ep.remove();
+
+  // Reconcile panes: remove any that aren't in the current set
+  var keep=new Set(all.map(function(p){return p.coin;}));
+  Array.from(grid.querySelectorAll('.chart-pane')).forEach(function(pane){
+    var c=pane.dataset.coin;
+    if(!keep.has(c)){
+      pane.remove();
+      if(_chartInstances[c]){try{_chartInstances[c].chart.remove();}catch(e){}delete _chartInstances[c];}
+    }
+  });
+
+  // Upsert each open-position pane
+  all.forEach(function(pos){
+    var pane=grid.querySelector('.chart-pane[data-coin="'+pos.coin+'"]');
+    if(!pane){
+      pane=document.createElement('div');
+      pane.className='chart-pane';
+      pane.dataset.coin=pos.coin;
+      pane.innerHTML=
+        '<div class="ph">'
+        +'<span><span class="pair">'+shortCoin(pos.coin)+'</span> <span class="dir '+(pos.direction==='LONG'?'long':'short')+'">'+pos.direction+'</span></span>'
+        +'<span class="badge" data-role="badge"></span>'
+        +'</div>'
+        +'<div class="body" data-role="body"></div>';
+      grid.appendChild(pane);
+    }
+    // Update header
+    var badge=pane.querySelector('[data-role="badge"]');
+    if(pos.beAlerted){badge.className='badge be';badge.textContent='BE MOVED';}
+    else if(pos.entered){badge.className='badge entered';badge.textContent='IN TRADE · '+(pos.pctToTp||0)+'%';}
+    else{badge.className='badge waiting';badge.textContent='WAITING ENTRY';}
+
+    // Ensure chart exists
+    if(!_chartInstances[pos.coin]){
+      var body=pane.querySelector('[data-role="body"]');
+      var chart=LightweightCharts.createChart(body,{
+        layout:{background:{type:'solid',color:'#12141b'},textColor:'#9aa0a6'},
+        grid:{vertLines:{color:'rgba(255,255,255,0.03)'},horzLines:{color:'rgba(255,255,255,0.03)'}},
+        rightPriceScale:{borderColor:'rgba(255,255,255,0.05)'},
+        timeScale:{borderColor:'rgba(255,255,255,0.05)',timeVisible:true,secondsVisible:false},
+        crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+      });
+      var series=chart.addCandlestickSeries({
+        upColor:'#00e5a0',downColor:'#ff4466',
+        borderUpColor:'#00e5a0',borderDownColor:'#ff4466',
+        wickUpColor:'#00e5a0',wickDownColor:'#ff4466',
+      });
+      _chartInstances[pos.coin]={chart:chart,series:series,lines:[],lastCandles:null};
+      // Resize observer
+      var ro=new ResizeObserver(function(){
+        try{chart.applyOptions({width:body.clientWidth,height:body.clientHeight});}catch(e){}
+      });
+      ro.observe(body);
+      _chartInstances[pos.coin].ro=ro;
+    }
+
+    // Update level lines (entry / sl / tp / be)
+    var inst=_chartInstances[pos.coin];
+    (inst.lines||[]).forEach(function(ln){try{inst.series.removePriceLine(ln);}catch(e){}});
+    inst.lines=[];
+    if(pos.entry)inst.lines.push(inst.series.createPriceLine({price:pos.entry,color:'#9aa0a6',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'ENTRY'}));
+    if(pos.sl)   inst.lines.push(inst.series.createPriceLine({price:pos.sl,   color:'#ff4466',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'SL'}));
+    if(pos.tp)   inst.lines.push(inst.series.createPriceLine({price:pos.tp,   color:'#00e5a0',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'TP'}));
+    if(pos.beAlerted&&pos.entry){
+      inst.lines.push(inst.series.createPriceLine({price:pos.entry,color:'#ffb830',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:false,title:'BE-SL'}));
+    }
+
+    // Refresh candles (5m, 60 bars) — throttled per pane
+    if(!inst.lastFetch||Date.now()-inst.lastFetch>15000){
+      inst.lastFetch=Date.now();
+      fetchPaneCandles(pos.coin).then(function(candles){
+        if(!candles||!candles.length)return;
+        inst.series.setData(candles);
+        inst.lastCandles=candles;
+      }).catch(function(){});
+    }
+  });
+}
+
+function fetchPaneCandles(coin){
+  // Use Binance Futures public candles (broker-agnostic — same data shape).
+  // 5m, last 80 bars covers a few hours of context for the trade.
+  var url='https://fapi.binance.com/fapi/v1/klines?symbol='+coin+'&interval=5m&limit=80';
+  return fetch(url).then(function(r){return r.json();}).then(function(arr){
+    if(!Array.isArray(arr))return [];
+    return arr.map(function(k){
+      return{
+        time:Math.floor(parseInt(k[0])/1000),
+        open:parseFloat(k[1]),
+        high:parseFloat(k[2]),
+        low:parseFloat(k[3]),
+        close:parseFloat(k[4]),
+      };
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// MAIN POLL LOOP
+// ─────────────────────────────────────────────────────────────
+function pollSummary(){
+  fetch('/api/kingdom/summary',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){
+      if(!d)return;
+      renderSummary(d);
+      renderBottomBand(d);
+    })
+    .catch(function(){});
+}
+pollSummary();
+setInterval(pollSummary,5000);
+</script>
+
+</body>
+</html>

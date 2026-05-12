@@ -302,6 +302,7 @@ app.get('/subscribe/success', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 
 app.get('/reset-password', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'reset-password.html')));
 app.get('/account',        requireSession, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
 app.get('/performance',    requireAuth,    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'performance.html')));
+app.get('/kingdom',        requireAuth,    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'kingdom.html')));
 app.get('/backtest',       requireAuth,    (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'backtest.html')));
 
 // Set a new password — requires valid session set by /auth/callback (recovery flow)
@@ -1118,6 +1119,191 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
   const closed = tp + sl + be;
   const winRate = closed ? +(((tp + be * 0.5) / closed) * 100).toFixed(1) : 0;
   res.json({ tp, sl, be, totalRr: +totalRr.toFixed(2), winRate, total: data.length });
+});
+
+// Kingdom dashboard summary — single payload powering the top band of
+// /kingdom. RR-based (Henry risks 1R per trade by convention).
+// Cached 5s to keep DB load light if the page polls aggressively.
+const _kingdomCache = new Map(); // userId → { ts, payload }
+app.get('/api/kingdom/summary', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const cached = _kingdomCache.get(userId);
+    if (cached && Date.now() - cached.ts < 5000) {
+      return res.json(cached.payload);
+    }
+
+    // Pull all signals (any outcome state) ordered by created_at
+    const { data, error } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, rr, confidence')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+    if (error) {
+      console.error('[kingdom summary]', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+    const rows = data || [];
+
+    // ── Time anchors (all UTC) ──
+    const now = new Date();
+    const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+    const inToday = (s) => s.outcome_at && new Date(s.outcome_at).getTime() >= todayStart;
+    const inMonth = (s) => s.outcome_at && new Date(s.outcome_at).getTime() >= monthStart;
+
+    // ── Aggregators ──
+    const closedRows = rows.filter(r => r.outcome === 'TP' || r.outcome === 'SL' || r.outcome === 'BE');
+    const expiredRows = rows.filter(r => r.outcome === 'EXPIRED');
+
+    function aggBucket(filter) {
+      const matched = rows.filter(filter);
+      const tp = matched.filter(r => r.outcome === 'TP').length;
+      const sl = matched.filter(r => r.outcome === 'SL').length;
+      const be = matched.filter(r => r.outcome === 'BE').length;
+      const exp = matched.filter(r => r.outcome === 'EXPIRED').length;
+      const closed = tp + sl + be;
+      const totalR = matched.reduce((s, r) => s + (parseFloat(r.outcome_rr) || 0), 0);
+      const winRate = closed ? +(((tp + be * 0.5) / closed) * 100).toFixed(1) : 0;
+      return { tp, sl, be, expired: exp, closed, totalR: +totalR.toFixed(2), winRate };
+    }
+
+    const today    = aggBucket(inToday);
+    const month    = aggBucket(inMonth);
+    const allTime  = aggBucket(() => true);
+
+    // AI calls today = signals created today (regardless of outcome)
+    const aiCallsToday = rows.filter(r => new Date(r.created_at).getTime() >= todayStart).length;
+
+    // ── Daily R bars for current month ──
+    const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getUTCDate();
+    const dailyR = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), d);
+      const dayEnd   = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), d + 1);
+      const dayR = rows
+        .filter(r => r.outcome_at && new Date(r.outcome_at).getTime() >= dayStart && new Date(r.outcome_at).getTime() < dayEnd)
+        .reduce((s, r) => s + (parseFloat(r.outcome_rr) || 0), 0);
+      dailyR.push({ day: d, r: +dayR.toFixed(2) });
+    }
+
+    // ── Streak (most recent consecutive same-direction outcomes) ──
+    let streakCount = 0, streakType = null;
+    for (let i = closedRows.length - 1; i >= 0; i--) {
+      const isWin = closedRows[i].outcome === 'TP';
+      const isLoss = closedRows[i].outcome === 'SL';
+      if (streakType === null) {
+        if (isWin) streakType = 'W';
+        else if (isLoss) streakType = 'L';
+        else break;
+        streakCount = 1;
+      } else if ((streakType === 'W' && isWin) || (streakType === 'L' && isLoss)) {
+        streakCount++;
+      } else {
+        break;
+      }
+    }
+    const streak = streakCount > 0 ? { type: streakType, count: streakCount } : null;
+
+    // ── Best / worst trade today + all-time ──
+    const todayClosed = closedRows.filter(inToday);
+    const bestToday = todayClosed.reduce((best, r) => (!best || (parseFloat(r.outcome_rr) || 0) > (parseFloat(best.outcome_rr) || 0)) ? r : best, null);
+    const worstToday = todayClosed.reduce((worst, r) => (!worst || (parseFloat(r.outcome_rr) || 0) < (parseFloat(worst.outcome_rr) || 0)) ? r : worst, null);
+
+    // Expectancy = totalR / closed (only for closed trades, not EXPIRED)
+    const expectancy = allTime.closed ? +(allTime.totalR / allTime.closed).toFixed(2) : 0;
+    const todayExpectancy = today.closed ? +(today.totalR / today.closed).toFixed(2) : 0;
+
+    // ── Open positions from in-memory scan state ──
+    const sub = scanSubscriptions.get(userId);
+    const openPositions = { long: [], short: [], totalCount: 0 };
+    if (sub && sub.pairs) {
+      for (const [coin, ps] of Object.entries(sub.pairs)) {
+        if (!ps.pendSignal) continue;
+        const dir = ps.pendSignal.direction;
+        if (dir !== 'LONG' && dir !== 'SHORT') continue;
+        const entry = parseFloat(ps.pendSignal.entry);
+        const tp = parseFloat(ps.pendSignal.tp);
+        const sl = parseFloat(ps.pendSignal.sl);
+        const cp = ps.lastPrice;
+        let pctToTp = null;
+        if (cp != null && entry && tp && entry !== tp) {
+          pctToTp = +(Math.abs(cp - entry) / Math.abs(tp - entry) * 100).toFixed(1);
+        }
+        const pos = {
+          coin,
+          direction: dir,
+          entry, sl, tp,
+          rr: parseFloat(ps.pendSignal.rr) || null,
+          confidence: parseFloat(ps.pendSignal.confidence) || null,
+          entered: !!ps._entryAlerted,
+          beAlerted: !!ps._beAlerted,
+          lastPrice: cp,
+          pctToTp,
+          signalId: ps.signalId,
+          signalTimestamp: ps.signalTimestamp,
+        };
+        if (dir === 'LONG') openPositions.long.push(pos);
+        else openPositions.short.push(pos);
+        openPositions.totalCount++;
+      }
+    }
+
+    // Aggregates for open positions
+    function openAgg(list) {
+      const count = list.length;
+      const entered = list.filter(p => p.entered).length;
+      const plannedR = list.reduce((s, p) => s + (p.rr || 0), 0);
+      const avgConf = count ? +(list.reduce((s, p) => s + (p.confidence || 0), 0) / count).toFixed(0) : 0;
+      const pairs = list.map(p => p.coin.replace('USDT', ''));
+      // R at risk: 1R per active position (Henry convention). Use list.length; once-entered is at full risk.
+      const rAtRisk = +(entered * -1).toFixed(1);
+      return { count, entered, plannedR: +plannedR.toFixed(2), avgConf, pairs, rAtRisk };
+    }
+
+    // Next high-impact calendar event (re-uses /api/calendar/events cache)
+    let nextEvent = null;
+    try {
+      await fetchCalendarContext();
+      const items = (_calendarCache.items || [])
+        .filter(e => e.imp === 'high' && e.dt > Date.now())
+        .sort((a, b) => a.dt - b.dt);
+      if (items.length) {
+        const e = items[0];
+        const diffMin = Math.round((e.dt - Date.now()) / 60000);
+        nextEvent = { name: e.name, zone: e.zone, dt: e.dt, inMinutes: diffMin };
+      }
+    } catch {}
+
+    const payload = {
+      now: Date.now(),
+      today: { ...today, expectancy: todayExpectancy, aiCalls: aiCallsToday },
+      month,
+      allTime: { ...allTime, expectancy, startedAt: rows[0]?.created_at || null },
+      dailyR, // [{day, r}] for current month
+      streak,
+      bestToday: bestToday ? { pair: bestToday.pair, direction: bestToday.direction, r: parseFloat(bestToday.outcome_rr) || 0 } : null,
+      worstToday: worstToday ? { pair: worstToday.pair, direction: worstToday.direction, r: parseFloat(worstToday.outcome_rr) || 0 } : null,
+      openPositions: {
+        long: openAgg(openPositions.long),
+        short: openAgg(openPositions.short),
+        totalCount: openPositions.totalCount,
+        details: { long: openPositions.long, short: openPositions.short },
+      },
+      nextEvent,
+      scanState: {
+        active: !!sub?.active,
+        watchlistSize: sub?.watchlist?.length || 0,
+        pairsTracked: sub?.pairs ? Object.keys(sub.pairs).length : 0,
+      },
+    };
+
+    _kingdomCache.set(userId, { ts: Date.now(), payload });
+    res.json(payload);
+  } catch (err) {
+    console.error('[kingdom summary]', err.message);
+    res.status(500).json({ error: 'kingdom_failed' });
+  }
 });
 
 // Performance dashboard data — aggregated breakdowns across all signals.
