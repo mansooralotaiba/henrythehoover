@@ -74,6 +74,34 @@ let autoTradeEnabled = false;
 function autoTradeAllowed(isAdmin) {
   return !!weexExecutor && !!autoTradeEnabled && !!isAdmin;
 }
+
+// Admin user_id — resolved once from the profiles table by ADMIN_EMAIL, then
+// cached. Used by /api/kingdom/* endpoints so non-admin subscribers viewing
+// Kingdom see Mansoor's record + his auto-scan charts, not their own (empty).
+let _adminUserId = null;
+let _adminUserIdLookupAt = 0;
+async function getAdminUserId() {
+  if (_adminUserId) return _adminUserId;
+  // Throttle failed lookups to once per 60s so a missing profile row doesn't hammer Supabase.
+  if (Date.now() - _adminUserIdLookupAt < 60_000) return null;
+  _adminUserIdLookupAt = Date.now();
+  try {
+    const { data } = await supaAdmin
+      .from('profiles')
+      .select('user_id')
+      .eq('email', ADMIN_EMAIL)
+      .maybeSingle();
+    if (data?.user_id) {
+      _adminUserId = data.user_id;
+      console.log('[admin] resolved user_id for', ADMIN_EMAIL, '=', _adminUserId);
+    } else {
+      console.warn('[admin] no profile row for', ADMIN_EMAIL, '— Kingdom will fall back to caller userId');
+    }
+  } catch (err) {
+    console.warn('[admin] user_id lookup failed:', err.message || err);
+  }
+  return _adminUserId;
+}
 async function fireExecutor(method, payload, label) {
   if (!weexExecutor) return;
   try {
@@ -1593,7 +1621,10 @@ app.get('/api/signals/stats', requireAuth, async (req, res) => {
 const _kingdomCache = new Map(); // userId → { ts, payload }
 app.get('/api/kingdom/summary', requireAuth, async (req, res) => {
   try {
-    const userId = req.user.id;
+    // Kingdom is the public "Henry's record" dashboard — always show admin's
+    // signals + scan state regardless of who's viewing. Fall back to caller
+    // userId if admin lookup failed (e.g. fresh deploy, no profile row yet).
+    const userId = (await getAdminUserId()) || req.user.id;
     const cached = _kingdomCache.get(userId);
     if (cached && Date.now() - cached.ts < 5000) {
       return res.json(cached.payload);
@@ -2813,6 +2844,50 @@ app.post('/api/scan/stop', requireAuth, (req, res) => {
   // Also stop periodic status updates when the user stops auto-scanning
   stopUserStatusUpdates(req.user.id);
   res.json({ ok: true });
+});
+
+// Admin-scoped pair states for the Kingdom chart grid. Mirrors
+// /api/scan/all-pairs but always resolves to Mansoor's scan so non-admin
+// subscribers see Henry's live auto-scan charts instead of their own empty
+// scan state.
+app.get('/api/kingdom/pairs', requireAuth, async (_req, res) => {
+  const adminId = await getAdminUserId();
+  if (!adminId) return res.json({ active: false, pairs: [], reason: 'admin_unresolved' });
+  const sub = scanSubscriptions.get(adminId);
+  if (!sub) return res.json({ active: false, pairs: [] });
+  const watchSet = new Set(sub.watchlist || []);
+  const pairCoins = new Set(watchSet);
+  if (sub.pairs) {
+    for (const [coin, ps] of Object.entries(sub.pairs)) {
+      if (watchSet.has(coin)) continue;
+      if (ps && ps.pendSignal) pairCoins.add(coin);
+    }
+  }
+  if (!pairCoins.size && sub.coin) pairCoins.add(sub.coin);
+  const stats = await getUserPairStats(adminId).catch(() => ({}));
+  const pairs = [];
+  for (const coin of pairCoins) {
+    const ps = sub.pairs && sub.pairs[coin];
+    pairs.push({
+      coin,
+      hasSignal: !!(ps && ps.pendSignal),
+      signal: ps && ps.pendSignal ? ps.pendSignal : null,
+      signalId: ps && ps.signalId ? ps.signalId : null,
+      lastPrice: ps && ps.lastPrice != null ? ps.lastPrice : null,
+      cooldownUntil: ps ? ps.cooldownUntil : 0,
+      cooldownRemaining: ps ? Math.max(0, ps.cooldownUntil - Date.now()) : 0,
+      pauseUntil: ps && ps.pauseUntil ? ps.pauseUntil : 0,
+      pauseRemaining: ps && ps.pauseUntil ? Math.max(0, ps.pauseUntil - Date.now()) : 0,
+      pauseReason: ps ? (ps.pauseReason || null) : null,
+      status: ps ? ps.lastStatus : 'idle',
+      entryAlerted: !!(ps && ps._entryAlerted),
+      beAlerted: !!(ps && ps._beAlerted),
+      tpAlerted: !!(ps && ps._tpAlerted),
+      awaitingConfirmation: !!(ps && ps._confirmationPending),
+      stats: stats[coin] || null,
+    });
+  }
+  res.json({ active: !!sub.active, tf: sub.tf, broker: sub.broker, pairs });
 });
 
 app.post('/api/scan/signal', requireAuth, express.json({ limit: '512kb' }), (req, res) => {

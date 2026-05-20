@@ -780,7 +780,9 @@ function spawnBurstOnPanel(coin, color){
 // SCAN STATE — pulls from /api/scan/all-pairs every 5s
 // ─────────────────────────────────────────────────────────────
 function refreshPairStates(){
-  fetch('/api/scan/all-pairs',{credentials:'same-origin'})
+  // Always pull from the admin-scoped endpoint so non-admin subscribers see
+  // Henry's live auto-scan charts (admins get the same data via this endpoint).
+  fetch('/api/kingdom/pairs',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
     .then(function(d){
       if(!d||!d.pairs)return;
