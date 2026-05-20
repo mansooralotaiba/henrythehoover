@@ -986,14 +986,67 @@ app.post('/api/discord', requireAdmin, (req, res) => forwardToDiscord('DISCORD_W
 app.post('/api/discord/auto', requireAdmin, (req, res) => forwardToDiscord('DISCORD_AUTO_WEBHOOK', req, res));
 
 // ── WEEX auto-trade kill switch (admin) ────────────────────────────────────
-app.get('/api/bot/state', requireAdmin, (_req, res) => {
+// Wallet + positions cache: WEEX REST is slow and the dashboard polls every 5s.
+const _weexCache = { wallet: null, positions: null, fetchedAt: 0 };
+const WEEX_CACHE_MS = 15000;
+async function getWeexStatusCached() {
+  if (!weexClient) return { wallet: null, positions: [] };
+  const now = Date.now();
+  if (now - _weexCache.fetchedAt < WEEX_CACHE_MS) {
+    return { wallet: _weexCache.wallet, positions: _weexCache.positions || [] };
+  }
+  const [wallet, positions] = await Promise.all([
+    weexClient.getWallet().catch(err => { console.warn('[weex wallet]', err.message || err); return _weexCache.wallet; }),
+    weexClient.getAllPositions().catch(err => { console.warn('[weex positions]', err.message || err); return _weexCache.positions || []; }),
+  ]);
+  _weexCache.wallet = wallet;
+  _weexCache.positions = positions;
+  _weexCache.fetchedAt = now;
+  return { wallet, positions: positions || [] };
+}
+// PnL aggregation from the executor's in-memory snapshot.
+function aggregateExecutorPnl(trades) {
+  const closed = (trades || []).filter(t => t.state === 'CLOSED' && t.closedPnl != null);
+  const now = new Date();
+  const startOfTodayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const startOfMonthUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  let today = 0, month = 0, total = 0;
+  const dailyMap = new Map(); // day-of-month -> pnl
+  for (const t of closed) {
+    const pnl = parseFloat(t.closedPnl) || 0;
+    total += pnl;
+    const ts = t.updatedAt || 0;
+    if (ts >= startOfMonthUtc) {
+      month += pnl;
+      const d = new Date(ts).getUTCDate();
+      dailyMap.set(d, (dailyMap.get(d) || 0) + pnl);
+    }
+    if (ts >= startOfTodayUtc) today += pnl;
+  }
+  const dim = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const daily = [];
+  for (let d = 1; d <= dim; d++) daily.push({ day: d, pnl: dailyMap.get(d) || 0 });
+  return { today, month, total, daily, closedCount: closed.length };
+}
+app.get('/api/bot/state', requireAdmin, async (_req, res) => {
+  const trades = weexExecutor ? weexExecutor.snapshot() : [];
+  let wallet = null, positions = [];
+  if (weexExecutor) {
+    try {
+      const s = await getWeexStatusCached();
+      wallet = s.wallet; positions = s.positions;
+    } catch (err) { console.warn('[bot/state]', err.message || err); }
+  }
   res.json({
     available: !!weexExecutor,
     enabled: autoTradeEnabled,
     dryRun: HENRY_DRY_RUN,
     riskUsd: HENRY_RISK_USD,
     leverage: HENRY_LEVERAGE,
-    trades: weexExecutor ? weexExecutor.snapshot() : [],
+    trades,
+    wallet,
+    positions,
+    pnl: aggregateExecutorPnl(trades),
   });
 });
 app.post('/api/bot/state', requireAdmin, express.json(), (req, res) => {

@@ -178,16 +178,26 @@ export class WeexClient {
   }
 
   async getEquity() {
+    const w = await this.getWallet();
+    return w ? w.equity : 0;
+  }
+
+  async getWallet() {
+    // Returns USDT wallet snapshot: { equity, available, unrealizedPnl, used }.
+    // Field names vary between v2/v3 — try each candidate.
     const data = await this._request('GET', '/capi/v2/account/assets');
     const rows = (data && typeof data === 'object') ? (data.data ?? data) : null;
-    if (!Array.isArray(rows)) return 0;
+    if (!Array.isArray(rows)) return null;
     for (const r of rows) {
       const coin = (r.coinName || r.marginCoin || r.coin || r.asset || '').toUpperCase();
-      if (coin === 'USDT') {
-        return parseFloat(r.equity ?? r.totalEquity ?? r.balance ?? 0) || 0;
-      }
+      if (coin !== 'USDT') continue;
+      const equity = parseFloat(r.equity ?? r.totalEquity ?? r.balance ?? 0) || 0;
+      const available = parseFloat(r.available ?? r.availableBalance ?? r.crossMaxAvailable ?? 0) || 0;
+      const unrealizedPnl = parseFloat(r.unrealizedPL ?? r.unrealizedPnl ?? r.upl ?? 0) || 0;
+      const used = parseFloat(r.locked ?? r.frozen ?? r.positionMargin ?? Math.max(equity - available, 0)) || 0;
+      return { equity, available, unrealizedPnl, used };
     }
-    return 0;
+    return null;
   }
 
   async getAllPositions() {

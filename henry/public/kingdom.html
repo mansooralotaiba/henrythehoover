@@ -197,6 +197,30 @@
   .signal-info{position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.6);backdrop-filter:blur(3px);border:1px solid var(--b1);border-radius:3px;padding:3px 7px;font-size:9px;color:var(--mu);letter-spacing:.04em;z-index:2}
   .signal-info .val{color:var(--fg);font-weight:bold}
   .signal-info .pct{color:var(--cy);font-weight:bold}
+
+  /* Admin top band — WEEX wallet + USD PnL + actual open positions. */
+  .top-band-admin{display:none}
+  body.is-admin .top-band{display:none}
+  body.is-admin .top-band-admin{display:grid;grid-template-columns:280px 1fr 360px;gap:12px}
+  .weex-pos-list{margin-top:8px;max-height:180px;overflow-y:auto}
+  .weex-pos-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:10px;border-top:1px solid var(--b1)}
+  .weex-pos-row:first-child{border-top:none}
+  .weex-pos-row .l{color:var(--mu);letter-spacing:.04em;display:flex;gap:6px;align-items:baseline}
+  .weex-pos-row .l .pair{color:var(--fg);font-weight:bold;font-size:11px}
+  .weex-pos-row .l .side.long{color:var(--gr)}
+  .weex-pos-row .l .side.short{color:var(--re)}
+  .weex-pos-row .r{text-align:right;font-size:10px}
+  .weex-pos-row .r .upnl.pos{color:var(--gr);font-weight:bold}
+  .weex-pos-row .r .upnl.neg{color:var(--re);font-weight:bold}
+  .weex-pos-row .r .upnl.zero{color:var(--mu)}
+  .weex-pos-row .r .sub{color:var(--di);font-size:9px;letter-spacing:.04em}
+  .weex-wallet-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+  .weex-wallet-bignum{background:var(--bg3);border:1px solid var(--b1);border-radius:4px;padding:8px 10px;text-align:center}
+  .weex-wallet-bignum .lbl{font-size:9px;color:var(--mu);letter-spacing:.12em;margin-bottom:3px}
+  .weex-wallet-bignum .val{font-size:18px;font-weight:bold;color:var(--fg)}
+  .weex-wallet-bignum .val.pos{color:var(--gr)}
+  .weex-wallet-bignum .val.neg{color:var(--re)}
+  .weex-empty{text-align:center;padding:14px 0;color:var(--di);font-size:10px;letter-spacing:.1em}
 </style>
 </head>
 <body>
@@ -209,6 +233,60 @@
     <a href="/performance">STATS</a>
   </div>
 </header>
+
+<!-- ═══ TOP BAND (ADMIN) — WEEX wallet + USD PnL + actual positions. ═══ -->
+<div class="top-band-admin" id="top-band-admin">
+  <!-- Card 1: Today's PnL in $ -->
+  <div class="card">
+    <div class="card-title">TODAY'S PNL · WEEX</div>
+    <div id="a-today-pnl" class="today-r zero">$0.00</div>
+    <div class="today-row"><span class="lbl">TP</span><span class="val v-gr" id="a-tp">0</span></div>
+    <div class="today-row"><span class="lbl">SL</span><span class="val v-re" id="a-sl">0</span></div>
+    <div class="today-row"><span class="lbl">BE</span><span class="val v-am" id="a-be">0</span></div>
+    <div class="today-row"><span class="lbl">EXPIRED</span><span class="val v-mu" id="a-exp">0</span></div>
+    <div class="today-row"><span class="lbl">WIN RATE</span><span class="val" id="a-wr">—</span></div>
+    <div class="today-row"><span class="lbl">EXECUTOR</span><span class="val" id="a-exec-state">—</span></div>
+    <div class="api-strip" id="a-api-strip">WEEX disconnected</div>
+  </div>
+
+  <!-- Card 2: Month + Cumulative $ + chart -->
+  <div class="card">
+    <div class="month-headers">
+      <span class="left">THIS MONTH $<br><span style="color:var(--di);font-size:9px" id="a-month-label">—</span></span>
+      <span class="right">TOTAL $<br><span style="color:var(--di);font-size:9px" id="a-start-label">—</span></span>
+    </div>
+    <div class="month-bignums">
+      <div class="month-bignum zero" id="a-month-card">
+        <div class="lbl">THIS MONTH</div>
+        <div class="val" id="a-month-pnl">$0.00</div>
+        <div class="sub" id="a-month-sub">0 closed</div>
+      </div>
+      <div class="month-bignum zero" id="a-total-card">
+        <div class="lbl">CUMULATIVE</div>
+        <div class="val" id="a-total-pnl">$0.00</div>
+        <div class="sub" id="a-total-sub">0 closed</div>
+      </div>
+    </div>
+    <div class="month-chart-wrap"><svg id="a-chart" preserveAspectRatio="none"></svg></div>
+  </div>
+
+  <!-- Card 3: WEEX wallet + open positions -->
+  <div class="card">
+    <div class="card-title">WEEX WALLET</div>
+    <div class="weex-wallet-grid">
+      <div class="weex-wallet-bignum">
+        <div class="lbl">EQUITY</div>
+        <div class="val" id="a-wallet-equity">—</div>
+      </div>
+      <div class="weex-wallet-bignum">
+        <div class="lbl">AVAILABLE</div>
+        <div class="val" id="a-wallet-avail">—</div>
+      </div>
+    </div>
+    <div class="card-title" style="margin-bottom:0">OPEN POSITIONS (<span id="a-pos-count">0</span>)</div>
+    <div class="weex-pos-list" id="a-pos-list"><div class="weex-empty">None open</div></div>
+  </div>
+</div>
 
 <!-- ═══ TOP BAND ═══ -->
 <div class="top-band">
@@ -785,6 +863,124 @@ function renderAutoTrade(state){
   btn.title='Risk $'+state.riskUsd+' per trade at '+state.leverage+'x leverage. Click to toggle.';
 }
 
+function fmtUsd(n){if(n==null||!isFinite(n))return'—';var v=parseFloat(n);var sign=v>=0?'+':'';return sign+'$'+Math.abs(v).toFixed(2);}
+function clsUsd(n){if(n==null||n===0)return'zero';return parseFloat(n)>=0?'pos':'neg';}
+
+function drawAdminMonthChart(daily){
+  var svg=document.getElementById('a-chart');
+  if(!svg)return;
+  svg.innerHTML='';
+  if(!daily||!daily.length){svg.innerHTML='<text x="50%" y="50%" fill="#5a5f7a" text-anchor="middle" font-size="10">No data</text>';return;}
+  var rect=svg.getBoundingClientRect();
+  var W=rect.width||600,H=rect.height||120,PL=34,PR=8,PT=8,PB=18;
+  var cW=W-PL-PR,cH=H-PT-PB;
+  var maxV=Math.max.apply(null,daily.map(function(p){return p.pnl;}));
+  var minV=Math.min.apply(null,daily.map(function(p){return p.pnl;}));
+  if(maxV<=0)maxV=1;if(minV>0)minV=0;
+  var rng=(maxV-minV)||1,bw=cW/daily.length;
+  function y(v){return PT+cH-(v-minV)/rng*cH;}
+  var zy=y(0),today=new Date().getUTCDate();
+  svg.innerHTML+='<line x1="'+PL+'" x2="'+(W-PR)+'" y1="'+zy+'" y2="'+zy+'" stroke="rgba(255,255,255,0.1)" stroke-dasharray="2,3"/>';
+  svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+8)+'" fill="#5a5f7a" text-anchor="end" font-size="8">$'+maxV.toFixed(0)+'</text>';
+  svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(zy+3)+'" fill="#5a5f7a" text-anchor="end" font-size="8">0</text>';
+  if(minV<0)svg.innerHTML+='<text x="'+(PL-4)+'" y="'+(PT+cH-2)+'" fill="#5a5f7a" text-anchor="end" font-size="8">$'+minV.toFixed(0)+'</text>';
+  daily.forEach(function(p,i){
+    var x=PL+i*bw+bw/2,isToday=p.day===today,col=isToday?'rgba(0,212,255,0.5)':'rgba(255,255,255,0.04)';
+    svg.innerHTML+='<line x1="'+x+'" x2="'+x+'" y1="'+(PT+cH-1)+'" y2="'+(PT+cH+2)+'" stroke="'+col+'" stroke-width="'+(isToday?2:1)+'"/>';
+  });
+  daily.forEach(function(p,i){
+    if(p.pnl===0)return;
+    var w=Math.max(bw-4,3),x=PL+i*bw+(bw-w)/2,bh,by,fill;
+    if(p.pnl>0){by=y(p.pnl);bh=Math.max(zy-by,2);fill='#00e5a0';}else{by=zy;bh=Math.max(y(p.pnl)-zy,2);fill='#ff4466';}
+    svg.innerHTML+='<rect x="'+x+'" y="'+by+'" width="'+w+'" height="'+bh+'" rx="1" fill="'+fill+'" opacity="0.88"><title>Day '+p.day+': '+fmtUsd(p.pnl)+'</title></rect>';
+  });
+  daily.forEach(function(p,i){
+    if(p.day%5===0||p.day===1||p.day===today){
+      var x=PL+i*bw+bw/2,col=p.day===today?'#00d4ff':'#5a5f7a',w=p.day===today?'bold':'normal';
+      svg.innerHTML+='<text x="'+x+'" y="'+(H-4)+'" fill="'+col+'" text-anchor="middle" font-size="8" font-weight="'+w+'">'+p.day.toString().padStart(2,'0')+'</text>';
+    }
+  });
+}
+
+function renderAdminTopBand(state){
+  if(!_isAdmin)return;
+  var trades=(state&&state.trades)||[];
+  var pnl=(state&&state.pnl)||{today:0,month:0,total:0,daily:[],closedCount:0};
+
+  // Card 1 — today's $ PnL + W/L breakdown from executor trades
+  var closedToday=trades.filter(function(t){
+    if(t.state!=='CLOSED'||!t.updatedAt)return false;
+    var d=new Date(t.updatedAt);
+    var n=new Date();
+    return d.getUTCFullYear()===n.getUTCFullYear()&&d.getUTCMonth()===n.getUTCMonth()&&d.getUTCDate()===n.getUTCDate();
+  });
+  var tpToday=closedToday.filter(function(t){return (t.closedPnl||0)>0;}).length;
+  var slToday=closedToday.filter(function(t){return (t.closedPnl||0)<0;}).length;
+  var beToday=closedToday.filter(function(t){return (t.closedPnl||0)===0;}).length;
+  var expToday=trades.filter(function(t){return t.state==='EXPIRED'&&t.updatedAt&&new Date(t.updatedAt).toDateString()===new Date().toDateString();}).length;
+  var todayEl=document.getElementById('a-today-pnl');
+  todayEl.textContent=fmtUsd(pnl.today);
+  todayEl.className='today-r '+clsUsd(pnl.today);
+  document.getElementById('a-tp').textContent=tpToday;
+  document.getElementById('a-sl').textContent=slToday;
+  document.getElementById('a-be').textContent=beToday;
+  document.getElementById('a-exp').textContent=expToday;
+  var total=tpToday+slToday;
+  var wr=document.getElementById('a-wr');
+  if(total>0){var pct=Math.round((tpToday/total)*100);wr.textContent=pct+'%';wr.className='val '+(pct>=60?'v-gr':pct>=40?'v-am':'v-re');}
+  else{wr.textContent='—';wr.className='val';}
+  document.getElementById('a-exec-state').textContent=state&&state.available?(state.enabled?'ON':'OFF'):'UNAVAILABLE';
+  document.getElementById('a-api-strip').textContent=state&&state.available?
+    ('WEEX connected — risk $'+state.riskUsd+' · '+state.leverage+'x lev'+(state.dryRun?' · DRY-RUN':'')):
+    'WEEX disconnected';
+
+  // Card 2 — month / cumulative + chart
+  var monthCard=document.getElementById('a-month-card'),totalCard=document.getElementById('a-total-card');
+  document.getElementById('a-month-pnl').textContent=fmtUsd(pnl.month);
+  monthCard.className='month-bignum '+clsUsd(pnl.month);
+  document.getElementById('a-total-pnl').textContent=fmtUsd(pnl.total);
+  totalCard.className='month-bignum '+clsUsd(pnl.total);
+  var monthClosed=trades.filter(function(t){
+    if(t.state!=='CLOSED'||!t.updatedAt)return false;
+    var d=new Date(t.updatedAt),n=new Date();
+    return d.getUTCFullYear()===n.getUTCFullYear()&&d.getUTCMonth()===n.getUTCMonth();
+  }).length;
+  document.getElementById('a-month-sub').textContent=monthClosed+' closed';
+  document.getElementById('a-total-sub').textContent=(pnl.closedCount||0)+' closed';
+  var now=new Date(),mNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  document.getElementById('a-month-label').textContent=mNames[now.getUTCMonth()]+' '+now.getUTCFullYear();
+  document.getElementById('a-start-label').textContent=pnl.closedCount?(pnl.closedCount+' closed all-time'):'No trades yet';
+  drawAdminMonthChart(pnl.daily||[]);
+
+  // Card 3 — WEEX wallet + open positions (from WEEX, not signals)
+  var wallet=state&&state.wallet;
+  document.getElementById('a-wallet-equity').textContent=wallet?'$'+(parseFloat(wallet.equity)||0).toFixed(2):'—';
+  document.getElementById('a-wallet-avail').textContent=wallet?'$'+(parseFloat(wallet.available)||0).toFixed(2):'—';
+  var positions=(state&&state.positions)||[];
+  document.getElementById('a-pos-count').textContent=positions.length;
+  var posList=document.getElementById('a-pos-list');
+  if(!positions.length){
+    posList.innerHTML='<div class="weex-empty">None open</div>';
+  } else {
+    posList.innerHTML=positions.slice(0,8).map(function(p){
+      var side=(p.holdSide||p.posSide||p.side||'').toString().toLowerCase();
+      var sideTxt=side==='long'?'▲ LONG':side==='short'?'▼ SHORT':side.toUpperCase();
+      var sym=(p.symbol||'').replace(/^cmt_/i,'').toUpperCase();
+      var qty=parseFloat(p.size||p.total||0);
+      var entry=parseFloat(p.averagePrice||p.openPrice||p.avgEntryPrice||0);
+      var mark=parseFloat(p.markPrice||p.indexPrice||0);
+      var upnl=parseFloat(p.unrealizedPL||p.unrealizedPnl||p.upl||0);
+      var upnlCls=upnl>0?'pos':upnl<0?'neg':'zero';
+      return '<div class="weex-pos-row">'
+        +'<div class="l"><span class="pair">'+shortCoin(sym)+'</span><span class="side '+side+'">'+sideTxt+'</span></div>'
+        +'<div class="r"><span class="upnl '+upnlCls+'">'+fmtUsd(upnl)+'</span>'
+        +'<div class="sub">'+qty+' @ '+(entry?fmtPx(entry):'—')+(mark?' · mk '+fmtPx(mark):'')+'</div>'
+        +'</div>'
+        +'</div>';
+    }).join('');
+  }
+}
+
 function renderWeexTrades(state){
   if(!_isAdmin)return;
   var panel=document.getElementById('weex-panel');
@@ -824,8 +1020,8 @@ function refreshBotState(){
   if(!_isAdmin)return;
   fetch('/api/bot/state',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){renderAutoTrade(d);renderWeexTrades(d);})
-    .catch(function(){renderAutoTrade(null);renderWeexTrades(null);});
+    .then(function(d){renderAutoTrade(d);renderWeexTrades(d);renderAdminTopBand(d);})
+    .catch(function(){renderAutoTrade(null);renderWeexTrades(null);renderAdminTopBand(null);});
 }
 
 document.getElementById('auto-trade-toggle').addEventListener('click',function(){
@@ -849,6 +1045,7 @@ fetch('/api/me',{credentials:'same-origin'})
   .then(function(me){
     _isAdmin=!!(me&&me.is_admin);
     if(_isAdmin){
+      document.body.classList.add('is-admin');
       refreshBotState();
       setInterval(refreshBotState,5000);
     }
