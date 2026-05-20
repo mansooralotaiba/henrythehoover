@@ -69,11 +69,42 @@
   .quick-strip .item .v{color:var(--fg);font-weight:bold}
   .quick-strip .item .v.pos{color:var(--gr)}.quick-strip .item .v.neg{color:var(--re)}.quick-strip .item .v.am{color:var(--am)}
 
-  /* ═════════ KINGDOM — 4-PANEL CHART GRID ═════════ */
+  /* ═════════ KINGDOM — 6-PANEL CHART GRID ═════════ */
   .kingdom{flex:1;min-height:500px;display:flex;flex-direction:column;gap:8px}
-  .kingdom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
+  .kingdom-header{display:flex;justify-content:space-between;align-items:center;padding:0 4px;gap:12px}
   .kingdom-header .l{font-size:10px;color:var(--mu);letter-spacing:.15em}
   .kingdom-header .c{font-size:10px;color:var(--cy);letter-spacing:.05em}
+  .auto-trade-toggle{display:none;align-items:center;gap:8px;padding:5px 12px;border:1px solid var(--b2);border-radius:4px;background:var(--bg2);cursor:pointer;font-family:var(--mn);font-size:10px;letter-spacing:.12em;color:var(--mu);transition:border-color 0.2s, color 0.2s}
+  .auto-trade-toggle.visible{display:inline-flex}
+  .auto-trade-toggle:hover{border-color:var(--cy)}
+  .auto-trade-toggle.on{color:var(--gr);border-color:rgba(0,229,160,0.5);box-shadow:inset 0 0 12px rgba(0,229,160,0.08)}
+  .auto-trade-toggle.off{color:var(--re);border-color:rgba(255,68,102,0.4)}
+  .auto-trade-toggle.unavailable{color:var(--di);border-color:var(--b1);cursor:not-allowed;opacity:0.5}
+  .auto-trade-toggle .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .auto-trade-toggle.on .dot{box-shadow:0 0 8px currentColor;animation:autopulse 1.6s ease-in-out infinite}
+  @keyframes autopulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
+  /* Admin-only WEEX trades panel */
+  .weex-panel{display:none;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;padding:10px 14px;margin-top:4px}
+  .weex-panel.visible{display:block}
+  .weex-panel .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .weex-panel .head .lbl{font-size:10px;color:var(--cy);letter-spacing:.18em;font-weight:bold}
+  .weex-panel .head .sub{font-size:9px;color:var(--mu);letter-spacing:.05em}
+  .weex-panel table{width:100%;border-collapse:collapse;font-size:10px}
+  .weex-panel th{text-align:left;padding:4px 6px;color:var(--mu);font-weight:normal;letter-spacing:.1em;border-bottom:1px solid var(--b1)}
+  .weex-panel td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.03);color:var(--fg)}
+  .weex-panel tr:last-child td{border-bottom:none}
+  .weex-panel td.side.long{color:var(--gr)}
+  .weex-panel td.side.short{color:var(--re)}
+  .weex-panel td.state{font-size:9px;letter-spacing:.08em;font-weight:bold}
+  .weex-panel td.state.PENDING{color:var(--am)}
+  .weex-panel td.state.ACTIVE{color:var(--cy)}
+  .weex-panel td.state.CLOSED{color:var(--mu)}
+  .weex-panel td.state.EXPIRED,.weex-panel td.state.INVALIDATED{color:var(--di)}
+  .weex-panel td.state.REJECTED{color:var(--re)}
+  .weex-panel td.pnl.pos{color:var(--gr)}
+  .weex-panel td.pnl.neg{color:var(--re)}
+  .weex-panel .empty{font-size:10px;color:var(--di);letter-spacing:.1em;padding:8px 0;text-align:center}
 
   .chart-grid{flex:1;display:grid;gap:8px;min-height:460px}
   .chart-grid[data-n="0"]{grid-template-columns:1fr}
@@ -250,11 +281,25 @@
   <div class="item"><span class="l">NEXT EVENT</span><span class="v am" id="q-next">—</span></div>
 </div>
 
-<!-- ═══ KINGDOM — 4-panel chart grid ═══ -->
+<!-- Admin-only: WEEX executor trades. Hidden until /api/me confirms is_admin. -->
+<div class="weex-panel" id="weex-panel">
+  <div class="head">
+    <span class="lbl">⚙ WEEX EXECUTOR</span>
+    <span class="sub" id="weex-meta">—</span>
+  </div>
+  <div id="weex-trades-wrap">
+    <div class="empty">No trades yet</div>
+  </div>
+</div>
+
+<!-- ═══ KINGDOM — 6-panel chart grid ═══ -->
 <div class="kingdom">
   <div class="kingdom-header">
     <span class="l">WATCHLIST PANELS</span>
-    <span class="c" id="kingdom-count">— / 4 max</span>
+    <button id="auto-trade-toggle" class="auto-trade-toggle unavailable" type="button" title="WEEX auto-trade kill switch">
+      <span class="dot"></span><span id="auto-trade-label">AUTO-TRADE: —</span>
+    </button>
+    <span class="c" id="kingdom-count">— / 6 max</span>
   </div>
   <div id="chart-grid" class="chart-grid" data-n="0">
     <div class="empty">Scan inactive — click AUTO on the terminal to populate</div>
@@ -428,7 +473,7 @@ function drawMonthChart(daily){
 }
 
 // ─────────────────────────────────────────────────────────────
-// KINGDOM — 4-panel chart grid
+// KINGDOM — 6-panel chart grid
 // ─────────────────────────────────────────────────────────────
 var _panels={}; // coin -> { panelEl, chart, series, lines:[], priceEl, stateEl, signalInfoEl, lastSig:null, lastCandlesAt:0 }
 var _pairStateCache={}, _prevPairStates={};
@@ -538,7 +583,7 @@ function renderChartGrid(){
   var grid=document.getElementById('chart-grid');
   var counter=document.getElementById('kingdom-count');
   var coins=Object.keys(_pairStateCache);
-  counter.textContent=coins.length+' / 4 max';
+  counter.textContent=coins.length+' / 6 max';
 
   if(!coins.length){
     grid.dataset.n='0';
@@ -713,6 +758,102 @@ function pollSummary(){
     .then(function(d){if(!d)return;renderSummary(d);})
     .catch(function(){});
 }
+
+// ─────────────────────────────────────────────────────────────
+// ADMIN GATE — /api/me determines whether to show executor widgets.
+// Non-admin subscribers see R-status + 6 charts only.
+// ─────────────────────────────────────────────────────────────
+var _isAdmin=false;
+var _autoTradeAvailable=false;
+
+function renderAutoTrade(state){
+  var btn=document.getElementById('auto-trade-toggle');
+  var lbl=document.getElementById('auto-trade-label');
+  if(!_isAdmin)return; // hidden via CSS — never render for non-admin
+  if(!state||!state.available){
+    btn.className='auto-trade-toggle unavailable visible';
+    lbl.textContent='AUTO-TRADE: UNAVAILABLE';
+    btn.title='WEEX env vars not configured on the server';
+    _autoTradeAvailable=false;
+    return;
+  }
+  _autoTradeAvailable=true;
+  var on=!!state.enabled;
+  btn.className='auto-trade-toggle visible '+(on?'on':'off');
+  var suffix=state.dryRun?' (DRY-RUN)':'';
+  lbl.textContent='AUTO-TRADE: '+(on?'ON':'OFF')+suffix;
+  btn.title='Risk $'+state.riskUsd+' per trade at '+state.leverage+'x leverage. Click to toggle.';
+}
+
+function renderWeexTrades(state){
+  if(!_isAdmin)return;
+  var panel=document.getElementById('weex-panel');
+  var wrap=document.getElementById('weex-trades-wrap');
+  var meta=document.getElementById('weex-meta');
+  if(!state||!state.available){
+    panel.classList.remove('visible');
+    return;
+  }
+  panel.classList.add('visible');
+  meta.textContent='Risk $'+state.riskUsd+' · '+state.leverage+'x lev · '+(state.enabled?'AUTO-TRADE ON':'AUTO-TRADE OFF')+(state.dryRun?' · DRY-RUN':'');
+  var trades=(state.trades||[]).slice().sort(function(a,b){return (b.updatedAt||0)-(a.updatedAt||0);});
+  if(!trades.length){
+    wrap.innerHTML='<div class="empty">No trades yet — waiting for a signal</div>';
+    return;
+  }
+  var rows=trades.slice(0,12).map(function(t){
+    var sideTxt=(t.side||'').toUpperCase();
+    var pnl=(t.closedPnl||0);
+    var pnlCls=pnl>0?'pos':(pnl<0?'neg':'');
+    var pnlTxt=t.state==='CLOSED'?('$'+(pnl>=0?'+':'')+pnl.toFixed(2)):'—';
+    return '<tr>'
+      +'<td>'+shortCoin(t.pair||t.symbol)+'</td>'
+      +'<td class="side '+(t.side||'').toLowerCase()+'">'+sideTxt+'</td>'
+      +'<td class="state '+t.state+'">'+t.state+'</td>'
+      +'<td>'+(t.qty!=null?t.qty:'—')+'</td>'
+      +'<td>'+(t.entry!=null?fmtPx(t.entry):'—')+'</td>'
+      +'<td>'+(t.sl!=null?fmtPx(t.sl):'—')+'</td>'
+      +'<td>'+(t.tp!=null?fmtPx(t.tp):'—')+'</td>'
+      +'<td class="pnl '+pnlCls+'">'+pnlTxt+'</td>'
+      +'</tr>';
+  }).join('');
+  wrap.innerHTML='<table><thead><tr><th>PAIR</th><th>SIDE</th><th>STATE</th><th>QTY</th><th>ENTRY</th><th>SL</th><th>TP</th><th>PNL</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+
+function refreshBotState(){
+  if(!_isAdmin)return;
+  fetch('/api/bot/state',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){renderAutoTrade(d);renderWeexTrades(d);})
+    .catch(function(){renderAutoTrade(null);renderWeexTrades(null);});
+}
+
+document.getElementById('auto-trade-toggle').addEventListener('click',function(){
+  if(!_autoTradeAvailable)return;
+  var btn=document.getElementById('auto-trade-toggle');
+  var nextEnabled=!btn.classList.contains('on');
+  if(nextEnabled&&!confirm('Enable WEEX auto-trade?\n\nEvery confirmed signal will fire a real order on your WEEX account at $10 risk.'))return;
+  fetch('/api/bot/state',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({enabled:nextEnabled}),
+  })
+    .then(function(r){return r.json();})
+    .then(function(){refreshBotState();})
+    .catch(function(){alert('Toggle failed — check console');});
+});
+
+// Detect admin once on page load; only then start polling executor state.
+fetch('/api/me',{credentials:'same-origin'})
+  .then(function(r){return r.ok?r.json():null;})
+  .then(function(me){
+    _isAdmin=!!(me&&me.is_admin);
+    if(_isAdmin){
+      refreshBotState();
+      setInterval(refreshBotState,5000);
+    }
+  })
+  .catch(function(){});
 
 pollSummary();
 refreshPairStates();

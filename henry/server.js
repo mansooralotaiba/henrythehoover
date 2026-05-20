@@ -8,6 +8,8 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
+import { WeexClient } from './lib/weex.js';
+import { Executor } from './lib/executor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +31,57 @@ const BE_TRIGGER_PCT = parseFloat(process.env.HENRY_BE_TRIGGER_PCT) || 0.7;
 const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
   ? 'sandbox-api.paddle.com'
   : 'api.paddle.com';
+
+// ── WEEX auto-trade (admin-only) ────────────────────────────────────────────
+// Wires the scan-loop signals → WEEX orders. Kill switch defaults OFF on every
+// boot — must be explicitly turned on via /api/bot/state. Falls back to no-op
+// if WEEX env vars are missing so the website still runs without keys.
+const HENRY_RISK_USD = parseFloat(process.env.HENRY_RISK_USD) || 10;
+const HENRY_LEVERAGE = parseInt(process.env.HENRY_LEVERAGE, 10) || 10;
+const HENRY_BE_FEE_BUFFER_BPS = parseFloat(process.env.HENRY_BE_FEE_BUFFER_BPS) || 12;
+const HENRY_DRY_RUN = (process.env.HENRY_DRY_RUN || '').toLowerCase() === 'true';
+let weexClient = null, weexExecutor = null;
+if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_API_PASSPHRASE) {
+  weexClient = new WeexClient({
+    apiKey: process.env.WEEX_API_KEY,
+    apiSecret: process.env.WEEX_API_SECRET,
+    apiPassphrase: process.env.WEEX_API_PASSPHRASE,
+    baseUrl: process.env.WEEX_BASE_URL,
+    dryRun: HENRY_DRY_RUN,
+  });
+  weexExecutor = new Executor({
+    client: weexClient,
+    riskUsd: HENRY_RISK_USD,
+    leverage: HENRY_LEVERAGE,
+    beFeeBufferBps: HENRY_BE_FEE_BUFFER_BPS,
+    notifier: async (msg) => {
+      if (process.env.DISCORD_JOURNAL_WEBHOOK) {
+        try {
+          await fetch(process.env.DISCORD_JOURNAL_WEBHOOK, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: msg }),
+          });
+        } catch (err) { console.warn('[executor notifier]', err.message || err); }
+      }
+    },
+  });
+  console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD + ' lev=' + HENRY_LEVERAGE + 'x' + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
+} else {
+  console.log('[weex] disabled — WEEX_API_KEY/SECRET/PASSPHRASE not set');
+}
+// Module-level kill switch — flipped via /api/bot/state. Defaults OFF on boot.
+let autoTradeEnabled = false;
+function autoTradeAllowed(isAdmin) {
+  return !!weexExecutor && !!autoTradeEnabled && !!isAdmin;
+}
+async function fireExecutor(method, payload, label) {
+  if (!weexExecutor) return;
+  try {
+    await weexExecutor[method](payload);
+  } catch (err) {
+    console.warn(`[executor ${label}]`, err.message || err);
+  }
+}
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -931,6 +984,26 @@ async function forwardToDiscord(envKey, req, res) {
 // Discord posting is admin-only — share-signal and auto-scan alerts both gated.
 app.post('/api/discord', requireAdmin, (req, res) => forwardToDiscord('DISCORD_WEBHOOK', req, res));
 app.post('/api/discord/auto', requireAdmin, (req, res) => forwardToDiscord('DISCORD_AUTO_WEBHOOK', req, res));
+
+// ── WEEX auto-trade kill switch (admin) ────────────────────────────────────
+app.get('/api/bot/state', requireAdmin, (_req, res) => {
+  res.json({
+    available: !!weexExecutor,
+    enabled: autoTradeEnabled,
+    dryRun: HENRY_DRY_RUN,
+    riskUsd: HENRY_RISK_USD,
+    leverage: HENRY_LEVERAGE,
+    trades: weexExecutor ? weexExecutor.snapshot() : [],
+  });
+});
+app.post('/api/bot/state', requireAdmin, express.json(), (req, res) => {
+  if (!weexExecutor) return res.status(409).json({ error: 'WEEX executor not configured (missing env vars)' });
+  if (typeof req.body?.enabled === 'boolean') {
+    autoTradeEnabled = req.body.enabled;
+    console.log('[bot] autoTradeEnabled =', autoTradeEnabled);
+  }
+  res.json({ ok: true, enabled: autoTradeEnabled });
+});
 
 // ── Futures proxies ─────────────────────────────────────────────────────────
 const proxyOpts = (target, prefix) => ({
@@ -3045,6 +3118,13 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     }
   }
 
+  // WEEX auto-trade hook 2/6: entry confirmation → mark trade ACTIVE on WEEX
+  // (and market-rescue if our LIMIT didn't fill). Fires exactly once per signal.
+  if (ps._entryAlerted && !ps._weexEntryFired && autoTradeAllowed(isAdmin) && ps.signalId) {
+    ps._weexEntryFired = true;
+    fireExecutor('handleEntryHit', { signalId: ps.signalId, fillPrice: price }, 'entryHit');
+  }
+
   // BE — uses recentHigh (LONG) / recentLow (SHORT) so a wick that briefly
   // tags the BE level between polls still fires the alert.
   if (ps._entryAlerted && !ps._beAlerted) {
@@ -3057,6 +3137,11 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         body: `${coin.replace('USDT', '')} reached BE @ ${(isLong ? recentHigh : recentLow).toFixed(2)}. Move SL to ${e}.`,
         color: 'am',
       });
+      // WEEX auto-trade hook 3/6: move SL on WEEX to entry, fee-buffered.
+      if (!ps._weexBeFired && autoTradeAllowed(isAdmin) && ps.signalId) {
+        ps._weexBeFired = true;
+        fireExecutor('handleMoveSlBe', { signalId: ps.signalId, newSl: e }, 'moveSlBe');
+      }
     }
   }
 
@@ -3079,6 +3164,11 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         // Pass in-memory signal as fallback so journal still posts if DB row is missing
         await logSignalOutcomeAndJournal(userId, ps.signalId, 'TP', parseFloat(pendSignal.rr) || 2, pendSignal, broker, tf)
           .catch(e => console.error('[server TP outcome]', e.message));
+      }
+      // WEEX auto-trade hook 4/6: record TP closure (WEEX TP plan already closed the position).
+      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+        ps._weexClosed = true;
+        fireExecutor('handleTpHit', { signalId: ps.signalId, exitPrice: tpPrice }, 'tpHit');
       }
       clearPairState(ps);
       return;
@@ -3114,6 +3204,11 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
       body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${slPrice.toFixed(2)}. Logged automatically.`,
       color: wasBE ? 'am' : 're',
     });
+    // WEEX auto-trade hook 5/6: record SL/BE closure (WEEX plan already closed it).
+    if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+      ps._weexClosed = true;
+      fireExecutor('handleSlHit', { signalId: ps.signalId, exitPrice: slPrice }, 'slHit');
+    }
     clearPairState(ps);
     return;
   }
@@ -3141,6 +3236,11 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         // posts a per-pair stat update. rr=0 (no entry → no P/L).
         await logSignalOutcomeAndJournal(userId, ps.signalId, 'EXPIRED', 0, pendSignal, broker, tf)
           .catch(e => console.error('[server EXPIRED outcome]', e.message));
+      }
+      // WEEX auto-trade hook 6/6: cancel the unfilled entry + SL/TP plans.
+      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+        ps._weexClosed = true;
+        fireExecutor('handleExpired', { signalId: ps.signalId }, 'expired');
       }
       clearPairState(ps);
     }
@@ -4620,6 +4720,18 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   ps._trigger = trigger;
   ps._broker = broker;
   ps.lastStatus = 'waiting';
+  ps._weexEntryFired = false;
+  ps._weexBeFired = false;
+  ps._weexClosed = false;
+
+  // WEEX auto-trade hook 1/6: place entry + SL + TP. Admin-only, gated by kill switch.
+  if (autoTradeAllowed(isAdmin) && signalId) {
+    fireExecutor('handleSetup', {
+      signalId, pair: signal.pair,
+      side: signal.direction === 'LONG' ? 'long' : 'short',
+      entry: parseFloat(signal.entry), sl: parseFloat(signal.sl), tp: parseFloat(signal.tp),
+    }, 'setup');
+  }
 
   return signal;
 }
