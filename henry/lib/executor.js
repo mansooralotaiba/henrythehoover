@@ -227,8 +227,11 @@ export class Executor {
 
     let entryOid = null, slOid = null, tpOid = null, entryResp, slResp, tpResp;
     try {
+      // Confirm-then-execute flow: enter at MARKET because the caller has
+      // already waited for LTF confirmation. No LIMIT, no market-rescue,
+      // no entry-confirmation race. Fill price ≈ entryPx with small slippage.
       entryResp = await this.client.placeOrder({
-        symbol, side, positionSide, orderType: 'LIMIT', quantity: qty, price: entryPx,
+        symbol, side, positionSide, orderType: 'MARKET', quantity: qty,
         clientOrderId: `h-entry-${cidBase}`.slice(0, 36),
       });
       entryOid = extractOrderId(entryResp);
@@ -257,15 +260,15 @@ export class Executor {
       signalId: s.signalId, pair: s.pair, symbol, side: s.side,
       entryPrice: entryPx, slPrice: slPx, tpPrice: tpPx,
       quantity: qty, leverage,
-      state: TradeState.PENDING,
+      state: TradeState.ACTIVE,
       entryOrderId: entryOid, slOrderId: slOid, tpOrderId: tpOid,
-      fillPrice: null, slippage: 0, closedPnl: 0,
+      fillPrice: entryPx, slippage: 0, closedPnl: 0,
       createdAt: now, updatedAt: now,
     };
     this.trades.set(s.signalId, trade);
 
-    await this._notify(`✅ WEEX order placed: ${symbol} ${s.side.toUpperCase()} qty=${qty} @ ${entryPx} (SL ${slPx} / TP ${tpPx}, lev ${this.leverage}x)`);
-    this.log.info(`[executor] SETUP ok signal=${s.signalId} ${symbol} ${s.side} qty=${qty}`);
+    await this._notify(`✅ WEEX MARKET entry: ${symbol} ${s.side.toUpperCase()} qty=${qty} @ ~${entryPx} (SL ${slPx} / TP ${tpPx}, lev ${leverage}x)`);
+    this.log.info(`[executor] SETUP MARKET ok signal=${s.signalId} ${symbol} ${s.side} qty=${qty}`);
   }
 
   // --------------------------------------------------------------------

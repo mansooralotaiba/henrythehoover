@@ -3537,14 +3537,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     if (browserConfirmed) {
       // Bypass path — browser already confirmed; just wait for price-touch.
       if (touchedEntry) {
-        ps._entryAlerted = true;
-        ps._expiryAlerted = true;
-        ps.lastStatus = 'in-trade';
-        await notifyUser(userId, isAdmin, {
-          title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-          body: `Entry filled @ ${price}. Trade is now ACTIVE.`,
-          color: 'cy',
-        });
+        await _confirmAndExecuteSignal(userId, sub, ps, coin, price, 'browser-confirmed');
       }
     } else if (inZone || touchedEntry) {
       if (!ps._zoneFirstTouchAt) ps._zoneFirstTouchAt = Date.now();
@@ -3566,27 +3559,21 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         const picked = r1m.confirmed ? { r: r1m, tf: '1m' } : (r5m.confirmed ? { r: r5m, tf: '5m' } : null);
 
         if (picked) {
-          ps._entryAlerted = true;
-          ps._expiryAlerted = true;
-          ps.lastStatus = 'in-trade';
           const label = `${picked.r.summary} (score ${picked.r.score}, ${picked.tf})`;
           console.log('[entry-confirm]', coin, 'CONFIRMED:', label, 'price=' + price);
-          await notifyUser(userId, isAdmin, {
-            title: `🎯 ENTRY HIT: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-            body: `Entry filled @ ${price} — confirmed by ${label}. Trade is now ACTIVE.`,
-            color: 'cy',
-          });
+          await _confirmAndExecuteSignal(userId, sub, ps, coin, price, label);
         } else if (elapsed >= ENTRY_CONFIRM_TIMEOUT_MS) {
-          // Fallback: 2h elapsed, fire anyway as UNCONFIRMED so trade isn't lost
-          ps._entryAlerted = true;
+          // 2h timeout — confirm-then-execute flow drops the signal (no order
+          // ever placed, so nothing to manage). Avoids forcing an unconfirmed
+          // entry at a price that may have drifted past the AI's planned RR.
           ps._expiryAlerted = true;
-          ps.lastStatus = 'in-trade';
-          console.log('[entry-confirm]', coin, 'TIMEOUT — firing unconfirmed', 'attempts=' + ps._confirmAttempts);
+          console.log('[entry-confirm]', coin, 'TIMEOUT — dropping signal', 'attempts=' + ps._confirmAttempts);
           await notifyUser(userId, isAdmin, {
-            title: `🎯 ENTRY HIT (UNCONFIRMED): ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-            body: `Entry @ ${price}. 2h confirmation window elapsed — no qualifying ICT/S&D pattern fired. Trade is ACTIVE.`,
+            title: `⏱ Signal expired: ${coin.replace('USDT', '')}`,
+            body: `No LTF confirmation within 2h. Signal dropped (no order placed).`,
             color: 'am',
           });
+          clearPairState(ps);
         } else {
           ps._confirmFailedAt = now;
           ps.lastStatus = 'waiting'; // still watching for confirmation
@@ -3599,8 +3586,11 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     }
   }
 
-  // WEEX auto-trade hook 2/6: entry confirmation → mark trade ACTIVE on WEEX
-  // (and market-rescue if our LIMIT didn't fill). Fires exactly once per signal.
+  // WEEX auto-trade hook 2/6: legacy entry-hit path. In the confirm-then-execute
+  // flow this is a no-op (_confirmAndExecuteSignal sets _weexEntryFired=true
+  // before firing handleSetup at MARKET). Kept for safety in case some code
+  // path flips _entryAlerted without going through _confirmAndExecuteSignal
+  // (e.g. browser-side scan_signal endpoint with a different state machine).
   if (ps._entryAlerted && !ps._weexEntryFired && autoTradeAllowed(isAdmin) && ps.signalId) {
     ps._weexEntryFired = true;
     fireExecutor('handleEntryHit', { signalId: ps.signalId, fillPrice: price }, 'entryHit');
@@ -5048,6 +5038,45 @@ async function postServerSignalToDiscord(signal, trigger, broker, tf) {
   } catch (e) { console.error('[server signal discord]', e.message); }
 }
 
+// Light "setup pending" Discord alert — fires at signal generation, BEFORE
+// LTF confirmation. Single-line content, no rich embed. The full embed
+// posts later via postServerSignalToDiscord() once confirmation arrives
+// and the entry price is locked in.
+async function postPendingSetupToDiscord(signal, trigger, broker, tf) {
+  const url = process.env.DISCORD_AUTO_WEBHOOK;
+  if (!url || !signal || signal.direction === 'NO TRADE') return;
+  const dir = signal.direction;
+  const emoji = dir === 'LONG' ? '🟢' : '🔴';
+  const coin = String(signal.pair || '').replace('USDT', '');
+  const content = `🔍 ${emoji} **${coin} ${dir} SETUP** — waiting LTF confirmation\n`
+    + `Planned entry \`${signal.entry}\` · SL \`${signal.sl}\` · TP \`${signal.tp}\` · ${signal.rr || '—'}R @ ${signal.confidence || '—'}% · ${broker || '—'}/${tf || '—'}`;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content, username: 'Henry Auto' }),
+    });
+  } catch (e) { console.error('[server pending discord]', e.message); }
+}
+
+// Light "signal skipped — drift" Discord alert. Fires when LTF confirmation
+// arrives but the market has drifted further than HENRY_MAX_CONFIRM_DRIFT_PCT
+// from the planned entry, so we refuse to take the trade.
+async function postSkippedToDiscord(signal, confirmPrice, driftPct, broker, tf) {
+  const url = process.env.DISCORD_AUTO_WEBHOOK;
+  if (!url || !signal) return;
+  const dir = signal.direction;
+  const coin = String(signal.pair || '').replace('USDT', '');
+  const content = `❌ **${coin} ${dir} SKIPPED** — confirmation arrived at \`${confirmPrice}\` but planned entry was \`${signal.entry}\` (drift ${(driftPct * 100).toFixed(2)}%)`;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content, username: 'Henry Auto' }),
+    });
+  } catch (e) { console.error('[server skipped discord]', e.message); }
+}
+
 // Main entry — runs the full AI flow on the server when a trigger fires for a pair.
 async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, brokerOverride) {
   const { tf, isAdmin } = sub;
@@ -5171,50 +5200,128 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   signal = validateAndFixBEServer(signal);
   if (signal.confidence != null) signal.confidence = Math.max(0, Math.min(100, parseFloat(signal.confidence) || 0));
 
-  const signalId = await saveServerSignal(userId, signal, trigger, broker, tf);
+  // Confirm-then-execute flow: at signal generation we DON'T persist the
+  // signal, post the full Discord embed, or place the WEEX order. We only
+  // stash it as pending and send a light "setup detected, waiting confirm"
+  // alert. The real signal record + Discord embed + WEEX MARKET order all
+  // fire later in processPair → _confirmAndExecuteSignal once the LTF gate
+  // (or browser-confirmed flag) trips. This makes the posted entry price
+  // match the actual fill price — no more market-rescue divergence.
 
-  // Rich push with the full signal — phone shows entry/SL/TP/RR/confidence inline
+  // Light push: "Setup pending"
   await sendPushTo(userId, {
-    title: `⚡ ${signal.direction === 'LONG' ? '🟢' : '🔴'} ${coin.replace('USDT', '')} ${signal.direction}`,
-    body: `Entry ${signal.entry} | SL ${signal.sl} | TP ${signal.tp} | ${signal.rr || '—'}R @ ${signal.confidence || '—'}%`,
+    title: `🔍 ${coin.replace('USDT', '')} ${signal.direction} setup`,
+    body: `Waiting LTF confirmation · planned ${signal.entry} (SL ${signal.sl}, TP ${signal.tp}, ${signal.rr || '—'}R)`,
     icon: '/manifest.json',
-    data: { coin, tf, broker, signalId, trigger, signal },
+    data: { coin, tf, broker, trigger, signal, pending: true },
   });
 
-  // Discord (admin-only — auto-scan is admin-only anyway, but defensive).
-  // Fall back to email check so a stale sub.isAdmin=false (from before the
-  // email-fallback fix) doesn't silently swallow Discord posts.
+  // Light Discord "setup pending" alert (admin only)
   if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
-    await postServerSignalToDiscord(signal, trigger, broker, tf).catch(e => console.error('[discord auto]', e.message));
+    await postPendingSetupToDiscord(signal, trigger, broker, tf).catch(e => console.error('[discord pending]', e.message));
   }
 
-  // Activate the trade monitor for THIS pair — other pairs continue scanning independently.
+  // Stage the pending signal — no signalId yet, will be assigned at confirmation
   ps.pendSignal = signal;
-  ps.signalId = signalId;
+  ps.signalId = null;
   ps.signalTimestamp = Date.now();
   ps._entryAlerted = false;
   ps._beAlerted = false;
   ps._tpAlerted = false;
   ps._expiryAlerted = false;
   ps._outcomeLogged = false;
-  ps._confirmationPending = false;  // signal already announced; LTF gate just confirms the entry
+  ps._confirmationPending = true;  // gate open, waiting for LTF
   ps._trigger = trigger;
   ps._broker = broker;
-  ps.lastStatus = 'waiting';
+  ps.lastStatus = 'waiting-confirm';
   ps._weexEntryFired = false;
   ps._weexBeFired = false;
   ps._weexClosed = false;
 
-  // WEEX auto-trade hook 1/6: place entry + SL + TP. Admin-only, gated by kill switch.
-  if (autoTradeAllowed(isAdmin) && signalId) {
-    fireExecutor('handleSetup', {
-      signalId, pair: signal.pair,
-      side: signal.direction === 'LONG' ? 'long' : 'short',
-      entry: parseFloat(signal.entry), sl: parseFloat(signal.sl), tp: parseFloat(signal.tp),
-    }, 'setup');
+  return signal;
+}
+
+// Slippage cap (env-configurable). If the market drifts further than this
+// from the planned entry between signal generation and LTF confirmation,
+// we refuse the trade rather than enter at a degraded price. Default 0.5%.
+const HENRY_MAX_CONFIRM_DRIFT_PCT = parseFloat(process.env.HENRY_MAX_CONFIRM_DRIFT_PCT) || 0.5;
+
+// Called when LTF confirmation fires for a pending signal. Locks the entry
+// at the current market price, persists the signal row, posts the full
+// Discord embed (NOW the entry matches what WEEX will fill), and triggers
+// the executor's MARKET order placement.
+async function _confirmAndExecuteSignal(userId, sub, ps, coin, currentPrice, confirmLabel) {
+  const pendSignal = ps.pendSignal;
+  if (!pendSignal || pendSignal.direction === 'NO TRADE') return;
+  const isAdmin = !!(sub.isAdmin || (sub.email && sub.email === ADMIN_EMAIL));
+  const tf = sub.tf;
+  const broker = ps._broker || sub.broker;
+  const trigger = ps._trigger || null;
+
+  // Slippage cap — if market drifted past the cap, skip the trade.
+  const plannedEntry = parseFloat(pendSignal.entry);
+  const drift = plannedEntry > 0 ? Math.abs(currentPrice - plannedEntry) / plannedEntry : 0;
+  const driftCap = HENRY_MAX_CONFIRM_DRIFT_PCT / 100;
+  if (drift > driftCap) {
+    console.log('[confirm]', coin, 'drift', (drift * 100).toFixed(2), '% > cap', (driftCap * 100).toFixed(2), '% — skipping');
+    await notifyUser(userId, isAdmin, {
+      title: `❌ Signal skipped: ${coin.replace('USDT', '')} drift`,
+      body: `Confirmation @ ${currentPrice}, planned entry was ${plannedEntry} (drift ${(drift * 100).toFixed(2)}%). Skipping.`,
+      color: 're',
+    });
+    if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
+      await postSkippedToDiscord(pendSignal, currentPrice, drift, broker, tf).catch(e => console.error('[discord skipped]', e.message));
+    }
+    clearPairState(ps);
+    return;
   }
 
-  return signal;
+  // Build the confirmed signal — entry locked at current price, SL/TP unchanged
+  // (the AI's target levels are absolute, not entry-relative). RR recomputes.
+  const slP = parseFloat(pendSignal.sl), tpP = parseFloat(pendSignal.tp);
+  const rrSafe = (slP && currentPrice && Math.abs(currentPrice - slP) > 0)
+    ? +(Math.abs(tpP - currentPrice) / Math.abs(currentPrice - slP)).toFixed(2)
+    : (parseFloat(pendSignal.rr) || null);
+  const confirmedSignal = {
+    ...pendSignal,
+    entry: currentPrice,
+    rr: rrSafe,
+  };
+
+  // Persist with the confirmed entry
+  const signalId = await saveServerSignal(userId, confirmedSignal, trigger, broker, tf);
+  ps.signalId = signalId;
+  ps.pendSignal = confirmedSignal;
+  ps.signalTimestamp = Date.now();
+
+  // Rich push + full Discord embed — both reflect the actual fill price
+  await sendPushTo(userId, {
+    title: `⚡ ${confirmedSignal.direction === 'LONG' ? '🟢' : '🔴'} ${coin.replace('USDT', '')} ${confirmedSignal.direction} CONFIRMED`,
+    body: `Entry ${currentPrice} | SL ${pendSignal.sl} | TP ${pendSignal.tp} | ${rrSafe ?? '—'}R @ ${confirmedSignal.confidence || '—'}%${confirmLabel ? ' · ' + confirmLabel : ''}`,
+    icon: '/manifest.json',
+    data: { coin, tf, broker, signalId, trigger, signal: confirmedSignal },
+  });
+  if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
+    await postServerSignalToDiscord(confirmedSignal, trigger, broker, tf).catch(e => console.error('[discord auto]', e.message));
+  }
+
+  // Flip state to active — the trade is committed
+  ps._entryAlerted = true;
+  ps._expiryAlerted = true;
+  ps._confirmationPending = false;
+  ps.lastStatus = 'in-trade';
+
+  // Fire the WEEX MARKET order. _weexEntryFired set so the entry-hit hook is a no-op.
+  if (autoTradeAllowed(isAdmin) && signalId) {
+    ps._weexEntryFired = true;
+    fireExecutor('handleSetup', {
+      signalId, pair: confirmedSignal.pair,
+      side: confirmedSignal.direction === 'LONG' ? 'long' : 'short',
+      entry: currentPrice,
+      sl: parseFloat(confirmedSignal.sl),
+      tp: parseFloat(confirmedSignal.tp),
+    }, 'setup');
+  }
 }
 
 async function runServerScan(userId, sub) {
