@@ -24,10 +24,18 @@ export const TradeState = Object.freeze({
   REJECTED: 'REJECTED',
 });
 
+// WEEX encodes quantity step size via `quantityPrecision`:
+//   precision = 3  -> step 0.001  (ETH/XAUT)
+//   precision = 1  -> step 0.1    (BNB/SOL/AAVE)
+//   precision = 0  -> step 1      (LINK)
+//   precision = -1 -> step 10     (ADA/XRP)  ← caught the ADA 3125 → 3120 bug
+//   precision = -2 -> step 100    (DOGE)
+// So the floor-to-step formula is: floor(value / step) * step where
+// step = 10^(-precision). Works for both positive and negative precision.
 function roundDown(value, precision) {
-  if (precision <= 0) return Math.floor(value);
-  const f = 10 ** precision;
-  return Math.floor(value * f) / f;
+  const step = Math.pow(10, -precision);
+  if (!isFinite(step) || step <= 0) return Math.floor(value);
+  return Math.floor(value / step) * step;
 }
 
 function roundPrice(value, precision) {
