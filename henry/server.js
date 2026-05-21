@@ -1100,30 +1100,89 @@ function normalizeWeexPosition(p) {
 // One-time debug helper: log the raw WEEX position shape on first observation
 // after each deploy so we can discover field names.
 let _weexPositionSampleLogged = false;
-let _weexHistorySampleLogged = false;
 
-// WEEX-sourced PnL since `sinceMs`. Best-effort: depends on
-// /capi/v3/order/historyOrders existing and returning a realized-profit
-// field under one of several common names. Logs raw response once per
-// deploy so we can pin field names. Returns null when the endpoint isn't
-// usable; caller falls back to persisted Supabase aggregates.
-async function aggregateWeexHistoryPnl(sinceMs) {
+// Cache for WEEX income aggregation. The endpoint paginates 100 events per
+// call so we re-fetch sparingly. 30s TTL — trades don't close that fast.
+const _incomeCache = { events: null, fetchedAt: 0 };
+const INCOME_CACHE_MS = 30_000;
+
+// Pair WEEX income events into round-trip closed trades. Each round-trip is
+// (sym, side) -> queue<open_event>; close_event pops and pairs FIFO. Realized
+// PnL on a paired round-trip = open_income + close_income (fees already
+// deducted by WEEX). Trades closed with no matching open within the fetched
+// window are kept as `unmatched` with the close income as an approximation.
+function pairIncomeEvents(events) {
+  const queues = new Map();
+  const trades = [];
+  const sorted = [...events].sort((a, b) => (parseInt(a.time) || 0) - (parseInt(b.time) || 0));
+  for (const ev of sorted) {
+    const t = String(ev.incomeType || '');
+    const ts = parseInt(ev.time) || 0;
+    const income = parseFloat(ev.income) || 0;
+    const sym = ev.symbol;
+    let side = null;
+    if (t.includes('long')) side = 'long';
+    else if (t.includes('short')) side = 'short';
+    if (!side) continue;
+    const key = `${sym}|${side}`;
+    if (t.startsWith('position_open_')) {
+      if (!queues.has(key)) queues.set(key, []);
+      queues.get(key).push({ income, ts });
+    } else if (t.startsWith('position_close_')) {
+      const queue = queues.get(key) || [];
+      const entry = queue.shift();
+      if (entry) {
+        trades.push({ symbol: sym, side, ts, pnl: entry.income + income });
+      } else {
+        trades.push({ symbol: sym, side, ts, pnl: income, unmatched: true });
+      }
+    }
+  }
+  return trades;
+}
+
+// WEEX-sourced PnL aggregation. Fetches income events from `sinceMs`,
+// pairs them into round-trips, and rolls up today/month/total with a daily
+// bar series. Returns null on any fetch failure (caller falls back to the
+// persisted Supabase aggregator).
+async function aggregateWeexIncomePnl() {
   if (!weexClient) return null;
-  const orders = await weexClient.getHistoryOrders({ startTime: sinceMs, limit: 500 }).catch(() => null);
-  if (!Array.isArray(orders) || !orders.length) return null;
-  if (!_weexHistorySampleLogged) {
-    _weexHistorySampleLogged = true;
-    console.log('[weex raw history order sample]', JSON.stringify(orders[0]));
+  const now = Date.now();
+  const cacheStale = now - _incomeCache.fetchedAt > INCOME_CACHE_MS;
+  if (cacheStale) {
+    // Pull ~90 days so the month-of-month rollover doesn't lose data and
+    // the cumulative figure is meaningful for newer users.
+    const sinceMs = now - 90 * 24 * 60 * 60 * 1000;
+    const events = await weexClient.getAllIncomeSince(sinceMs, 30).catch(err => {
+      console.warn('[weex income]', err.message || err); return null;
+    });
+    if (events) {
+      _incomeCache.events = events;
+      _incomeCache.fetchedAt = now;
+    } else if (!_incomeCache.events) {
+      return null;
+    }
   }
-  let total = 0, count = 0;
-  for (const o of orders) {
-    const pnl = parseFloat(
-      o.profit ?? o.realizedPnl ?? o.realizedPNL ?? o.realizedProfit ??
-      o.closedPnl ?? o.netProfit ?? o.profits ?? NaN
-    );
-    if (isFinite(pnl) && pnl !== 0) { total += pnl; count++; }
+  const events = _incomeCache.events || [];
+  const trades = pairIncomeEvents(events);
+  const d = new Date(now);
+  const startOfTodayUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const startOfMonthUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  let today = 0, month = 0, total = 0;
+  const dailyMap = new Map();
+  for (const tr of trades) {
+    total += tr.pnl;
+    if (tr.ts >= startOfMonthUtc) {
+      month += tr.pnl;
+      const day = new Date(tr.ts).getUTCDate();
+      dailyMap.set(day, (dailyMap.get(day) || 0) + tr.pnl);
+    }
+    if (tr.ts >= startOfTodayUtc) today += tr.pnl;
   }
-  return { total, count };
+  const dim = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  const daily = [];
+  for (let day = 1; day <= dim; day++) daily.push({ day, pnl: dailyMap.get(day) || 0 });
+  return { today, month, total, daily, closedCount: trades.length, source: 'weex_income' };
 }
 
 async function getWeexStatusCached() {
@@ -1219,7 +1278,11 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
       wallet = s.wallet; positions = s.positions;
     } catch (err) { console.warn('[bot/state]', err.message || err); }
   }
-  const pnl = await aggregatePersistedPnl(trades);
+  // Prefer WEEX-sourced PnL (fees included, exact from /capi/v3/account/income)
+  // over the locally-computed notional aggregate. Falls back to the persisted
+  // Supabase aggregates if the WEEX call fails.
+  let pnl = await aggregateWeexIncomePnl().catch(() => null);
+  if (!pnl) pnl = await aggregatePersistedPnl(trades);
   // Live additions — sum of unrealized PnL on currently-open WEEX positions.
   // pnl.today is the realized-only figure; pnl.todayLive blends realized +
   // unrealized so the headline number on Kingdom moves with the market.
@@ -1227,13 +1290,6 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
   pnl.openUPnl = openUPnl;
   pnl.todayLive = pnl.today + openUPnl;
   pnl.totalLive = pnl.total + openUPnl;
-  // Best-effort WEEX-history overlay (task #19). Once the endpoint is
-  // confirmed working, we can prefer this over persisted/memory aggregates
-  // for fees-accurate numbers. For now: log shape, expose alongside.
-  const now = Date.now();
-  const startOfTodayUtc = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate());
-  const weexToday = await aggregateWeexHistoryPnl(startOfTodayUtc).catch(() => null);
-  if (weexToday) pnl.weexToday = weexToday.total;
   res.json({
     available: !!weexExecutor,
     enabled: autoTradeEnabled,

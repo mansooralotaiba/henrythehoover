@@ -330,23 +330,44 @@ export class WeexClient {
     return [];
   }
 
-  // Historical (closed) orders. Best-effort endpoint — WEEX docs aren't in
-  // hand; we try the most likely v3 path. Returns raw rows so the caller can
-  // adjust field-name extraction after one observed response. Returns [] on
-  // unknown error (so callers can fall back to Supabase persistence).
-  async getHistoryOrders({ symbol = null, startTime = null, endTime = null, limit = 100 } = {}) {
-    const params = { limit };
-    if (symbol) params.symbol = mapSymbol(symbol);
-    if (startTime) params.startTime = startTime;
-    if (endTime) params.endTime = endTime;
+  // Account income (cash-flow events). POST to /capi/v3/account/income —
+  // discovered via probing 2026-05-21. Each event is a delta to the wallet
+  // balance with fee already deducted. Pair `position_open_X` with
+  // `position_close_X` by symbol+side and sum `income` for round-trip
+  // realized PnL — exact from WEEX, no client-side fee estimation needed.
+  // Response shape: { hasNextPage, items: [{billId, asset, symbol, income,
+  // incomeType, balance, fillFee, time, transferReason}] }.
+  async getAccountIncome({ startTime = null, endTime = null, limit = 100 } = {}) {
+    const body = { limit };
+    if (startTime) body.startTime = startTime;
+    if (endTime) body.endTime = endTime;
     try {
-      const data = await this._request('GET', '/capi/v3/order/historyOrders', { params });
-      const rows = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
-      return rows;
+      const data = await this._request('POST', '/capi/v3/account/income', { body, mutating: false });
+      return data && typeof data === 'object' ? data : null;
     } catch (err) {
-      this._log.warn('[weex history orders]', err.message || err);
+      this._log.warn('[weex account income]', err.message || err);
       return null;
     }
+  }
+
+  // Paginate getAccountIncome back to `sinceMs`. Caps at `maxPages * 100`
+  // events so a misbehaving response doesn't loop forever. Returns the items
+  // newer than `sinceMs` (chronologically unsorted; caller sorts).
+  async getAllIncomeSince(sinceMs, maxPages = 10) {
+    const all = [];
+    let endTime = null;
+    for (let page = 0; page < maxPages; page++) {
+      const result = await this.getAccountIncome({ endTime, limit: 100 });
+      if (!result) break;
+      const items = Array.isArray(result.items) ? result.items : [];
+      if (!items.length) break;
+      all.push(...items);
+      const oldest = Math.min(...items.map(i => parseInt(i.time) || 0));
+      if (oldest <= sinceMs) break;
+      if (!result.hasNextPage) break;
+      endTime = oldest - 1;
+    }
+    return all.filter(i => (parseInt(i.time) || 0) >= sinceMs);
   }
 
   async cancelPlan({ symbol, planOrderId = null, clientAlgoId = null }) {
