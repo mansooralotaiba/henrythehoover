@@ -38,6 +38,20 @@ const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
 // if WEEX env vars are missing so the website still runs without keys.
 const HENRY_RISK_USD = parseFloat(process.env.HENRY_RISK_USD) || 10;
 const HENRY_LEVERAGE = parseInt(process.env.HENRY_LEVERAGE, 10) || 10;
+// Per-symbol leverage overrides. JSON map like {"ETHUSDT":100,"BNBUSDT":50}.
+// Symbols not in the map use HENRY_LEVERAGE. Set via Railway env var.
+const HENRY_LEVERAGE_OVERRIDES = (() => {
+  const raw = process.env.HENRY_LEVERAGE_OVERRIDES;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    console.log('[weex] leverage overrides:', parsed);
+    return parsed;
+  } catch (err) {
+    console.warn('[weex] HENRY_LEVERAGE_OVERRIDES is not valid JSON:', err.message);
+    return {};
+  }
+})();
 const HENRY_BE_FEE_BUFFER_BPS = parseFloat(process.env.HENRY_BE_FEE_BUFFER_BPS) || 12;
 const HENRY_DRY_RUN = (process.env.HENRY_DRY_RUN || '').toLowerCase() === 'true';
 let weexClient = null, weexExecutor = null;
@@ -53,6 +67,7 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     client: weexClient,
     riskUsd: HENRY_RISK_USD,
     leverage: HENRY_LEVERAGE,
+    leverageOverrides: HENRY_LEVERAGE_OVERRIDES,
     beFeeBufferBps: HENRY_BE_FEE_BUFFER_BPS,
     notifier: async (msg) => {
       if (process.env.DISCORD_JOURNAL_WEBHOOK) {
@@ -1364,6 +1379,31 @@ app.post('/api/bot/state', requireAdmin, express.json(), (req, res) => {
     console.log('[bot] autoTradeEnabled =', autoTradeEnabled);
   }
   res.json({ ok: true, enabled: autoTradeEnabled });
+});
+
+// One-shot reset: clear per-pair pauses + reset the global circuit-breaker
+// outcome counter on the admin's scan subscription. Used when the bot has
+// auto-paused a pair after consecutive SL and the admin wants to resume
+// scanning immediately.
+app.post('/api/admin/clear-pauses', requireAdmin, (req, res) => {
+  const sub = scanSubscriptions.get(req.user.id);
+  if (!sub) return res.json({ ok: true, pairsCleared: 0, recentOutcomes: 0, note: 'no active scan' });
+  let pairsCleared = 0;
+  const cleared = [];
+  if (sub.pairs) {
+    for (const [coin, ps] of Object.entries(sub.pairs)) {
+      if (ps.pauseUntil) {
+        cleared.push(coin);
+        ps.pauseUntil = 0;
+        ps.pauseReason = null;
+        pairsCleared++;
+      }
+    }
+  }
+  const recentOutcomes = (sub.recentOutcomes || []).length;
+  sub.recentOutcomes = [];
+  console.log(`[admin] clear-pauses by ${req.user.email}: pairs=${pairsCleared} (${cleared.join(',')}), recentOutcomes_dropped=${recentOutcomes}`);
+  res.json({ ok: true, pairsCleared, cleared, recentOutcomes });
 });
 
 // ── Futures proxies ─────────────────────────────────────────────────────────

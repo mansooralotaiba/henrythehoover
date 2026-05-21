@@ -70,10 +70,13 @@ function toWeexSymbol(pair) {
 }
 
 export class Executor {
-  constructor({ client, riskUsd, leverage, beFeeBufferBps, notifier, onTradeClosed, logger = console }) {
+  constructor({ client, riskUsd, leverage, leverageOverrides = {}, beFeeBufferBps, notifier, onTradeClosed, logger = console }) {
     this.client = client;
     this.riskUsd = riskUsd;
     this.leverage = leverage;
+    // Per-symbol leverage override map (e.g. {ETHUSDT: 100, BNBUSDT: 25}).
+    // Falls back to `this.leverage` for symbols not in the map.
+    this.leverageOverrides = leverageOverrides || {};
     this.beFeeBufferBps = beFeeBufferBps;
     this.notifier = notifier || (async () => {});
     // Called whenever a trade transitions to a terminal state (CLOSED, EXPIRED,
@@ -89,6 +92,12 @@ export class Executor {
   async _persistClosed(trade) {
     try { await this.onTradeClosed(trade); }
     catch (err) { this.log.warn('[executor onTradeClosed]', err.message || err); }
+  }
+
+  _leverageFor(symbol) {
+    const sym = String(symbol || '').toUpperCase();
+    const override = this.leverageOverrides[sym];
+    return (override && override > 0) ? override : this.leverage;
   }
 
   _runLocked(signalId, fn) {
@@ -205,10 +214,11 @@ export class Executor {
     const slPx = roundPrice(s.sl, pricePrecision);
     const tpPx = roundPrice(s.tp, pricePrecision);
 
+    const leverage = this._leverageFor(symbol);
     try {
-      await this.client.setLeverage(symbol, this.leverage);
+      await this.client.setLeverage(symbol, leverage);
     } catch (err) {
-      this.log.warn(`[executor] setLeverage failed for ${symbol}: ${err.message || err} — continuing`);
+      this.log.warn(`[executor] setLeverage(${leverage}x) failed for ${symbol}: ${err.message || err} — continuing`);
     }
 
     const side = s.side === 'long' ? 'BUY' : 'SELL';
@@ -246,7 +256,7 @@ export class Executor {
     const trade = {
       signalId: s.signalId, pair: s.pair, symbol, side: s.side,
       entryPrice: entryPx, slPrice: slPx, tpPrice: tpPx,
-      quantity: qty, leverage: this.leverage,
+      quantity: qty, leverage,
       state: TradeState.PENDING,
       entryOrderId: entryOid, slOrderId: slOid, tpOrderId: tpOid,
       fillPrice: null, slippage: 0, closedPnl: 0,
