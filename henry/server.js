@@ -66,6 +66,13 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     },
   });
   console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD + ' lev=' + HENRY_LEVERAGE + 'x' + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
+  // Reconcile on boot so a Railway redeploy doesn't lose BE management on
+  // open positions. Best-effort: reads WEEX positions + their SL/TP plans
+  // and rebuilds trade records. See lib/executor.js reconcile().
+  weexExecutor.reconcile().then(r => {
+    if (r.recovered > 0) console.log(`[weex] reconcile recovered ${r.recovered} open position(s)`);
+    if (r.warnings && r.warnings.length) for (const w of r.warnings) console.warn(`[weex] reconcile warning: ${w}`);
+  }).catch(err => console.warn('[weex] reconcile failed on boot:', err.message || err));
 } else {
   console.log('[weex] disabled — WEEX_API_KEY/SECRET/PASSPHRASE not set');
 }
@@ -1017,20 +1024,52 @@ app.post('/api/discord/auto', requireAdmin, (req, res) => forwardToDiscord('DISC
 // Wallet + positions cache: WEEX REST is slow and the dashboard polls every 5s.
 const _weexCache = { wallet: null, positions: null, fetchedAt: 0 };
 const WEEX_CACHE_MS = 15000;
+
+// Normalize a raw WEEX position row into the shape the dashboard expects.
+// WEEX field names vary between v2/v3 and across endpoints; we try every known
+// alias for uPnL and fall back to (mark - avg) * size * sign if none surface.
+function normalizeWeexPosition(p) {
+  if (!p) return null;
+  const rawSymbol = String(p.symbol || '').toUpperCase();
+  const symbol = rawSymbol.replace(/^CMT_/, '');
+  const side = String(p.holdSide || p.posSide || p.side || '').toLowerCase();
+  const size = parseFloat(p.size ?? p.total ?? 0) || 0;
+  if (size <= 0) return null;
+  const avgPrice = parseFloat(p.averagePrice ?? p.openPrice ?? p.avgEntryPrice ?? p.entryPrice ?? 0) || 0;
+  const markPrice = parseFloat(p.markPrice ?? p.indexPrice ?? p.lastPrice ?? 0) || 0;
+  let uPnl = parseFloat(
+    p.unrealizedPL ?? p.unrealizedPnl ?? p.unrealisedPnl ?? p.upl ?? p.uPL ??
+    p.achievedProfits ?? p.floatingProfit ?? p.profit ?? p.pnl ?? NaN
+  );
+  if (!isFinite(uPnl) && avgPrice && markPrice && size) {
+    const sign = side === 'long' ? 1 : -1;
+    uPnl = (markPrice - avgPrice) * size * sign;
+  }
+  if (!isFinite(uPnl)) uPnl = 0;
+  return {
+    symbol, side, size, avgPrice, markPrice,
+    uPnl,
+    leverage: parseInt(p.leverage || 0) || null,
+  };
+}
+
 async function getWeexStatusCached() {
   if (!weexClient) return { wallet: null, positions: [] };
   const now = Date.now();
   if (now - _weexCache.fetchedAt < WEEX_CACHE_MS) {
     return { wallet: _weexCache.wallet, positions: _weexCache.positions || [] };
   }
-  const [wallet, positions] = await Promise.all([
+  const [wallet, rawPositions] = await Promise.all([
     weexClient.getWallet().catch(err => { console.warn('[weex wallet]', err.message || err); return _weexCache.wallet; }),
-    weexClient.getAllPositions().catch(err => { console.warn('[weex positions]', err.message || err); return _weexCache.positions || []; }),
+    weexClient.getAllPositions().catch(err => { console.warn('[weex positions]', err.message || err); return null; }),
   ]);
+  const positions = Array.isArray(rawPositions)
+    ? rawPositions.map(normalizeWeexPosition).filter(Boolean)
+    : (_weexCache.positions || []);
   _weexCache.wallet = wallet;
   _weexCache.positions = positions;
   _weexCache.fetchedAt = now;
-  return { wallet, positions: positions || [] };
+  return { wallet, positions };
 }
 // PnL aggregation from the executor's in-memory snapshot.
 function aggregateExecutorPnl(trades) {
@@ -1065,6 +1104,14 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
       wallet = s.wallet; positions = s.positions;
     } catch (err) { console.warn('[bot/state]', err.message || err); }
   }
+  const pnl = aggregateExecutorPnl(trades);
+  // Live additions — sum of unrealized PnL on currently-open WEEX positions.
+  // pnl.today is the realized-only figure; pnl.todayLive blends realized +
+  // unrealized so the headline number on Kingdom moves with the market.
+  const openUPnl = (positions || []).reduce((s, p) => s + (parseFloat(p.uPnl) || 0), 0);
+  pnl.openUPnl = openUPnl;
+  pnl.todayLive = pnl.today + openUPnl;
+  pnl.totalLive = pnl.total + openUPnl;
   res.json({
     available: !!weexExecutor,
     enabled: autoTradeEnabled,
@@ -1074,7 +1121,7 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
     trades,
     wallet,
     positions,
-    pnl: aggregateExecutorPnl(trades),
+    pnl,
   });
 });
 app.post('/api/bot/state', requireAdmin, express.json(), (req, res) => {

@@ -84,27 +84,6 @@
   .auto-trade-toggle.on .dot{box-shadow:0 0 8px currentColor;animation:autopulse 1.6s ease-in-out infinite}
   @keyframes autopulse{0%,100%{opacity:1}50%{opacity:0.4}}
 
-  /* Admin-only WEEX trades panel */
-  .weex-panel{display:none;background:var(--bg2);border:1px solid var(--b1);border-radius:6px;padding:10px 14px;margin-top:4px}
-  .weex-panel.visible{display:block}
-  .weex-panel .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-  .weex-panel .head .lbl{font-size:10px;color:var(--cy);letter-spacing:.18em;font-weight:bold}
-  .weex-panel .head .sub{font-size:9px;color:var(--mu);letter-spacing:.05em}
-  .weex-panel table{width:100%;border-collapse:collapse;font-size:10px}
-  .weex-panel th{text-align:left;padding:4px 6px;color:var(--mu);font-weight:normal;letter-spacing:.1em;border-bottom:1px solid var(--b1)}
-  .weex-panel td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.03);color:var(--fg)}
-  .weex-panel tr:last-child td{border-bottom:none}
-  .weex-panel td.side.long{color:var(--gr)}
-  .weex-panel td.side.short{color:var(--re)}
-  .weex-panel td.state{font-size:9px;letter-spacing:.08em;font-weight:bold}
-  .weex-panel td.state.PENDING{color:var(--am)}
-  .weex-panel td.state.ACTIVE{color:var(--cy)}
-  .weex-panel td.state.CLOSED{color:var(--mu)}
-  .weex-panel td.state.EXPIRED,.weex-panel td.state.INVALIDATED{color:var(--di)}
-  .weex-panel td.state.REJECTED{color:var(--re)}
-  .weex-panel td.pnl.pos{color:var(--gr)}
-  .weex-panel td.pnl.neg{color:var(--re)}
-  .weex-panel .empty{font-size:10px;color:var(--di);letter-spacing:.1em;padding:8px 0;text-align:center}
 
   .chart-grid{flex:1;display:grid;gap:8px;min-height:460px}
   .chart-grid[data-n="0"]{grid-template-columns:1fr}
@@ -357,17 +336,6 @@
   <div class="item"><span class="l">BEST TODAY</span><span class="v" id="q-best">—</span></div>
   <div class="item"><span class="l">WORST TODAY</span><span class="v" id="q-worst">—</span></div>
   <div class="item"><span class="l">NEXT EVENT</span><span class="v am" id="q-next">—</span></div>
-</div>
-
-<!-- Admin-only: WEEX executor trades. Hidden until /api/me confirms is_admin. -->
-<div class="weex-panel" id="weex-panel">
-  <div class="head">
-    <span class="lbl">⚙ WEEX EXECUTOR</span>
-    <span class="sub" id="weex-meta">—</span>
-  </div>
-  <div id="weex-trades-wrap">
-    <div class="empty">No trades yet</div>
-  </div>
 </div>
 
 <!-- ═══ KINGDOM — 6-panel chart grid ═══ -->
@@ -920,9 +888,12 @@ function renderAdminTopBand(state){
   var slToday=closedToday.filter(function(t){return (t.closedPnl||0)<0;}).length;
   var beToday=closedToday.filter(function(t){return (t.closedPnl||0)===0;}).length;
   var expToday=trades.filter(function(t){return t.state==='EXPIRED'&&t.updatedAt&&new Date(t.updatedAt).toDateString()===new Date().toDateString();}).length;
+  // todayLive = realized today + unrealized on open WEEX positions.
+  // Headline updates live as open trades move.
+  var todayLive=pnl.todayLive!=null?pnl.todayLive:pnl.today;
   var todayEl=document.getElementById('a-today-pnl');
-  todayEl.textContent=fmtUsd(pnl.today);
-  todayEl.className='today-r '+clsUsd(pnl.today);
+  todayEl.textContent=fmtUsd(todayLive);
+  todayEl.className='today-r '+clsUsd(todayLive);
   document.getElementById('a-tp').textContent=tpToday;
   document.getElementById('a-sl').textContent=slToday;
   document.getElementById('a-be').textContent=beToday;
@@ -961,17 +932,18 @@ function renderAdminTopBand(state){
   var positions=(state&&state.positions)||[];
   document.getElementById('a-pos-count').textContent=positions.length;
   var posList=document.getElementById('a-pos-list');
+  // Server normalizes positions to {symbol, side, size, avgPrice, markPrice, uPnl, leverage}.
   if(!positions.length){
     posList.innerHTML='<div class="weex-empty">None open</div>';
   } else {
     posList.innerHTML=positions.slice(0,8).map(function(p){
-      var side=(p.holdSide||p.posSide||p.side||'').toString().toLowerCase();
+      var side=(p.side||'').toLowerCase();
       var sideTxt=side==='long'?'▲ LONG':side==='short'?'▼ SHORT':side.toUpperCase();
-      var sym=(p.symbol||'').replace(/^cmt_/i,'').toUpperCase();
-      var qty=parseFloat(p.size||p.total||0);
-      var entry=parseFloat(p.averagePrice||p.openPrice||p.avgEntryPrice||0);
-      var mark=parseFloat(p.markPrice||p.indexPrice||0);
-      var upnl=parseFloat(p.unrealizedPL||p.unrealizedPnl||p.upl||0);
+      var sym=(p.symbol||'').toUpperCase();
+      var qty=parseFloat(p.size||0);
+      var entry=parseFloat(p.avgPrice||0);
+      var mark=parseFloat(p.markPrice||0);
+      var upnl=parseFloat(p.uPnl||0);
       var upnlCls=upnl>0?'pos':upnl<0?'neg':'zero';
       return '<div class="weex-pos-row">'
         +'<div class="l"><span class="pair">'+shortCoin(sym)+'</span><span class="side '+side+'">'+sideTxt+'</span></div>'
@@ -983,47 +955,13 @@ function renderAdminTopBand(state){
   }
 }
 
-function renderWeexTrades(state){
-  if(!_isAdmin)return;
-  var panel=document.getElementById('weex-panel');
-  var wrap=document.getElementById('weex-trades-wrap');
-  var meta=document.getElementById('weex-meta');
-  if(!state||!state.available){
-    panel.classList.remove('visible');
-    return;
-  }
-  panel.classList.add('visible');
-  meta.textContent='Risk $'+state.riskUsd+' · '+state.leverage+'x lev · '+(state.enabled?'AUTO-TRADE ON':'AUTO-TRADE OFF')+(state.dryRun?' · DRY-RUN':'');
-  var trades=(state.trades||[]).slice().sort(function(a,b){return (b.updatedAt||0)-(a.updatedAt||0);});
-  if(!trades.length){
-    wrap.innerHTML='<div class="empty">No trades yet — waiting for a signal</div>';
-    return;
-  }
-  var rows=trades.slice(0,12).map(function(t){
-    var sideTxt=(t.side||'').toUpperCase();
-    var pnl=(t.closedPnl||0);
-    var pnlCls=pnl>0?'pos':(pnl<0?'neg':'');
-    var pnlTxt=t.state==='CLOSED'?('$'+(pnl>=0?'+':'')+pnl.toFixed(2)):'—';
-    return '<tr>'
-      +'<td>'+shortCoin(t.pair||t.symbol)+'</td>'
-      +'<td class="side '+(t.side||'').toLowerCase()+'">'+sideTxt+'</td>'
-      +'<td class="state '+t.state+'">'+t.state+'</td>'
-      +'<td>'+(t.qty!=null?t.qty:'—')+'</td>'
-      +'<td>'+(t.entry!=null?fmtPx(t.entry):'—')+'</td>'
-      +'<td>'+(t.sl!=null?fmtPx(t.sl):'—')+'</td>'
-      +'<td>'+(t.tp!=null?fmtPx(t.tp):'—')+'</td>'
-      +'<td class="pnl '+pnlCls+'">'+pnlTxt+'</td>'
-      +'</tr>';
-  }).join('');
-  wrap.innerHTML='<table><thead><tr><th>PAIR</th><th>SIDE</th><th>STATE</th><th>QTY</th><th>ENTRY</th><th>SL</th><th>TP</th><th>PNL</th></tr></thead><tbody>'+rows+'</tbody></table>';
-}
 
 function refreshBotState(){
   if(!_isAdmin)return;
   fetch('/api/bot/state',{credentials:'same-origin'})
     .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){renderAutoTrade(d);renderWeexTrades(d);renderAdminTopBand(d);})
-    .catch(function(){renderAutoTrade(null);renderWeexTrades(null);renderAdminTopBand(null);});
+    .then(function(d){renderAutoTrade(d);renderAdminTopBand(d);})
+    .catch(function(){renderAutoTrade(null);renderAdminTopBand(null);});
 }
 
 document.getElementById('auto-trade-toggle').addEventListener('click',function(){

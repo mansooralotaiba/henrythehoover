@@ -113,6 +113,23 @@ export class Executor {
       return;
     }
 
+    // Dedupe by WEEX position. If a position already exists on the same
+    // symbol+side, refuse the new setup so duplicate signals don't DCA into
+    // the existing trade. Caught the BNB DCA bug from 2026-05-21.
+    try {
+      const existing = await this.client.getPosition(symbol);
+      const existingSize = parseFloat(existing?.size ?? 0) || 0;
+      if (existingSize > 0) {
+        const existingSide = String(existing.holdSide || existing.posSide || existing.side || '').toLowerCase();
+        if (existingSide === s.side) {
+          await this._reject(s.signalId, symbol, `WEEX already has an open ${existingSide} position (size ${existingSize}) — skipping to avoid DCA`);
+          return;
+        }
+      }
+    } catch (err) {
+      this.log.warn(`[executor setup] existing-position check failed for ${symbol}: ${err.message || err} — continuing`);
+    }
+
     let info;
     try {
       info = await this.client.getSymbolInfo(symbol);
@@ -307,6 +324,7 @@ export class Executor {
     return this._runLocked(event.signalId, async () => {
       const t = this.trades.get(event.signalId);
       if (!t) return;
+      await this._forceCloseIfOpen(t, 'TP hit');
       const exit = event.exitPrice ?? t.tpPrice;
       t.state = TradeState.CLOSED;
       t.closedPnl = notionalPnl(t, exit);
@@ -319,12 +337,36 @@ export class Executor {
     return this._runLocked(event.signalId, async () => {
       const t = this.trades.get(event.signalId);
       if (!t) return;
+      await this._forceCloseIfOpen(t, 'SL hit');
       const exit = event.exitPrice ?? t.slPrice;
       t.state = TradeState.CLOSED;
       t.closedPnl = notionalPnl(t, exit);
       t.updatedAt = Date.now();
       await this._notify(`💀 WEEX SL hit: ${t.symbol} pnl=$${t.closedPnl >= 0 ? '+' : ''}${t.closedPnl.toFixed(2)}`);
     });
+  }
+
+  // Verify the WEEX position is actually closed when Henry detects TP/SL.
+  // Catches the case where the plan order didn't fire — without this, the
+  // next signal for the same pair would DCA into the still-open position.
+  async _forceCloseIfOpen(trade, label) {
+    try {
+      const pos = await this.client.getPosition(trade.symbol);
+      const size = parseFloat(pos?.size ?? 0) || 0;
+      if (size <= 0) return;
+      const positionSide = trade.side === 'long' ? 'LONG' : 'SHORT';
+      this.log.warn(`[executor] ${label} but WEEX position still open for ${trade.symbol} (size=${size}) — force-closing market`);
+      await this.client.closePositionMarket({ symbol: trade.symbol, positionSide, quantity: size });
+      // Also try to cancel lingering SL/TP plans so they don't fire on a closed pair.
+      for (const oid of [trade.slOrderId, trade.tpOrderId]) {
+        if (!oid) continue;
+        try { await this.client.cancelPlan({ symbol: trade.symbol, planOrderId: oid }); }
+        catch (err) { this.log.info(`[executor] ${label} cancel lingering plan ${oid}:`, err.message || err); }
+      }
+      await this._notify(`⚠️ WEEX force-close on ${label}: ${trade.symbol} ${trade.side.toUpperCase()} (plan didn't fire, closed at market)`);
+    } catch (err) {
+      this.log.warn(`[executor] ${label} force-close check failed for ${trade.symbol}:`, err.message || err);
+    }
   }
 
   async handleInvalidated(event) {
@@ -403,6 +445,79 @@ export class Executor {
       });
     }
     await this._notify(`❌ WEEX rejected ${symbol} (${signalId}): ${reason}`);
+  }
+
+  // Best-effort startup reconciliation. Reads open WEEX positions and their
+  // SL/TP plans, then rebuilds trade records so a Railway redeploy doesn't
+  // lose BE management. Trades recovered this way get a synthetic signalId
+  // prefixed `recovered-`. Warnings surface positions missing one or both
+  // plans (BE management won't work without an SL plan we can cancel/replace).
+  async reconcile() {
+    const result = { recovered: 0, warnings: [] };
+    if (!this.client) return result;
+    let positions, algos;
+    try {
+      [positions, algos] = await Promise.all([
+        this.client.getAllPositions(),
+        this.client.getOpenAlgoOrders().catch(() => []),
+      ]);
+    } catch (err) {
+      this.log.warn('[executor reconcile] fetch failed:', err.message || err);
+      result.warnings.push(`fetch failed: ${err.message || err}`);
+      return result;
+    }
+    const isOpenState = (st) =>
+      st === TradeState.PENDING || st === TradeState.ACTIVE;
+    for (const pos of (positions || [])) {
+      const size = parseFloat(pos.size ?? 0) || 0;
+      if (size <= 0) continue;
+      const symbol = String(pos.symbol || '').toUpperCase().replace(/^CMT_/, '');
+      const side = String(pos.holdSide || pos.posSide || pos.side || '').toLowerCase();
+      if (!symbol || (side !== 'long' && side !== 'short')) continue;
+      // Skip if executor already has an open trade for this symbol+side.
+      const dupe = Array.from(this.trades.values()).find(t =>
+        t.symbol === symbol && t.side === side && isOpenState(t.state)
+      );
+      if (dupe) continue;
+      const matching = (algos || []).filter(a => {
+        const aSym = String(a.symbol || '').toUpperCase().replace(/^CMT_/, '');
+        const aSide = String(a.positionSide || a.holdSide || '').toLowerCase();
+        return aSym === symbol && aSide === side;
+      });
+      const slPlan = matching.find(a => String(a.planType || '').toUpperCase() === 'STOP_LOSS');
+      const tpPlan = matching.find(a => String(a.planType || '').toUpperCase() === 'TAKE_PROFIT');
+      const avgPrice = parseFloat(pos.averagePrice ?? pos.openPrice ?? pos.avgEntryPrice ?? 0) || 0;
+      const signalId = `recovered-${symbol}-${side}-${Date.now()}`;
+      const trade = {
+        signalId, pair: symbol, symbol, side,
+        entryPrice: avgPrice,
+        slPrice: slPlan ? parseFloat(slPlan.triggerPrice) || null : null,
+        tpPrice: tpPlan ? parseFloat(tpPlan.triggerPrice) || null : null,
+        quantity: size,
+        leverage: parseInt(pos.leverage || this.leverage) || this.leverage,
+        state: TradeState.ACTIVE,
+        entryOrderId: null,
+        slOrderId: slPlan ? String(slPlan.algoId || slPlan.planOrderId || '') || null : null,
+        tpOrderId: tpPlan ? String(tpPlan.algoId || tpPlan.planOrderId || '') || null : null,
+        fillPrice: avgPrice,
+        slippage: 0,
+        closedPnl: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        recovered: true,
+      };
+      this.trades.set(signalId, trade);
+      result.recovered++;
+      if (!slPlan && !tpPlan) {
+        result.warnings.push(`${symbol} ${side}: no SL/TP plans found — BE management disabled`);
+      } else if (!slPlan) {
+        result.warnings.push(`${symbol} ${side}: no SL plan — BE move-to-entry won't work`);
+      } else if (!tpPlan) {
+        result.warnings.push(`${symbol} ${side}: no TP plan — TP won't auto-close on WEEX`);
+      }
+      this.log.info(`[executor reconcile] ${symbol} ${side} size=${size} entry=${avgPrice} sl=${trade.slPrice ?? '?'} tp=${trade.tpPrice ?? '?'}`);
+    }
+    return result;
   }
 
   // Public diagnostics — used by /api/bot/state

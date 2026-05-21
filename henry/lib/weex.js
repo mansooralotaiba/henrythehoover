@@ -302,6 +302,17 @@ export class WeexClient {
     return null;
   }
 
+  // List open algo orders. With no symbol, attempts to list across all
+  // symbols (WEEX accepts an empty symbol on this endpoint). Used by
+  // executor.reconcile() to find SL/TP plans for open positions on boot.
+  async getOpenAlgoOrders(symbol = null) {
+    const params = symbol ? { symbol: mapSymbol(symbol) } : {};
+    const plans = await this._request('GET', '/capi/v3/openAlgoOrders', { params });
+    if (Array.isArray(plans)) return plans;
+    if (plans && Array.isArray(plans.data)) return plans.data;
+    return [];
+  }
+
   async cancelPlan({ symbol, planOrderId = null, clientAlgoId = null }) {
     if (!planOrderId && !clientAlgoId) throw new Error('planOrderId or clientAlgoId required');
     const body = { symbol: mapSymbolV2(symbol) };
