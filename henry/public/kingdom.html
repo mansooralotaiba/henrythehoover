@@ -84,6 +84,13 @@
   .auto-trade-toggle.on .dot{box-shadow:0 0 8px currentColor;animation:autopulse 1.6s ease-in-out infinite}
   @keyframes autopulse{0%,100%{opacity:1}50%{opacity:0.4}}
 
+  /* Resume-scan button (admin only) — clears per-pair pauses + global circuit breaker */
+  .resume-btn{display:none;align-items:center;gap:8px;padding:5px 12px;border:1px solid var(--b2);border-radius:4px;background:var(--bg2);cursor:pointer;font-family:var(--mn);font-size:10px;letter-spacing:.12em;color:var(--am);transition:border-color 0.2s, color 0.2s, background 0.2s}
+  .resume-btn.visible{display:inline-flex}
+  .resume-btn:hover{border-color:var(--am);background:rgba(255,184,48,0.08)}
+  .resume-btn:active{background:rgba(255,184,48,0.16)}
+  .resume-btn.flash{color:var(--gr);border-color:var(--gr);background:rgba(0,229,160,0.1)}
+
 
   .chart-grid{flex:1;display:grid;gap:8px;min-height:460px}
   .chart-grid[data-n="0"]{grid-template-columns:1fr}
@@ -344,6 +351,9 @@
     <span class="l">WATCHLIST PANELS</span>
     <button id="auto-trade-toggle" class="auto-trade-toggle unavailable" type="button" title="WEEX auto-trade kill switch">
       <span class="dot"></span><span id="auto-trade-label">AUTO-TRADE: —</span>
+    </button>
+    <button id="resume-scan-btn" class="resume-btn" type="button" title="Clear per-pair pauses + reset circuit-breaker outcome counter">
+      <span id="resume-scan-label">↻ RESUME SCAN</span>
     </button>
     <span class="c" id="kingdom-count">— / 6 max</span>
   </div>
@@ -979,6 +989,28 @@ document.getElementById('auto-trade-toggle').addEventListener('click',function()
     .catch(function(){alert('Toggle failed — check console');});
 });
 
+// Resume-scan button — clears all paused pairs + circuit-breaker outcomes.
+document.getElementById('resume-scan-btn').addEventListener('click',function(){
+  var btn=document.getElementById('resume-scan-btn');
+  var lbl=document.getElementById('resume-scan-label');
+  if(!confirm('Clear all auto-scan pauses?\n\nResets per-pair pauses + the global circuit-breaker outcome counter. The scanner will immediately re-eligible all paused pairs.'))return;
+  var original=lbl.textContent;
+  lbl.textContent='…';
+  fetch('/api/admin/clear-pauses',{method:'POST',credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var msg=(d.pairsCleared||0)+' pair(s) cleared';
+      if(d.recentOutcomes)msg+=' · '+d.recentOutcomes+' outcomes wiped';
+      lbl.textContent='✓ '+msg;
+      btn.classList.add('flash');
+      setTimeout(function(){lbl.textContent=original;btn.classList.remove('flash');},3000);
+    })
+    .catch(function(){
+      lbl.textContent='✗ failed';
+      setTimeout(function(){lbl.textContent=original;},2500);
+    });
+});
+
 // Detect admin once on page load; only then start polling executor state.
 fetch('/api/me',{credentials:'same-origin'})
   .then(function(r){return r.ok?r.json():null;})
@@ -986,6 +1018,7 @@ fetch('/api/me',{credentials:'same-origin'})
     _isAdmin=!!(me&&me.is_admin);
     if(_isAdmin){
       document.body.classList.add('is-admin');
+      document.getElementById('resume-scan-btn').classList.add('visible');
       refreshBotState();
       setInterval(refreshBotState,5000);
     }
