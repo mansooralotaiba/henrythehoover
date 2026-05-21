@@ -302,6 +302,23 @@ export class WeexClient {
     return null;
   }
 
+  // List unfilled (open) regular orders for a symbol. Used by executor
+  // setup dedupe layer 3 to catch the case where a previous process placed
+  // a LIMIT entry that hasn't filled yet. Returns [] on error so the caller
+  // can fail-open instead of blocking new setups.
+  async getOpenOrders(symbol = null) {
+    const params = symbol ? { symbol: mapSymbol(symbol) } : {};
+    try {
+      const data = await this._request('GET', '/capi/v3/order/openOrders', { params });
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray(data.data)) return data.data;
+      return [];
+    } catch (err) {
+      this._log.warn('[weex openOrders]', err.message || err);
+      return [];
+    }
+  }
+
   // List open algo orders. With no symbol, attempts to list across all
   // symbols (WEEX accepts an empty symbol on this endpoint). Used by
   // executor.reconcile() to find SL/TP plans for open positions on boot.

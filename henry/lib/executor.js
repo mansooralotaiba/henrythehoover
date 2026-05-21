@@ -123,10 +123,20 @@ export class Executor {
       return;
     }
 
-    // Dedupe by WEEX position. If a position already exists on the same
-    // symbol+side, refuse the new setup so duplicate signals don't DCA into
-    // the existing trade. Caught the BNB DCA bug from 2026-05-21. Defensive
-    // field lookups — WEEX field names vary across endpoints.
+    // Dedupe layer 1: in-memory executor trades. Cheapest check — catches
+    // duplicates within the current process lifetime, including PENDING
+    // limits that haven't filled yet (which getPosition misses).
+    for (const t of this.trades.values()) {
+      if (t.symbol !== symbol) continue;
+      if (t.side !== s.side) continue;
+      if (t.state !== TradeState.PENDING && t.state !== TradeState.ACTIVE) continue;
+      await this._reject(s.signalId, symbol, `executor already tracks an open ${t.state} ${t.side} trade for ${symbol} (signal ${t.signalId}) — skipping to avoid DCA`);
+      return;
+    }
+
+    // Dedupe layer 2: WEEX open position. Catches the case where a position
+    // was opened by a previous process (since lost from in-memory state)
+    // and reconcile hasn't caught it yet. Defensive field-name extraction.
     try {
       const existing = await this.client.getPosition(symbol);
       const existingSize = parseFloat(
@@ -143,6 +153,31 @@ export class Executor {
       }
     } catch (err) {
       this.log.warn(`[executor setup] existing-position check failed for ${symbol}: ${err.message || err} — continuing`);
+    }
+
+    // Dedupe layer 3: WEEX unfilled LIMIT orders. Catches PENDING setups
+    // from a previous process (the AAVE scenario — limit placed yesterday,
+    // server redeployed, executor map empty, dedupe layers 1+2 miss because
+    // there's no position and no in-memory trade).
+    try {
+      const openOrders = await this.client.getOpenOrders(symbol);
+      if (Array.isArray(openOrders)) {
+        const sideUpper = s.side === 'long' ? 'BUY' : 'SELL';
+        const positionSideUpper = s.side === 'long' ? 'LONG' : 'SHORT';
+        const conflicting = openOrders.find(o => {
+          const oSide = String(o.side || '').toUpperCase();
+          const oPosSide = String(o.positionSide || o.holdSide || '').toUpperCase();
+          const oType = String(o.type || o.orderType || '').toUpperCase();
+          // Entry order = LIMIT side matches the trade direction
+          return oType === 'LIMIT' && (oSide === sideUpper || oPosSide === positionSideUpper);
+        });
+        if (conflicting) {
+          await this._reject(s.signalId, symbol, `WEEX has an unfilled ${s.side} LIMIT order on ${symbol} (id ${conflicting.orderId || conflicting.id || '?'}) — skipping to avoid DCA`);
+          return;
+        }
+      }
+    } catch (err) {
+      this.log.warn(`[executor setup] open-orders check failed for ${symbol}: ${err.message || err} — continuing`);
     }
 
     let info;
