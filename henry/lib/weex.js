@@ -149,9 +149,15 @@ export class WeexClient {
       this._log.warn(`[WEEX] HTTP ${resp.status} on ${method} ${path}:`, data);
       throw new WeexError(resp.status, data);
     }
+    // WEEX response success codes vary by endpoint: most v3 use 0/'0'/'00000',
+    // but /capi/v2/account/leverage returns code:'200' with msg:'success'.
+    // Treat any 2xx HTTP + msg='success' as ok regardless of the code value.
     if (data && typeof data === 'object' && 'code' in data) {
       const code = data.code;
-      if (code !== 0 && code !== '0' && code !== '00000' && code !== null) {
+      const okCode = code === 0 || code === '0' || code === '00000'
+        || code === 200 || code === '200' || code === null;
+      const okMsg = String(data.msg || '').toLowerCase() === 'success';
+      if (!okCode && !okMsg) {
         this._log.warn(`[WEEX] app error on ${method} ${path}:`, data);
         throw new WeexError(resp.status, data);
       }
