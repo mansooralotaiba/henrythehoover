@@ -1122,6 +1122,14 @@ const INCOME_CACHE_MS = 30_000;
 // PnL on a paired round-trip = open_income + close_income (fees already
 // deducted by WEEX). Trades closed with no matching open within the fetched
 // window are kept as `unmatched` with the close income as an approximation.
+//
+// Liquidations get special handling: `start_liquidate` / `finish_liquidate`
+// events don't follow the position_open_X / position_close_X naming, so
+// without intervention the liquidated position's open stays in the FIFO
+// queue and gets popped by an unrelated later close on the same symbol+side,
+// producing wildly wrong PnL ($6731 + $354 bugs from 2026-05-21). When we
+// see a liquidation event for a symbol, drain both long and short queues
+// for it so later regular closes pair with their actual opens.
 function pairIncomeEvents(events) {
   const queues = new Map();
   const trades = [];
@@ -1131,6 +1139,14 @@ function pairIncomeEvents(events) {
     const ts = parseInt(ev.time) || 0;
     const income = parseFloat(ev.income) || 0;
     const sym = ev.symbol;
+    if (t === 'finish_liquidate' || t === 'start_liquidate' || t.includes('liquidate')) {
+      // Drain any opens on this symbol — they're orphans now.
+      if (sym) {
+        queues.delete(`${sym}|long`);
+        queues.delete(`${sym}|short`);
+      }
+      continue;
+    }
     let side = null;
     if (t.includes('long')) side = 'long';
     else if (t.includes('short')) side = 'short';
@@ -1184,12 +1200,11 @@ async function aggregateWeexIncomePnl() {
     Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1),
     STATS_START_MS,
   );
-  // Sanity threshold — at $10 risk per trade, real outcomes are bounded to
-  // around $50–100. Any "round-trip" pairing producing |pnl| > 50× the risk
-  // is almost certainly a mispairing (e.g. an orphaned open from a prior
-  // liquidation getting popped by an unrelated close). Filter these out
-  // rather than blow up Today PNL. Override via HENRY_MAX_TRADE_PNL env var.
-  const SANE_PNL = parseFloat(process.env.HENRY_MAX_TRADE_PNL) || (HENRY_RISK_USD * 50);
+  // Sanity threshold — at $10 risk per trade, real wins/losses cap around
+  // $20–30. 25× the risk ($250 default) is generous headroom while still
+  // catching mispairings the liquidation-drain logic somehow missed.
+  // Override via HENRY_MAX_TRADE_PNL env var.
+  const SANE_PNL = parseFloat(process.env.HENRY_MAX_TRADE_PNL) || (HENRY_RISK_USD * 25);
   let today = 0, month = 0, total = 0;
   let unmatchedSkipped = 0, suspectSkipped = 0;
   const dailyMap = new Map();
