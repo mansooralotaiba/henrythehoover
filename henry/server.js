@@ -1184,12 +1184,23 @@ async function aggregateWeexIncomePnl() {
     Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1),
     STATS_START_MS,
   );
+  // Sanity threshold — at $10 risk per trade, real outcomes are bounded to
+  // around $50–100. Any "round-trip" pairing producing |pnl| > 50× the risk
+  // is almost certainly a mispairing (e.g. an orphaned open from a prior
+  // liquidation getting popped by an unrelated close). Filter these out
+  // rather than blow up Today PNL. Override via HENRY_MAX_TRADE_PNL env var.
+  const SANE_PNL = parseFloat(process.env.HENRY_MAX_TRADE_PNL) || (HENRY_RISK_USD * 50);
   let today = 0, month = 0, total = 0;
-  let unmatchedSkipped = 0;
+  let unmatchedSkipped = 0, suspectSkipped = 0;
   const dailyMap = new Map();
   for (const tr of trades) {
     if (tr.ts < STATS_START_MS) continue;
-    if (tr.unmatched) { unmatchedSkipped++; continue; } // open >30d ago — skip
+    if (tr.unmatched) { unmatchedSkipped++; continue; }
+    if (Math.abs(tr.pnl) > SANE_PNL) {
+      suspectSkipped++;
+      console.warn(`[weex income] dropping suspect pairing ${tr.symbol} ${tr.side} pnl=${tr.pnl.toFixed(2)} (>${SANE_PNL})`);
+      continue;
+    }
     total += tr.pnl;
     if (tr.ts >= startOfMonthUtc) {
       month += tr.pnl;
@@ -1199,7 +1210,10 @@ async function aggregateWeexIncomePnl() {
     if (tr.ts >= startOfTodayUtc) today += tr.pnl;
   }
   if (unmatchedSkipped > 0) {
-    console.log(`[weex income] skipped ${unmatchedSkipped} unmatched close(s) (open >30d ago)`);
+    console.log(`[weex income] skipped ${unmatchedSkipped} unmatched close(s)`);
+  }
+  if (suspectSkipped > 0) {
+    console.warn(`[weex income] dropped ${suspectSkipped} suspect pairing(s) — likely from prior liquidation orphans`);
   }
   const dim = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
   const daily = [];
