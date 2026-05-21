@@ -1026,20 +1026,33 @@ const _weexCache = { wallet: null, positions: null, fetchedAt: 0 };
 const WEEX_CACHE_MS = 15000;
 
 // Normalize a raw WEEX position row into the shape the dashboard expects.
-// WEEX field names vary between v2/v3 and across endpoints; we try every known
-// alias for uPnL and fall back to (mark - avg) * size * sign if none surface.
+// WEEX field names vary by endpoint and aren't documented uniformly — we try
+// every reasonable alias. If we ever see uPnl=0 with avgPrice=0 the actual
+// field name is something we haven't tried yet; check `[weex raw position
+// sample]` log line to find it.
 function normalizeWeexPosition(p) {
   if (!p) return null;
   const rawSymbol = String(p.symbol || '').toUpperCase();
   const symbol = rawSymbol.replace(/^CMT_/, '');
-  const side = String(p.holdSide || p.posSide || p.side || '').toLowerCase();
-  const size = parseFloat(p.size ?? p.total ?? 0) || 0;
+  const side = String(
+    p.holdSide ?? p.posSide ?? p.side ?? p.positionSide ?? p.direction ?? ''
+  ).toLowerCase();
+  const size = parseFloat(
+    p.size ?? p.total ?? p.qty ?? p.quantity ?? p.holdSize ?? p.positionAmt ?? 0
+  ) || 0;
   if (size <= 0) return null;
-  const avgPrice = parseFloat(p.averagePrice ?? p.openPrice ?? p.avgEntryPrice ?? p.entryPrice ?? 0) || 0;
-  const markPrice = parseFloat(p.markPrice ?? p.indexPrice ?? p.lastPrice ?? 0) || 0;
+  const avgPrice = parseFloat(
+    p.averagePrice ?? p.openPrice ?? p.avgEntryPrice ?? p.entryPrice ?? p.holdPrice ??
+    p.averageOpenPrice ?? p.avgPx ?? p.costPrice ?? p.openAvgPrice ?? p.avgPrice ?? 0
+  ) || 0;
+  const markPrice = parseFloat(
+    p.markPrice ?? p.indexPrice ?? p.lastPrice ?? p.markPx ?? p.fairPrice ?? 0
+  ) || 0;
   let uPnl = parseFloat(
     p.unrealizedPL ?? p.unrealizedPnl ?? p.unrealisedPnl ?? p.upl ?? p.uPL ??
-    p.achievedProfits ?? p.floatingProfit ?? p.profit ?? p.pnl ?? NaN
+    p.achievedProfits ?? p.floatingProfit ?? p.profit ?? p.pnl ?? p.profits ??
+    p.unrealisedPL ?? p.openPositionProfit ?? p.openProfit ?? p.currentPnl ??
+    p.openPnl ?? p.holdProfit ?? p.unrealizedProfit ?? p.upnl ?? NaN
   );
   if (!isFinite(uPnl) && avgPrice && markPrice && size) {
     const sign = side === 'long' ? 1 : -1;
@@ -1053,6 +1066,10 @@ function normalizeWeexPosition(p) {
   };
 }
 
+// One-time debug helper: log the raw WEEX position shape on first observation
+// after each deploy so we can discover field names.
+let _weexPositionSampleLogged = false;
+
 async function getWeexStatusCached() {
   if (!weexClient) return { wallet: null, positions: [] };
   const now = Date.now();
@@ -1063,6 +1080,15 @@ async function getWeexStatusCached() {
     weexClient.getWallet().catch(err => { console.warn('[weex wallet]', err.message || err); return _weexCache.wallet; }),
     weexClient.getAllPositions().catch(err => { console.warn('[weex positions]', err.message || err); return null; }),
   ]);
+  if (!_weexPositionSampleLogged && Array.isArray(rawPositions) && rawPositions.length > 0) {
+    _weexPositionSampleLogged = true;
+    console.log('[weex raw position sample]', JSON.stringify(rawPositions[0]));
+    if (!_weexCache.wallet) console.log('[weex raw wallet sample] null');
+  }
+  // Also log wallet shape once so we can verify equity/available field names.
+  if (wallet && !_weexCache.wallet) {
+    console.log('[weex raw wallet shape]', Object.keys(wallet).join(','), '=', JSON.stringify(wallet));
+  }
   const positions = Array.isArray(rawPositions)
     ? rawPositions.map(normalizeWeexPosition).filter(Boolean)
     : (_weexCache.positions || []);

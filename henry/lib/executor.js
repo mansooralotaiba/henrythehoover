@@ -115,14 +115,19 @@ export class Executor {
 
     // Dedupe by WEEX position. If a position already exists on the same
     // symbol+side, refuse the new setup so duplicate signals don't DCA into
-    // the existing trade. Caught the BNB DCA bug from 2026-05-21.
+    // the existing trade. Caught the BNB DCA bug from 2026-05-21. Defensive
+    // field lookups — WEEX field names vary across endpoints.
     try {
       const existing = await this.client.getPosition(symbol);
-      const existingSize = parseFloat(existing?.size ?? 0) || 0;
+      const existingSize = parseFloat(
+        existing?.size ?? existing?.total ?? existing?.qty ?? existing?.quantity ?? existing?.holdSize ?? 0
+      ) || 0;
       if (existingSize > 0) {
-        const existingSide = String(existing.holdSide || existing.posSide || existing.side || '').toLowerCase();
-        if (existingSide === s.side) {
-          await this._reject(s.signalId, symbol, `WEEX already has an open ${existingSide} position (size ${existingSize}) — skipping to avoid DCA`);
+        const existingSide = String(
+          existing?.holdSide ?? existing?.posSide ?? existing?.side ?? existing?.positionSide ?? ''
+        ).toLowerCase();
+        if (existingSide === s.side || !existingSide) {
+          await this._reject(s.signalId, symbol, `WEEX already has an open ${existingSide || 'position'} (size ${existingSize}) — skipping to avoid DCA`);
           return;
         }
       }
@@ -352,7 +357,9 @@ export class Executor {
   async _forceCloseIfOpen(trade, label) {
     try {
       const pos = await this.client.getPosition(trade.symbol);
-      const size = parseFloat(pos?.size ?? 0) || 0;
+      const size = parseFloat(
+        pos?.size ?? pos?.total ?? pos?.qty ?? pos?.quantity ?? pos?.holdSize ?? 0
+      ) || 0;
       if (size <= 0) return;
       const positionSide = trade.side === 'long' ? 'LONG' : 'SHORT';
       this.log.warn(`[executor] ${label} but WEEX position still open for ${trade.symbol} (size=${size}) — force-closing market`);
