@@ -1057,39 +1057,34 @@ const _weexCache = { wallet: null, positions: null, fetchedAt: 0 };
 const WEEX_CACHE_MS = 15000;
 
 // Normalize a raw WEEX position row into the shape the dashboard expects.
-// WEEX field names vary by endpoint and aren't documented uniformly — we try
-// every reasonable alias. If we ever see uPnl=0 with avgPrice=0 the actual
-// field name is something we haven't tried yet; check `[weex raw position
-// sample]` log line to find it.
+// Confirmed field shape from /capi/v2/account/position/allPosition on
+// 2026-05-21: symbol="cmt_<lower>", side="LONG|SHORT", size="<qty>",
+// open_value="<entry_notional>", unrealizePnl="<float>" (note: no "d" at
+// end, singular Pnl), leverage="<int>", liquidatePrice="<float>". markPrice
+// is NOT returned — derive it from avgPrice + uPnL/(size * sign).
 function normalizeWeexPosition(p) {
   if (!p) return null;
   const rawSymbol = String(p.symbol || '').toUpperCase();
   const symbol = rawSymbol.replace(/^CMT_/, '');
-  const side = String(
-    p.holdSide ?? p.posSide ?? p.side ?? p.positionSide ?? p.direction ?? ''
-  ).toLowerCase();
-  const size = parseFloat(
-    p.size ?? p.total ?? p.qty ?? p.quantity ?? p.holdSize ?? p.positionAmt ?? 0
-  ) || 0;
+  const side = String(p.side ?? p.holdSide ?? p.posSide ?? p.positionSide ?? '').toLowerCase();
+  const size = parseFloat(p.size ?? p.total ?? p.qty ?? p.quantity ?? 0) || 0;
   if (size <= 0) return null;
-  const avgPrice = parseFloat(
-    p.averagePrice ?? p.openPrice ?? p.avgEntryPrice ?? p.entryPrice ?? p.holdPrice ??
-    p.averageOpenPrice ?? p.avgPx ?? p.costPrice ?? p.openAvgPrice ?? p.avgPrice ?? 0
+  const openValue = parseFloat(p.open_value ?? p.openValue ?? 0) || 0;
+  // WEEX doesn't include avgPrice as a field; derive it from open_value / size.
+  let avgPrice = parseFloat(
+    p.averagePrice ?? p.openPrice ?? p.avgEntryPrice ?? p.entryPrice ?? 0
   ) || 0;
-  const markPrice = parseFloat(
-    p.markPrice ?? p.indexPrice ?? p.lastPrice ?? p.markPx ?? p.fairPrice ?? 0
-  ) || 0;
+  if (!avgPrice && openValue && size) avgPrice = openValue / size;
   let uPnl = parseFloat(
-    p.unrealizedPL ?? p.unrealizedPnl ?? p.unrealisedPnl ?? p.upl ?? p.uPL ??
-    p.achievedProfits ?? p.floatingProfit ?? p.profit ?? p.pnl ?? p.profits ??
-    p.unrealisedPL ?? p.openPositionProfit ?? p.openProfit ?? p.currentPnl ??
-    p.openPnl ?? p.holdProfit ?? p.unrealizedProfit ?? p.upnl ?? NaN
+    p.unrealizePnl ?? p.unrealizedPnl ?? p.unrealizedPL ?? p.upl ?? p.uPL ?? NaN
   );
-  if (!isFinite(uPnl) && avgPrice && markPrice && size) {
-    const sign = side === 'long' ? 1 : -1;
-    uPnl = (markPrice - avgPrice) * size * sign;
-  }
   if (!isFinite(uPnl)) uPnl = 0;
+  // markPrice not returned by WEEX — derive from current PnL relative to entry.
+  let markPrice = parseFloat(p.markPrice ?? p.indexPrice ?? 0) || 0;
+  if (!markPrice && avgPrice && size) {
+    const sign = side === 'long' ? 1 : -1;
+    markPrice = avgPrice + (uPnl / (size * sign));
+  }
   return {
     symbol, side, size, avgPrice, markPrice,
     uPnl,
@@ -1100,6 +1095,15 @@ function normalizeWeexPosition(p) {
 // One-time debug helper: log the raw WEEX position shape on first observation
 // after each deploy so we can discover field names.
 let _weexPositionSampleLogged = false;
+
+// Stats anchor — fix 2026-05-21 (today as the user wants) so the dashboard
+// only shows trades from this date forward. Override via HENRY_STATS_START_MS
+// env var (Unix ms). Used to filter both WEEX income events and the
+// persisted weex_trades fallback so historical data before this date is
+// excluded from today/month/total aggregates.
+const STATS_START_MS = process.env.HENRY_STATS_START_MS
+  ? parseInt(process.env.HENRY_STATS_START_MS, 10)
+  : Date.UTC(2026, 4, 21); // May 21, 2026 UTC midnight
 
 // Cache for WEEX income aggregation. The endpoint paginates 100 events per
 // call so we re-fetch sparingly. 30s TTL — trades don't close that fast.
@@ -1141,19 +1145,16 @@ function pairIncomeEvents(events) {
   return trades;
 }
 
-// WEEX-sourced PnL aggregation. Fetches income events from `sinceMs`,
-// pairs them into round-trips, and rolls up today/month/total with a daily
-// bar series. Returns null on any fetch failure (caller falls back to the
-// persisted Supabase aggregator).
+// WEEX-sourced PnL aggregation. Anchored at STATS_START_MS so the dashboard
+// only counts trades from that date forward — historical data before the
+// anchor is excluded entirely from today/month/total. Pairs income events
+// into round-trips and rolls up. Returns null on fetch failure.
 async function aggregateWeexIncomePnl() {
   if (!weexClient) return null;
   const now = Date.now();
   const cacheStale = now - _incomeCache.fetchedAt > INCOME_CACHE_MS;
   if (cacheStale) {
-    // Pull ~90 days so the month-of-month rollover doesn't lose data and
-    // the cumulative figure is meaningful for newer users.
-    const sinceMs = now - 90 * 24 * 60 * 60 * 1000;
-    const events = await weexClient.getAllIncomeSince(sinceMs, 30).catch(err => {
+    const events = await weexClient.getAllIncomeSince(STATS_START_MS, 30).catch(err => {
       console.warn('[weex income]', err.message || err); return null;
     });
     if (events) {
@@ -1167,10 +1168,14 @@ async function aggregateWeexIncomePnl() {
   const trades = pairIncomeEvents(events);
   const d = new Date(now);
   const startOfTodayUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  const startOfMonthUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  const startOfMonthUtc = Math.max(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1),
+    STATS_START_MS,
+  );
   let today = 0, month = 0, total = 0;
   const dailyMap = new Map();
   for (const tr of trades) {
+    if (tr.ts < STATS_START_MS) continue; // belt-and-suspenders
     total += tr.pnl;
     if (tr.ts >= startOfMonthUtc) {
       month += tr.pnl;
@@ -1223,12 +1228,15 @@ async function aggregatePersistedPnl(fallbackTrades) {
   const dim = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
   const emptyDaily = () => { const a = []; for (let d = 1; d <= dim; d++) a.push({ day: d, pnl: 0 }); return a; };
 
-  // Try persisted source first.
+  // Try persisted source first. Filter to >= STATS_START_MS so the
+  // dashboard only shows trades from the anchor date forward.
   try {
+    const startIso = new Date(STATS_START_MS).toISOString();
     const { data, error } = await supaAdmin
       .from('weex_trades')
       .select('closed_pnl, closed_at, state')
-      .eq('state', 'CLOSED');
+      .eq('state', 'CLOSED')
+      .gte('closed_at', startIso);
     if (!error && Array.isArray(data)) {
       let today = 0, month = 0, total = 0;
       const dailyMap = new Map();
@@ -1236,6 +1244,7 @@ async function aggregatePersistedPnl(fallbackTrades) {
         const pnl = parseFloat(r.closed_pnl) || 0;
         total += pnl;
         const ts = r.closed_at ? new Date(r.closed_at).getTime() : 0;
+        if (ts < STATS_START_MS) continue;
         if (ts >= startOfMonthUtc) {
           month += pnl;
           const d = new Date(ts).getUTCDate();
@@ -3074,7 +3083,9 @@ app.post('/api/scan/stop', requireAuth, (req, res) => {
 // Admin-scoped pair states for the Kingdom chart grid. Mirrors
 // /api/scan/all-pairs but always resolves to Mansoor's scan so non-admin
 // subscribers see Henry's live auto-scan charts instead of their own empty
-// scan state.
+// scan state. Also surfaces executor-recovered trades (from reconcile) for
+// pairs where the scan-loop pendSignal is empty but WEEX has an open
+// position, so the chart panel renders "in-trade" with SL/TP overlays.
 app.get('/api/kingdom/pairs', requireAuth, async (_req, res) => {
   const adminId = await getAdminUserId();
   if (!adminId) return res.json({ active: false, pairs: [], reason: 'admin_unresolved' });
@@ -3089,23 +3100,54 @@ app.get('/api/kingdom/pairs', requireAuth, async (_req, res) => {
     }
   }
   if (!pairCoins.size && sub.coin) pairCoins.add(sub.coin);
+
+  // Index executor trades by website pair symbol for merge below. Reconciled
+  // trades have synthetic signal IDs prefixed `recovered-`.
+  const executorByPair = new Map();
+  if (weexExecutor) {
+    for (const t of weexExecutor.snapshot()) {
+      if (t.state !== 'PENDING' && t.state !== 'ACTIVE') continue;
+      // Map executor symbol back to the website pair (XAUTUSDT → GOLD, etc.)
+      const websitePair = t.symbol === 'XAUTUSDT' ? 'GOLD' : t.symbol;
+      executorByPair.set(websitePair, t);
+      // Also include the WEEX symbol form in case the watchlist uses it directly.
+      executorByPair.set(t.symbol, t);
+    }
+  }
+
   const stats = await getUserPairStats(adminId).catch(() => ({}));
   const pairs = [];
   for (const coin of pairCoins) {
     const ps = sub.pairs && sub.pairs[coin];
+    const execTrade = executorByPair.get(coin);
+    // If the scan loop has no pendSignal but the executor knows about an
+    // active trade for this pair, fall back to the executor's view so the
+    // chart panel shows in-trade with SL/TP overlays.
+    const hasScanSignal = !!(ps && ps.pendSignal);
+    const useExecutorFallback = !hasScanSignal && !!execTrade;
     pairs.push({
       coin,
-      hasSignal: !!(ps && ps.pendSignal),
-      signal: ps && ps.pendSignal ? ps.pendSignal : null,
-      signalId: ps && ps.signalId ? ps.signalId : null,
+      hasSignal: hasScanSignal || useExecutorFallback,
+      signal: hasScanSignal
+        ? ps.pendSignal
+        : (useExecutorFallback ? {
+            direction: execTrade.side === 'long' ? 'LONG' : 'SHORT',
+            entry: execTrade.entryPrice,
+            sl: execTrade.slPrice,
+            tp: execTrade.tpPrice,
+            rr: null,
+            confidence: null,
+            recovered: !!execTrade.recovered,
+          } : null),
+      signalId: hasScanSignal ? ps.signalId : (useExecutorFallback ? execTrade.signalId : null),
       lastPrice: ps && ps.lastPrice != null ? ps.lastPrice : null,
       cooldownUntil: ps ? ps.cooldownUntil : 0,
       cooldownRemaining: ps ? Math.max(0, ps.cooldownUntil - Date.now()) : 0,
       pauseUntil: ps && ps.pauseUntil ? ps.pauseUntil : 0,
       pauseRemaining: ps && ps.pauseUntil ? Math.max(0, ps.pauseUntil - Date.now()) : 0,
       pauseReason: ps ? (ps.pauseReason || null) : null,
-      status: ps ? ps.lastStatus : 'idle',
-      entryAlerted: !!(ps && ps._entryAlerted),
+      status: hasScanSignal ? ps.lastStatus : (useExecutorFallback ? 'in-trade' : (ps ? ps.lastStatus : 'idle')),
+      entryAlerted: hasScanSignal ? !!ps._entryAlerted : (useExecutorFallback && execTrade.state === 'ACTIVE'),
       beAlerted: !!(ps && ps._beAlerted),
       tpAlerted: !!(ps && ps._tpAlerted),
       awaitingConfirmation: !!(ps && ps._confirmationPending),
