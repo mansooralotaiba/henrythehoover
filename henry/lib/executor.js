@@ -512,13 +512,17 @@ export class Executor {
     await this._persistClosed(trade);
   }
 
-  // Best-effort startup reconciliation. Reads open WEEX positions and their
-  // SL/TP plans, then rebuilds trade records so a Railway redeploy doesn't
-  // lose BE management. Trades recovered this way get a synthetic signalId
-  // prefixed `recovered-`. Warnings surface positions missing one or both
-  // plans (BE management won't work without an SL plan we can cancel/replace).
+  // Bidirectional reconciliation. Reads open WEEX positions + their SL/TP
+  // plans, then:
+  //   forward — any WEEX position with no tracked trade → create one (recover
+  //             from redeploy or external manual open).
+  //   reverse — any tracked open trade with no matching WEEX position →
+  //             mark CLOSED. Catches TP/SL plan orders that fired on WEEX
+  //             without going through handleTpHit/handleSlHit (which only
+  //             trigger for trades the scan loop knows about).
+  // Run on boot and on a 60s interval — see server.js wiring.
   async reconcile() {
-    const result = { recovered: 0, warnings: [] };
+    const result = { recovered: 0, cleaned: 0, warnings: [] };
     if (!this.client) return result;
     let positions, algos;
     try {
@@ -531,19 +535,33 @@ export class Executor {
       result.warnings.push(`fetch failed: ${err.message || err}`);
       return result;
     }
-    const isOpenState = (st) =>
-      st === TradeState.PENDING || st === TradeState.ACTIVE;
+    const isOpenState = (st) => st === TradeState.PENDING || st === TradeState.ACTIVE;
+
+    // Index live WEEX positions by symbol+side for both directions.
+    const livePositions = new Map();
     for (const pos of (positions || [])) {
-      const size = parseFloat(pos.size ?? 0) || 0;
+      const size = parseFloat(
+        pos.size ?? pos.total ?? pos.qty ?? pos.quantity ?? 0
+      ) || 0;
       if (size <= 0) continue;
       const symbol = String(pos.symbol || '').toUpperCase().replace(/^CMT_/, '');
-      const side = String(pos.holdSide || pos.posSide || pos.side || '').toLowerCase();
+      const side = String(
+        pos.side ?? pos.holdSide ?? pos.posSide ?? pos.positionSide ?? ''
+      ).toLowerCase();
       if (!symbol || (side !== 'long' && side !== 'short')) continue;
-      // Skip if executor already has an open trade for this symbol+side.
+      livePositions.set(`${symbol}|${side}`, pos);
+    }
+
+    // Forward — recover positions we aren't tracking.
+    for (const [key, pos] of livePositions.entries()) {
+      const [symbol, side] = key.split('|');
       const dupe = Array.from(this.trades.values()).find(t =>
         t.symbol === symbol && t.side === side && isOpenState(t.state)
       );
       if (dupe) continue;
+      const size = parseFloat(
+        pos.size ?? pos.total ?? pos.qty ?? pos.quantity ?? 0
+      ) || 0;
       const matching = (algos || []).filter(a => {
         const aSym = String(a.symbol || '').toUpperCase().replace(/^CMT_/, '');
         const aSide = String(a.positionSide || a.holdSide || '').toLowerCase();
@@ -551,7 +569,10 @@ export class Executor {
       });
       const slPlan = matching.find(a => String(a.planType || '').toUpperCase() === 'STOP_LOSS');
       const tpPlan = matching.find(a => String(a.planType || '').toUpperCase() === 'TAKE_PROFIT');
-      const avgPrice = parseFloat(pos.averagePrice ?? pos.openPrice ?? pos.avgEntryPrice ?? 0) || 0;
+      // WEEX field shape: open_value + size give entry; no averagePrice field.
+      const openValue = parseFloat(pos.open_value ?? pos.openValue ?? 0) || 0;
+      let avgPrice = parseFloat(pos.averagePrice ?? pos.openPrice ?? pos.avgEntryPrice ?? 0) || 0;
+      if (!avgPrice && openValue && size) avgPrice = openValue / size;
       const signalId = `recovered-${symbol}-${side}-${Date.now()}`;
       const trade = {
         signalId, pair: symbol, symbol, side,
@@ -580,8 +601,27 @@ export class Executor {
       } else if (!tpPlan) {
         result.warnings.push(`${symbol} ${side}: no TP plan — TP won't auto-close on WEEX`);
       }
-      this.log.info(`[executor reconcile] ${symbol} ${side} size=${size} entry=${avgPrice} sl=${trade.slPrice ?? '?'} tp=${trade.tpPrice ?? '?'}`);
+      this.log.info(`[executor reconcile] recover ${symbol} ${side} size=${size} entry=${avgPrice} sl=${trade.slPrice ?? '?'} tp=${trade.tpPrice ?? '?'}`);
     }
+
+    // Reverse — close stale tracked trades whose WEEX position has vanished.
+    // Triggered when a plan order (SL/TP) closed the position on WEEX side
+    // without our scan-loop monitor catching it (e.g. for recovered trades).
+    for (const trade of Array.from(this.trades.values())) {
+      if (!isOpenState(trade.state)) continue;
+      const key = `${trade.symbol}|${trade.side}`;
+      if (livePositions.has(key)) continue;
+      // Position gone. Mark CLOSED with closedPnl=0 (the WEEX income endpoint
+      // is the source of truth for actual realized PnL — this row is for the
+      // dashboard's chart-state cleanup, not the PnL aggregate).
+      trade.state = TradeState.CLOSED;
+      trade.updatedAt = Date.now();
+      result.cleaned++;
+      await this._persistClosed(trade);
+      await this._notify(`📋 Stale-clean: ${trade.symbol} ${trade.side.toUpperCase()} closed externally on WEEX (likely TP/SL plan fired)`);
+      this.log.info(`[executor reconcile] stale-clean ${trade.signalId} ${trade.symbol} ${trade.side}`);
+    }
+
     return result;
   }
 

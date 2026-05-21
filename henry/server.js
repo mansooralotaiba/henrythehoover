@@ -97,13 +97,20 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     },
   });
   console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD + ' lev=' + HENRY_LEVERAGE + 'x' + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
-  // Reconcile on boot so a Railway redeploy doesn't lose BE management on
-  // open positions. Best-effort: reads WEEX positions + their SL/TP plans
-  // and rebuilds trade records. See lib/executor.js reconcile().
-  weexExecutor.reconcile().then(r => {
-    if (r.recovered > 0) console.log(`[weex] reconcile recovered ${r.recovered} open position(s)`);
-    if (r.warnings && r.warnings.length) for (const w of r.warnings) console.warn(`[weex] reconcile warning: ${w}`);
-  }).catch(err => console.warn('[weex] reconcile failed on boot:', err.message || err));
+  // Reconcile on boot and every 60s so:
+  //   - Redeploy doesn't lose BE management on open positions (forward path)
+  //   - Stale trades close when WEEX's TP/SL plan fires server-side without
+  //     our scan-loop monitor seeing it (reverse path) — chart panels then
+  //     transition back to scanning within ~60s
+  const runReconcile = () => {
+    weexExecutor.reconcile().then(r => {
+      if (r.recovered > 0) console.log(`[weex] reconcile recovered ${r.recovered} open position(s)`);
+      if (r.cleaned > 0) console.log(`[weex] reconcile cleaned ${r.cleaned} stale trade(s)`);
+      if (r.warnings && r.warnings.length) for (const w of r.warnings) console.warn(`[weex] reconcile warning: ${w}`);
+    }).catch(err => console.warn('[weex] reconcile failed:', err.message || err));
+  };
+  runReconcile();
+  setInterval(runReconcile, 60_000);
 } else {
   console.log('[weex] disabled — WEEX_API_KEY/SECRET/PASSPHRASE not set');
 }
@@ -1145,16 +1152,21 @@ function pairIncomeEvents(events) {
   return trades;
 }
 
-// WEEX-sourced PnL aggregation. Anchored at STATS_START_MS so the dashboard
-// only counts trades from that date forward — historical data before the
-// anchor is excluded entirely from today/month/total. Pairs income events
-// into round-trips and rolls up. Returns null on fetch failure.
+// WEEX-sourced PnL aggregation. Anchored at STATS_START_MS for the AGGREGATE
+// filter (close-time >= anchor) but fetches 30 days further back so we can
+// pair opens-before-anchor with closes-after-anchor. Without the lookback,
+// unmatched closes would surface their full cash-flow value (the cost to
+// exit the position) as if it were realized PnL — produced the -$365 bug.
+//
+// Unmatched closes that remain even with the 30-day lookback (position opened
+// >30 days ago) are skipped — we can't compute real PnL without the open.
 async function aggregateWeexIncomePnl() {
   if (!weexClient) return null;
   const now = Date.now();
   const cacheStale = now - _incomeCache.fetchedAt > INCOME_CACHE_MS;
   if (cacheStale) {
-    const events = await weexClient.getAllIncomeSince(STATS_START_MS, 30).catch(err => {
+    const fetchFromMs = STATS_START_MS - 30 * 24 * 60 * 60 * 1000;
+    const events = await weexClient.getAllIncomeSince(fetchFromMs, 30).catch(err => {
       console.warn('[weex income]', err.message || err); return null;
     });
     if (events) {
@@ -1173,9 +1185,11 @@ async function aggregateWeexIncomePnl() {
     STATS_START_MS,
   );
   let today = 0, month = 0, total = 0;
+  let unmatchedSkipped = 0;
   const dailyMap = new Map();
   for (const tr of trades) {
-    if (tr.ts < STATS_START_MS) continue; // belt-and-suspenders
+    if (tr.ts < STATS_START_MS) continue;
+    if (tr.unmatched) { unmatchedSkipped++; continue; } // open >30d ago — skip
     total += tr.pnl;
     if (tr.ts >= startOfMonthUtc) {
       month += tr.pnl;
@@ -1184,10 +1198,13 @@ async function aggregateWeexIncomePnl() {
     }
     if (tr.ts >= startOfTodayUtc) today += tr.pnl;
   }
+  if (unmatchedSkipped > 0) {
+    console.log(`[weex income] skipped ${unmatchedSkipped} unmatched close(s) (open >30d ago)`);
+  }
   const dim = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
   const daily = [];
   for (let day = 1; day <= dim; day++) daily.push({ day, pnl: dailyMap.get(day) || 0 });
-  return { today, month, total, daily, closedCount: trades.length, source: 'weex_income' };
+  return { today, month, total, daily, closedCount: trades.length - unmatchedSkipped, source: 'weex_income' };
 }
 
 async function getWeexStatusCached() {
