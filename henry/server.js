@@ -64,6 +64,37 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
         } catch (err) { console.warn('[executor notifier]', err.message || err); }
       }
     },
+    // Persist every terminal trade to Supabase so PnL aggregates survive
+    // Railway redeploys. Best-effort: if the table is missing (user hasn't
+    // run db/weex_trades.sql yet) or Supabase is unreachable, log and move
+    // on — the executor's in-memory map still works for this process.
+    onTradeClosed: async (t) => {
+      try {
+        const { error } = await supaAdmin.from('weex_trades').upsert({
+          signal_id: t.signalId,
+          pair: t.pair || t.symbol,
+          symbol: t.symbol,
+          side: t.side,
+          entry_price: t.entryPrice || null,
+          sl_price: t.slPrice || null,
+          tp_price: t.tpPrice || null,
+          fill_price: t.fillPrice || null,
+          exit_price: t.exitPrice || null,
+          quantity: t.quantity || 0,
+          leverage: t.leverage || null,
+          state: t.state,
+          closed_pnl: t.closedPnl || 0,
+          slippage: t.slippage || 0,
+          recovered: !!t.recovered,
+          reject_reason: t.rejectReason || null,
+          closed_at: new Date(t.updatedAt || Date.now()).toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'signal_id' });
+        if (error) console.warn('[weex_trades upsert]', error.message);
+      } catch (err) {
+        console.warn('[weex_trades upsert]', err.message || err);
+      }
+    },
   });
   console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD + ' lev=' + HENRY_LEVERAGE + 'x' + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
   // Reconcile on boot so a Railway redeploy doesn't lose BE management on
@@ -1069,6 +1100,31 @@ function normalizeWeexPosition(p) {
 // One-time debug helper: log the raw WEEX position shape on first observation
 // after each deploy so we can discover field names.
 let _weexPositionSampleLogged = false;
+let _weexHistorySampleLogged = false;
+
+// WEEX-sourced PnL since `sinceMs`. Best-effort: depends on
+// /capi/v3/order/historyOrders existing and returning a realized-profit
+// field under one of several common names. Logs raw response once per
+// deploy so we can pin field names. Returns null when the endpoint isn't
+// usable; caller falls back to persisted Supabase aggregates.
+async function aggregateWeexHistoryPnl(sinceMs) {
+  if (!weexClient) return null;
+  const orders = await weexClient.getHistoryOrders({ startTime: sinceMs, limit: 500 }).catch(() => null);
+  if (!Array.isArray(orders) || !orders.length) return null;
+  if (!_weexHistorySampleLogged) {
+    _weexHistorySampleLogged = true;
+    console.log('[weex raw history order sample]', JSON.stringify(orders[0]));
+  }
+  let total = 0, count = 0;
+  for (const o of orders) {
+    const pnl = parseFloat(
+      o.profit ?? o.realizedPnl ?? o.realizedPNL ?? o.realizedProfit ??
+      o.closedPnl ?? o.netProfit ?? o.profits ?? NaN
+    );
+    if (isFinite(pnl) && pnl !== 0) { total += pnl; count++; }
+  }
+  return { total, count };
+}
 
 async function getWeexStatusCached() {
   if (!weexClient) return { wallet: null, positions: [] };
@@ -1097,14 +1153,49 @@ async function getWeexStatusCached() {
   _weexCache.fetchedAt = now;
   return { wallet, positions };
 }
-// PnL aggregation from the executor's in-memory snapshot.
-function aggregateExecutorPnl(trades) {
-  const closed = (trades || []).filter(t => t.state === 'CLOSED' && t.closedPnl != null);
+// PnL aggregation from Supabase's persistent `weex_trades` table. Falls back
+// to the executor's in-memory snapshot if the table is missing or the query
+// fails. Replaces the old in-memory-only aggregator which zeroed out on
+// every Railway redeploy.
+async function aggregatePersistedPnl(fallbackTrades) {
   const now = new Date();
   const startOfTodayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const startOfMonthUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const dim = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const emptyDaily = () => { const a = []; for (let d = 1; d <= dim; d++) a.push({ day: d, pnl: 0 }); return a; };
+
+  // Try persisted source first.
+  try {
+    const { data, error } = await supaAdmin
+      .from('weex_trades')
+      .select('closed_pnl, closed_at, state')
+      .eq('state', 'CLOSED');
+    if (!error && Array.isArray(data)) {
+      let today = 0, month = 0, total = 0;
+      const dailyMap = new Map();
+      for (const r of data) {
+        const pnl = parseFloat(r.closed_pnl) || 0;
+        total += pnl;
+        const ts = r.closed_at ? new Date(r.closed_at).getTime() : 0;
+        if (ts >= startOfMonthUtc) {
+          month += pnl;
+          const d = new Date(ts).getUTCDate();
+          dailyMap.set(d, (dailyMap.get(d) || 0) + pnl);
+        }
+        if (ts >= startOfTodayUtc) today += pnl;
+      }
+      const daily = []; for (let d = 1; d <= dim; d++) daily.push({ day: d, pnl: dailyMap.get(d) || 0 });
+      return { today, month, total, daily, closedCount: data.length, source: 'supabase' };
+    }
+    if (error) console.warn('[weex_trades aggregate]', error.message);
+  } catch (err) {
+    console.warn('[weex_trades aggregate]', err.message || err);
+  }
+
+  // Fallback: in-memory executor snapshot (resets on deploy).
+  const closed = (fallbackTrades || []).filter(t => t.state === 'CLOSED' && t.closedPnl != null);
   let today = 0, month = 0, total = 0;
-  const dailyMap = new Map(); // day-of-month -> pnl
+  const dailyMap = new Map();
   for (const t of closed) {
     const pnl = parseFloat(t.closedPnl) || 0;
     total += pnl;
@@ -1116,10 +1207,8 @@ function aggregateExecutorPnl(trades) {
     }
     if (ts >= startOfTodayUtc) today += pnl;
   }
-  const dim = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
-  const daily = [];
-  for (let d = 1; d <= dim; d++) daily.push({ day: d, pnl: dailyMap.get(d) || 0 });
-  return { today, month, total, daily, closedCount: closed.length };
+  const daily = []; for (let d = 1; d <= dim; d++) daily.push({ day: d, pnl: dailyMap.get(d) || 0 });
+  return { today, month, total, daily, closedCount: closed.length, source: 'memory' };
 }
 app.get('/api/bot/state', requireAdmin, async (_req, res) => {
   const trades = weexExecutor ? weexExecutor.snapshot() : [];
@@ -1130,7 +1219,7 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
       wallet = s.wallet; positions = s.positions;
     } catch (err) { console.warn('[bot/state]', err.message || err); }
   }
-  const pnl = aggregateExecutorPnl(trades);
+  const pnl = await aggregatePersistedPnl(trades);
   // Live additions — sum of unrealized PnL on currently-open WEEX positions.
   // pnl.today is the realized-only figure; pnl.todayLive blends realized +
   // unrealized so the headline number on Kingdom moves with the market.
@@ -1138,6 +1227,13 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
   pnl.openUPnl = openUPnl;
   pnl.todayLive = pnl.today + openUPnl;
   pnl.totalLive = pnl.total + openUPnl;
+  // Best-effort WEEX-history overlay (task #19). Once the endpoint is
+  // confirmed working, we can prefer this over persisted/memory aggregates
+  // for fees-accurate numbers. For now: log shape, expose alongside.
+  const now = Date.now();
+  const startOfTodayUtc = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate());
+  const weexToday = await aggregateWeexHistoryPnl(startOfTodayUtc).catch(() => null);
+  if (weexToday) pnl.weexToday = weexToday.total;
   res.json({
     available: !!weexExecutor,
     enabled: autoTradeEnabled,

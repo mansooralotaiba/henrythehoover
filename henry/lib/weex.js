@@ -313,6 +313,25 @@ export class WeexClient {
     return [];
   }
 
+  // Historical (closed) orders. Best-effort endpoint — WEEX docs aren't in
+  // hand; we try the most likely v3 path. Returns raw rows so the caller can
+  // adjust field-name extraction after one observed response. Returns [] on
+  // unknown error (so callers can fall back to Supabase persistence).
+  async getHistoryOrders({ symbol = null, startTime = null, endTime = null, limit = 100 } = {}) {
+    const params = { limit };
+    if (symbol) params.symbol = mapSymbol(symbol);
+    if (startTime) params.startTime = startTime;
+    if (endTime) params.endTime = endTime;
+    try {
+      const data = await this._request('GET', '/capi/v3/order/historyOrders', { params });
+      const rows = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
+      return rows;
+    } catch (err) {
+      this._log.warn('[weex history orders]', err.message || err);
+      return null;
+    }
+  }
+
   async cancelPlan({ symbol, planOrderId = null, clientAlgoId = null }) {
     if (!planOrderId && !clientAlgoId) throw new Error('planOrderId or clientAlgoId required');
     const body = { symbol: mapSymbolV2(symbol) };

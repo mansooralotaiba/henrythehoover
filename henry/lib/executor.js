@@ -70,15 +70,25 @@ function toWeexSymbol(pair) {
 }
 
 export class Executor {
-  constructor({ client, riskUsd, leverage, beFeeBufferBps, notifier, logger = console }) {
+  constructor({ client, riskUsd, leverage, beFeeBufferBps, notifier, onTradeClosed, logger = console }) {
     this.client = client;
     this.riskUsd = riskUsd;
     this.leverage = leverage;
     this.beFeeBufferBps = beFeeBufferBps;
     this.notifier = notifier || (async () => {});
+    // Called whenever a trade transitions to a terminal state (CLOSED, EXPIRED,
+    // INVALIDATED, REJECTED). The handler is responsible for persistence — we
+    // call it best-effort and swallow failures so a Supabase outage can't
+    // cascade into a stuck handler.
+    this.onTradeClosed = onTradeClosed || (async () => {});
     this.log = logger;
     this.trades = new Map();        // signalId -> trade
     this._signalChains = new Map(); // signalId -> Promise (serializes events per signal)
+  }
+
+  async _persistClosed(trade) {
+    try { await this.onTradeClosed(trade); }
+    catch (err) { this.log.warn('[executor onTradeClosed]', err.message || err); }
   }
 
   _runLocked(signalId, fn) {
@@ -332,9 +342,11 @@ export class Executor {
       await this._forceCloseIfOpen(t, 'TP hit');
       const exit = event.exitPrice ?? t.tpPrice;
       t.state = TradeState.CLOSED;
+      t.exitPrice = exit;
       t.closedPnl = notionalPnl(t, exit);
       t.updatedAt = Date.now();
       await this._notify(`💚 WEEX TP hit: ${t.symbol} pnl=$${t.closedPnl >= 0 ? '+' : ''}${t.closedPnl.toFixed(2)}`);
+      await this._persistClosed(t);
     });
   }
 
@@ -345,9 +357,11 @@ export class Executor {
       await this._forceCloseIfOpen(t, 'SL hit');
       const exit = event.exitPrice ?? t.slPrice;
       t.state = TradeState.CLOSED;
+      t.exitPrice = exit;
       t.closedPnl = notionalPnl(t, exit);
       t.updatedAt = Date.now();
       await this._notify(`💀 WEEX SL hit: ${t.symbol} pnl=$${t.closedPnl >= 0 ? '+' : ''}${t.closedPnl.toFixed(2)}`);
+      await this._persistClosed(t);
     });
   }
 
@@ -419,6 +433,7 @@ export class Executor {
     trade.state = newState;
     trade.updatedAt = Date.now();
     await this._notify(`💀 WEEX position closed: ${trade.symbol} (${label})`);
+    await this._persistClosed(trade);
   }
 
   async _rollbackPartial(symbol, entryOrderId, slOrderId) {
@@ -442,16 +457,24 @@ export class Executor {
 
   async _reject(signalId, symbol, reason, qty = 0) {
     this.log.warn(`[executor] REJECT ${signalId} (${symbol}): ${reason}`);
+    let trade;
     if (!this.trades.has(signalId)) {
-      this.trades.set(signalId, {
+      trade = {
         signalId, symbol, side: '?', pair: symbol,
         entryPrice: 0, slPrice: 0, tpPrice: 0,
         quantity: qty, leverage: this.leverage,
         state: TradeState.REJECTED, rejectReason: reason,
         createdAt: Date.now(), updatedAt: Date.now(),
-      });
+      };
+      this.trades.set(signalId, trade);
+    } else {
+      trade = this.trades.get(signalId);
+      trade.state = TradeState.REJECTED;
+      trade.rejectReason = reason;
+      trade.updatedAt = Date.now();
     }
     await this._notify(`❌ WEEX rejected ${symbol} (${signalId}): ${reason}`);
+    await this._persistClosed(trade);
   }
 
   // Best-effort startup reconciliation. Reads open WEEX positions and their
