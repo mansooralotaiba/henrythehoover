@@ -1406,6 +1406,110 @@ app.post('/api/admin/clear-pauses', requireAdmin, (req, res) => {
   res.json({ ok: true, pairsCleared, cleared, recentOutcomes });
 });
 
+// ── Correlation report (admin) ──────────────────────────────────────────────
+// Classifies every closed signal by what other crypto signals were open
+// concurrently. Mirrors the analyze_stacked.py logic. Use to monitor whether
+// the Patch 1 oppdir-veto is doing its job — same_cluster_opp_dir should
+// trend toward zero new entries once the veto is enabled.
+app.get('/api/admin/correlation-report', requireAdmin, async (_req, res) => {
+  try {
+    const adminId = await getAdminUserId();
+    if (!adminId) return res.status(503).json({ error: 'admin user not resolved' });
+    const { data: rows, error } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at')
+      .eq('user_id', adminId)
+      .order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const CRYPTO_CLUSTERS = new Set(['btc', 'largeCap', 'defi', 'meme', 'layer1']);
+    const closed = (rows || []).filter(r => ['TP', 'SL', 'BE', 'EXPIRED'].includes(r.outcome));
+    function effR(r) {
+      if (r.outcome === 'EXPIRED') return 0;
+      const rr = parseFloat(r.outcome_rr);
+      if (isFinite(rr)) return rr;
+      if (r.outcome === 'SL') return -1;
+      if (r.outcome === 'BE') return 0;
+      return 0;
+    }
+    function intervalsOverlap(a, b) {
+      const aS = new Date(a.created_at).getTime();
+      const aE = a.outcome_at ? new Date(a.outcome_at).getTime() : Date.now();
+      const bS = new Date(b.created_at).getTime();
+      const bE = b.outcome_at ? new Date(b.outcome_at).getTime() : Date.now();
+      return Math.max(aS, bS) < Math.min(aE, bE);
+    }
+    const buckets = {
+      solo: [], cross_cluster_opp_dir: [], cross_cluster_same_dir: [],
+      same_cluster_opp_dir: [], same_cluster_same_dir: [],
+    };
+    for (const s of closed) {
+      const sCluster = getClusterFor(s.pair);
+      let worst = 'solo'; // priority: same_cluster_same > same_cluster_opp > cross_cluster_same > cross_cluster_opp > solo
+      const rank = { same_cluster_same_dir: 4, same_cluster_opp_dir: 3, cross_cluster_same_dir: 2, cross_cluster_opp_dir: 1, solo: 0 };
+      for (const o of closed) {
+        if (o.id === s.id) continue;
+        if (!intervalsOverlap(s, o)) continue;
+        const oCluster = getClusterFor(o.pair);
+        if (!CRYPTO_CLUSTERS.has(sCluster) || !CRYPTO_CLUSTERS.has(oCluster)) continue;
+        const sameCluster = sCluster === oCluster;
+        const sameDir = s.direction === o.direction;
+        let cat;
+        if (sameCluster && sameDir) cat = 'same_cluster_same_dir';
+        else if (sameCluster && !sameDir) cat = 'same_cluster_opp_dir';
+        else if (!sameCluster && sameDir) cat = 'cross_cluster_same_dir';
+        else cat = 'cross_cluster_opp_dir';
+        if (rank[cat] > rank[worst]) worst = cat;
+      }
+      buckets[worst].push(s);
+    }
+
+    const summary = {};
+    for (const [cat, sigs] of Object.entries(buckets)) {
+      const n = sigs.length;
+      const totalR = sigs.reduce((a, b) => a + effR(b), 0);
+      const tp = sigs.filter(s => s.outcome === 'TP').length;
+      const sl = sigs.filter(s => s.outcome === 'SL').length;
+      const be = sigs.filter(s => s.outcome === 'BE').length;
+      const exp = sigs.filter(s => s.outcome === 'EXPIRED').length;
+      const closedN = tp + sl + be;
+      const wr = closedN ? (tp + be * 0.5) / closedN : 0;
+      summary[cat] = {
+        n, tp, sl, be, expired: exp,
+        winRate: +(wr * 100).toFixed(1),
+        totalR: +totalR.toFixed(2),
+        avgR: n ? +(totalR / n).toFixed(3) : 0,
+      };
+    }
+
+    // Per-pair stacked-vs-solo split
+    const perPair = {};
+    for (const [cat, sigs] of Object.entries(buckets)) {
+      for (const s of sigs) {
+        if (!perPair[s.pair]) perPair[s.pair] = { total: 0, solo: 0, stacked: 0, soloR: 0, stackedR: 0 };
+        perPair[s.pair].total++;
+        const r = effR(s);
+        if (cat === 'solo') { perPair[s.pair].solo++; perPair[s.pair].soloR += r; }
+        else { perPair[s.pair].stacked++; perPair[s.pair].stackedR += r; }
+      }
+    }
+    for (const k of Object.keys(perPair)) {
+      perPair[k].soloR = +perPair[k].soloR.toFixed(2);
+      perPair[k].stackedR = +perPair[k].stackedR.toFixed(2);
+    }
+
+    res.json({
+      totalClosed: closed.length,
+      summary,
+      perPair,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[correlation-report]', err.message || err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Futures proxies ─────────────────────────────────────────────────────────
 const proxyOpts = (target, prefix) => ({
   target,
@@ -2595,6 +2699,62 @@ function checkPortfolioHeat(sub, coin) {
     return { blocked: true, code: 'heat-cluster', reason: `Cluster ${target} already at cap (${inCluster}/${targetMax}: ${(byCluster[target] || []).join(', ')})` };
   }
   return { blocked: false };
+}
+
+// Patch 1 — opposite-direction veto within the same cluster.
+// Pre-AI heat check is count-only (can't know direction before AI runs). This
+// veto fires AFTER the AI returns a direction, before the signal is staged
+// as pending. Historical analysis (2026-05-23, 154 trades): the
+// same_cluster_opp_dir category was 18 trades, 25% WR, -4.86R total — clearly
+// trading correlated noise. Blocking it recovers that drag without touching
+// same-direction stacking (which is profitable, +23.25R, 56% WR).
+function checkOppositeDirectionConflict(sub, coin, newDirection) {
+  if (!newDirection || newDirection === 'NO TRADE') return { blocked: false };
+  const target = getClusterFor(coin);
+  const { byCluster } = getActivePortfolio(sub);
+  const inCluster = byCluster[target] || [];
+  for (const c of inCluster) {
+    if (c === coin) continue;
+    const otherPs = sub.pairs?.[c];
+    const existingDir = otherPs?.pendSignal?.direction;
+    if (existingDir && existingDir !== 'NO TRADE' && existingDir !== newDirection) {
+      return {
+        blocked: true,
+        code: 'oppdir-veto',
+        reason: `Cluster ${target} already has ${existingDir} on ${c} — refusing ${newDirection} on ${coin} (correlated noise)`,
+        conflictCoin: c,
+        conflictDirection: existingDir,
+      };
+    }
+  }
+  return { blocked: false };
+}
+
+// Patch 2 — canonical session names. The AI returns slightly inconsistent
+// labels ("Asia/Early London" vs "Asian/Early London" vs "asian early lon")
+// which fragments performance analytics by session. Normalise to a fixed
+// whitelist so /performance bucket-by-session is reliable.
+const SESSION_PATTERNS = [
+  // Order matters — more specific patterns first.
+  { re: /asia[n]?[\s/]*london[\s/]*overlap/, canon: 'Asia/London Overlap' },
+  { re: /asia[n]?[\s/]*early[\s/]*london[\s/]*overlap/, canon: 'Asia/Early London Overlap' },
+  { re: /asia[n]?[\s/]*early[\s/]*london/, canon: 'Asia/Early London' },
+  { re: /asia[n]?[\s/]*early[\s/]*eu[\s/]*overlap/, canon: 'Asia/Early EU Overlap' },
+  { re: /asia[n]?[\s/]*early[\s/]*eu/, canon: 'Asia/Early EU' },
+  { re: /london[\s/]*ny[\s/]*overlap|ldn[\s/]*ny[\s/]*overlap/, canon: 'London/NY Overlap' },
+  { re: /us[\s-]*pre[\s-]*market|premarket/, canon: 'US Pre-Market' },
+  { re: /new\s+york|ny\s+open|^ny$/, canon: 'New York' },
+  { re: /^london$/, canon: 'London' },
+  { re: /^us$/, canon: 'US' },
+  { re: /^asia[n]?$/, canon: 'Asia' },
+];
+function normalizeSessionName(s) {
+  if (!s) return null;
+  const lower = String(s).toLowerCase().trim();
+  for (const p of SESSION_PATTERNS) {
+    if (p.re.test(lower)) return p.canon;
+  }
+  return s; // unknown — keep original, will surface in analytics as "needs new pattern"
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -5197,7 +5357,42 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
     return signal;
   }
 
+  // Patch 1 — opposite-direction veto. If another pair in the same correlation
+  // cluster already has a pending or in-trade position in the OPPOSITE
+  // direction, refuse this new signal. We're not adding edge by stacking
+  // LONG+SHORT on highly-correlated pairs — we're paying double fees and
+  // trading noise. Same-direction stacking stays allowed (it's profitable
+  // historically, see analyze_stacked.py results).
+  {
+    const conflict = checkOppositeDirectionConflict(sub, coin, signal.direction);
+    if (conflict.blocked) {
+      console.log(`[oppdir veto] ${coin} ${signal.direction}: ${conflict.reason}`);
+      await sendPushTo(userId, {
+        title: `${coin.replace('USDT', '')}: setup rejected`,
+        body: conflict.reason,
+        icon: '/manifest.json',
+      });
+      if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
+        // Post a compact veto card to the auto-scan webhook so it's auditable
+        try {
+          const url = process.env.DISCORD_AUTO_WEBHOOK;
+          if (url) await fetch(url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: `🚫 **Oppdir Veto** · ${coin} ${signal.direction}\n${conflict.reason}`,
+            }),
+          });
+        } catch (e) { console.error('[discord oppdir]', e.message); }
+      }
+      // Cooldown so we don't immediately retrigger on the next scan tick
+      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+      ps.lastVetoReason = conflict.reason;
+      return signal;
+    }
+  }
+
   signal = validateAndFixBEServer(signal);
+  signal.session = normalizeSessionName(signal.session);
   if (signal.confidence != null) signal.confidence = Math.max(0, Math.min(100, parseFloat(signal.confidence) || 0));
 
   // Confirm-then-execute flow: at signal generation we DON'T persist the
