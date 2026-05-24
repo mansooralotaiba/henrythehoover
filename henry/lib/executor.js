@@ -78,14 +78,22 @@ function toWeexSymbol(pair) {
 }
 
 export class Executor {
-  constructor({ client, riskUsd, leverage, leverageOverrides = {}, beFeeBufferBps, notifier, onTradeClosed, logger = console }) {
+  constructor({ client, riskUsd, leverage, leverageOverrides = {}, riskOverrides = {}, beFeeBufferBps, beFeeBufferOverrides = {}, notifier, onTradeClosed, logger = console }) {
     this.client = client;
     this.riskUsd = riskUsd;
     this.leverage = leverage;
     // Per-symbol leverage override map (e.g. {ETHUSDT: 100, BNBUSDT: 25}).
     // Falls back to `this.leverage` for symbols not in the map.
     this.leverageOverrides = leverageOverrides || {};
+    // Per-symbol risk-$ override map (e.g. {XAUTUSDT: 30}). For pairs with
+    // historically stronger edge we can risk more per trade. Falls back to
+    // `this.riskUsd` for symbols not in the map.
+    this.riskOverrides = riskOverrides || {};
     this.beFeeBufferBps = beFeeBufferBps;
+    // Per-symbol BE fee-buffer override (bps). WEEX doesn't charge fees on
+    // XAUT, so the 12 bps buffer would just give back unrecovered alpha.
+    // Setting it to 0 for those symbols means BE = entry exactly.
+    this.beFeeBufferOverrides = beFeeBufferOverrides || {};
     this.notifier = notifier || (async () => {});
     // Called whenever a trade transitions to a terminal state (CLOSED, EXPIRED,
     // INVALIDATED, REJECTED). The handler is responsible for persistence — we
@@ -106,6 +114,19 @@ export class Executor {
     const sym = String(symbol || '').toUpperCase();
     const override = this.leverageOverrides[sym];
     return (override && override > 0) ? override : this.leverage;
+  }
+
+  _riskFor(symbol) {
+    const sym = String(symbol || '').toUpperCase();
+    const override = this.riskOverrides[sym];
+    return (override && override > 0) ? override : this.riskUsd;
+  }
+
+  _beBufferFor(symbol) {
+    const sym = String(symbol || '').toUpperCase();
+    const override = this.beFeeBufferOverrides[sym];
+    // explicit 0 is meaningful (means "no buffer"), only fall back if undefined
+    return override != null ? override : this.beFeeBufferBps;
   }
 
   _runLocked(signalId, fn) {
@@ -209,8 +230,9 @@ export class Executor {
     const pricePrecision = parseInt(info.pricePrecision ?? 0, 10) || 0;
     const minSize = parseFloat(info.minOrderSize ?? 0) || 0;
 
+    const effectiveRiskUsd = this._riskFor(symbol);
     const { qty, reject } = computePositionSize({
-      entry: s.entry, sl: s.sl, riskUsd: this.riskUsd,
+      entry: s.entry, sl: s.sl, riskUsd: effectiveRiskUsd,
       quantityPrecision: qtyPrecision, minOrderSize: minSize,
     });
     if (reject) {
@@ -353,7 +375,8 @@ export class Executor {
       return;
     }
 
-    let adjusted = beWithFeeBuffer(s.newSl, trade.side, this.beFeeBufferBps);
+    const beBufferBps = this._beBufferFor(trade.symbol);
+    let adjusted = beWithFeeBuffer(s.newSl, trade.side, beBufferBps);
     try {
       const info = await this.client.getSymbolInfo(trade.symbol);
       adjusted = roundPrice(adjusted, parseInt(info.pricePrecision ?? 0, 10) || 0);

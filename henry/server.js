@@ -53,6 +53,33 @@ const HENRY_LEVERAGE_OVERRIDES = (() => {
   }
 })();
 const HENRY_BE_FEE_BUFFER_BPS = parseFloat(process.env.HENRY_BE_FEE_BUFFER_BPS) || 12;
+// Per-symbol risk-$ overrides. Gold has 4× the per-trade R historically so we
+// risk-weight it. Env var override JSON like {"XAUTUSDT":30}.
+const HENRY_RISK_OVERRIDES = (() => {
+  const raw = process.env.HENRY_RISK_OVERRIDES;
+  if (!raw) return { XAUTUSDT: 30 };
+  try { return JSON.parse(raw); } catch (err) {
+    console.warn('[weex] HENRY_RISK_OVERRIDES not valid JSON:', err.message);
+    return { XAUTUSDT: 30 };
+  }
+})();
+// Per-symbol BE fee-buffer overrides. WEEX charges 0% fees on XAUT futures
+// (verified 2026-05-24), so the 12 bps default buffer just gives back unrealised
+// alpha on every BE move. Set to 0 for fee-free symbols.
+const HENRY_BE_FEE_BUFFER_OVERRIDES = (() => {
+  const raw = process.env.HENRY_BE_FEE_BUFFER_OVERRIDES;
+  if (!raw) return { XAUTUSDT: 0 };
+  try { return JSON.parse(raw); } catch (err) {
+    console.warn('[weex] HENRY_BE_FEE_BUFFER_OVERRIDES not valid JSON:', err.message);
+    return { XAUTUSDT: 0 };
+  }
+})();
+// Bump XAUT default leverage to 50x (from base 10x) so the $30 risk doesn't
+// eat all the available margin. WEEX maxLeverage on XAUT is 400; 50x leaves
+// healthy headroom while still being capital-efficient.
+if (!('XAUTUSDT' in HENRY_LEVERAGE_OVERRIDES)) {
+  HENRY_LEVERAGE_OVERRIDES.XAUTUSDT = parseInt(process.env.HENRY_GOLD_LEVERAGE || '50', 10);
+}
 const HENRY_DRY_RUN = (process.env.HENRY_DRY_RUN || '').toLowerCase() === 'true';
 let weexClient = null, weexExecutor = null;
 if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_API_PASSPHRASE) {
@@ -68,7 +95,9 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     riskUsd: HENRY_RISK_USD,
     leverage: HENRY_LEVERAGE,
     leverageOverrides: HENRY_LEVERAGE_OVERRIDES,
+    riskOverrides: HENRY_RISK_OVERRIDES,
     beFeeBufferBps: HENRY_BE_FEE_BUFFER_BPS,
+    beFeeBufferOverrides: HENRY_BE_FEE_BUFFER_OVERRIDES,
     notifier: async (msg) => {
       if (process.env.DISCORD_JOURNAL_WEBHOOK) {
         try {
@@ -112,6 +141,9 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     },
   });
   console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD + ' lev=' + HENRY_LEVERAGE + 'x' + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
+  console.log('[weex] leverageOverrides:', JSON.stringify(HENRY_LEVERAGE_OVERRIDES));
+  console.log('[weex] riskOverrides:', JSON.stringify(HENRY_RISK_OVERRIDES));
+  console.log('[weex] beFeeBufferOverrides:', JSON.stringify(HENRY_BE_FEE_BUFFER_OVERRIDES));
   // Reconcile on boot and every 60s so:
   //   - Redeploy doesn't lose BE management on open positions (forward path)
   //   - Stale trades close when WEEX's TP/SL plan fires server-side without
@@ -2654,6 +2686,26 @@ function inferTriggerDirection(trigger) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// PER-PAIR TIMEFRAME OVERRIDE
+// ════════════════════════════════════════════════════════════════════════════
+// Gold lives on the 5-minute chart by request — its volatility profile makes
+// 15m too slow for the institutional-flow setups we're catching. Other pairs
+// keep whatever the scan subscription's default TF is. Env var
+// HENRY_TF_OVERRIDES lets us tune further without a redeploy.
+const HENRY_TF_OVERRIDES = (() => {
+  const raw = process.env.HENRY_TF_OVERRIDES;
+  if (!raw) return { XAUTUSDT: '5m', GOLD: '5m', XAUUSD: '5m' };
+  try { return JSON.parse(raw); } catch (err) {
+    console.warn('[scan] HENRY_TF_OVERRIDES not valid JSON:', err.message);
+    return { XAUTUSDT: '5m', GOLD: '5m', XAUUSD: '5m' };
+  }
+})();
+function tfForCoin(coin, defaultTf) {
+  const sym = String(coin || '').toUpperCase();
+  return HENRY_TF_OVERRIDES[sym] || defaultTf;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // CORRELATION CLUSTERS — portfolio heat caps
 // ════════════════════════════════════════════════════════════════════════════
 function getClusterFor(coin) {
@@ -4780,6 +4832,62 @@ async function fetchDXYContextServer() {
   }
 }
 
+// DXY divergence detector — produces a trigger-like object when DXY and gold
+// move in incongruous directions (signalling strong-demand or weak-demand
+// imbalance). Only applies to gold/metals/oil pairs since those are dollar-
+// denominated. Called as a fallback in processPair when the base trigger
+// detector returns nothing — gives gold an extra signal source.
+async function detectDxyDivergence(coin, candles) {
+  if (!/^(GOLD|XAU|XAG|XTI|XBR)/i.test(coin)) return null;
+  if (!candles || candles.length < 10) return null;
+  const d = await fetchDXYContextServer().catch(() => null);
+  if (!d || d.dxyChange == null) return null;
+  const dxyChange = parseFloat(d.dxyChange);
+  if (!isFinite(dxyChange)) return null;
+  // Gold's intraday change from the last ~6 candles (≈30min on 5m, ≈90min on 15m)
+  const startC = candles[candles.length - 6];
+  const endC = candles[candles.length - 1];
+  if (!startC || !endC) return null;
+  const goldChange = ((endC.c - startC.c) / startC.c) * 100;
+  // STRONG GOLD: dollar rallies but gold doesn't fall (or rallies anyway).
+  // Classic high-conviction LONG setup — heavy institutional demand absorbing
+  // the dollar-strength headwind.
+  if (dxyChange > 0.30 && goldChange > -0.05) {
+    return {
+      type: 'DXY_DIVERGENCE',
+      desc: `DXY +${dxyChange.toFixed(2)}% but gold ${goldChange >= 0 ? '+' : ''}${goldChange.toFixed(2)}% — strong demand absorbing dollar strength`,
+      direction: 'LONG',
+    };
+  }
+  // WEAK GOLD: dollar falls sharply but gold can't catch a bid. Lack of
+  // demand even with macro tailwind — bearish reversal setup.
+  if (dxyChange < -0.30 && goldChange < 0.05) {
+    return {
+      type: 'DXY_DIVERGENCE',
+      desc: `DXY ${dxyChange.toFixed(2)}% but gold only ${goldChange >= 0 ? '+' : ''}${goldChange.toFixed(2)}% — demand absent despite dollar weakness`,
+      direction: 'SHORT',
+    };
+  }
+  return null;
+}
+
+// Imminent high-impact news event check — used to skip new gold entries 30
+// min before / 5 min after major USD/EUR/GBP releases (NFP, CPI, FOMC,
+// rate decisions). Re-uses the existing _calendarCache populated by
+// fetchCalendarContext, so callers must ensure the cache is warm.
+function imminentGoldNewsEvent(now = Date.now(), minutesAhead = 30) {
+  const events = (_calendarCache && _calendarCache.items) || [];
+  const aheadMs = minutesAhead * 60 * 1000;
+  const behindMs = 5 * 60 * 1000;
+  for (const e of events) {
+    if (e.imp !== 'high') continue;
+    if (!['USD', 'EUR', 'GBP'].includes(e.zone)) continue;
+    const dt = e.dt - now;
+    if (dt > -behindMs && dt < aheadMs) return e;
+  }
+  return null;
+}
+
 function buildDXYContextString(d) {
   if (!d || !d.dxy) return '';
   const lines = ['DXY / DOLLAR MACRO (primary correlation for metals & oil — replaces BTC):'];
@@ -5238,8 +5346,11 @@ async function postSkippedToDiscord(signal, confirmPrice, driftPct, broker, tf) 
 }
 
 // Main entry — runs the full AI flow on the server when a trigger fires for a pair.
-async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, brokerOverride) {
-  const { tf, isAdmin } = sub;
+async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, brokerOverride, tfOverride) {
+  const { isAdmin } = sub;
+  // tfOverride lets per-pair scanners (e.g. gold on 5m) use a different TF
+  // than the subscription default. Falls back to sub.tf for everything else.
+  const tf = tfOverride || sub.tf;
   // Route to the pair's appropriate broker (GOLD → massive, etc.)
   const broker = brokerOverride || brokerForPair(coin, sub.broker);
   const lastClose = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
@@ -5591,12 +5702,39 @@ async function processPair(userId, sub, coin) {
   ps._scanLockAt = Date.now();
   ps.lastStatus = 'scanning';
 
+  // Per-pair timeframe override — gold scans on 5m even when the subscription
+  // default is 15m. Threaded into every downstream fetch + the AI prompt so
+  // the AI knows which TF it's analysing.
+  const effectiveTf = tfForCoin(coin, sub.tf);
+
+  // Gold news gate — skip new gold entries within 30 min of a high-impact
+  // USD/EUR/GBP release (NFP/CPI/FOMC/etc). Calendar cache warmed lazily.
+  if (/^(GOLD|XAU|XAG|XTI|XBR)/i.test(coin)) {
+    try { await fetchCalendarContext(); } catch {}
+    const ev = imminentGoldNewsEvent();
+    if (ev) {
+      const mins = Math.round((ev.dt - Date.now()) / 60000);
+      console.log('[gold news gate]', coin, 'skipping —', ev.zone, ev.name, mins >= 0 ? `in ${mins} min` : `${-mins} min ago`);
+      ps.lastStatus = 'news-gate';
+      ps.lastVetoReason = `News gate: ${ev.zone} ${ev.name} (${mins >= 0 ? mins + 'min ahead' : -mins + 'min ago'})`;
+      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+      return;
+    }
+  }
+
   try {
     // Fetch candles + detect trigger (using the pair's appropriate broker)
     let candles, trigger;
     try {
-      candles = await fetchCandlesServer(coin, sub.tf, 30, broker);
+      candles = await fetchCandlesServer(coin, effectiveTf, 30, broker);
       trigger = (candles && candles.length >= 11) ? detectTrigger(candles) : null;
+      // Gold/metals fallback: if no base trigger fired, try the DXY-divergence
+      // detector. This gives gold an extra signal source — see analysis showing
+      // gold is your highest-edge instrument (~0.82R/trade vs ~0.22R for crypto).
+      if (!trigger && /^(GOLD|XAU|XAG|XTI|XBR)/i.test(coin)) {
+        trigger = await detectDxyDivergence(coin, candles).catch(() => null);
+        if (trigger) console.log('[dxy divergence]', coin, trigger.desc);
+      }
     } catch (e) {
       console.error('[scan]', coin, e.message);
       return;
@@ -5627,7 +5765,7 @@ async function processPair(userId, sub, coin) {
     }
 
     // Compute confluence score as INFO (passed to AI), no longer a hard gate.
-    const pre = await preAiConfluenceScore(coin, sub.tf, broker, candles, trigger).catch(() => null);
+    const pre = await preAiConfluenceScore(coin, effectiveTf, broker, candles, trigger).catch(() => null);
     ps.lastPreScore = pre ? pre.score : null;
 
     // Cache for AI prompt + later use (all filter data — AI decides what to do with it)
@@ -5656,7 +5794,7 @@ async function processPair(userId, sub, coin) {
     // 6) Run full AI analysis for this pair (now with ATR + ADX + class context)
     let aiSignal = null;
     try {
-      aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker);
+      aiSignal = await runServerAIForPair(userId, sub, coin, ps, trigger, candles, broker, effectiveTf);
     } catch (e) { console.error('[runServerAIForPair]', coin, e.message); }
 
     // Fallback: AI failed → still push a trigger alert
@@ -5666,7 +5804,7 @@ async function processPair(userId, sub, coin) {
         title: `⚡ ${trigger.type.toUpperCase()}: ${coin.replace('USDT', '').replace('1000', '')}`,
         body: `${trigger.desc}. Open Henry to run AI analysis.`,
         icon: '/manifest.json',
-        data: { coin, tf: sub.tf, broker, trigger },
+        data: { coin, tf: effectiveTf, broker, trigger },
       });
     }
   } finally {
