@@ -35,7 +35,17 @@ export const TradeState = Object.freeze({
 function roundDown(value, precision) {
   const step = Math.pow(10, -precision);
   if (!isFinite(step) || step <= 0) return Math.floor(value);
-  return Math.floor(value / step) * step;
+  const stepped = Math.floor(value / step) * step;
+  // Strip IEEE 754 noise. `Math.floor(13.636/0.1) * 0.1` evaluates to
+  // 13.600000000000001 — JS sends that string to WEEX, which rejects it for
+  // not matching stepSize='0.1'. Re-formatting via toFixed eliminates the
+  // trailing noise; parseFloat returns a clean Number.
+  if (precision >= 0) {
+    return parseFloat(stepped.toFixed(precision));
+  }
+  // Negative precision (step >= 10): step multiples are integers; round to
+  // the nearest integer to clear any residual float noise.
+  return Math.round(stepped);
 }
 
 function roundPrice(value, precision) {
