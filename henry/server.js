@@ -24,10 +24,28 @@ const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').to
 // Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
 // Models from generation 4.6+ use the dateless format `claude-{name}-{major}-{minor}`.
 const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-6';
-// BE trigger: how far in profit before SL moves to breakeven. Default 70% of
-// the way to TP (was 50%) — tested as the sweet spot in backtest. Override via
-// HENRY_BE_TRIGGER_PCT env var on Railway (e.g. 0.5 for legacy behavior).
-const BE_TRIGGER_PCT = parseFloat(process.env.HENRY_BE_TRIGGER_PCT) || 0.7;
+// BE trigger: how far in profit before SL moves to breakeven. Default 50% of
+// the way to TP (was 70%, lowered 2026-05-30 after analyze_ny_sweep.py showed
+// ~45-48% of all SL hits would have recovered to entry within 4h — tighter BE
+// trigger protects more trades from the sweep). Override via
+// HENRY_BE_TRIGGER_PCT env var on Railway.
+const BE_TRIGGER_PCT = parseFloat(process.env.HENRY_BE_TRIGGER_PCT) || 0.5;
+// Stop-loss ATR buffer multiplier. AI prompt instructs SL placement beyond
+// structural invalidation + this many ATRs. Bumped 1.5 → 2.0 on 2026-05-30
+// after the same sweep analysis showed wider SLs would survive sweep-and-
+// recover patterns ~30-40% more often.
+const SL_ATR_BUFFER = parseFloat(process.env.HENRY_SL_ATR_BUFFER) || 2.0;
+// NY-open entry block window (UTC minutes). Skip new signal generation during
+// the NY sweep window — existing trades stay monitored. Set to 'false' on
+// Railway to disable.
+const HENRY_BLOCK_NY_OPEN = (process.env.HENRY_BLOCK_NY_OPEN ?? 'true').toLowerCase() === 'true';
+const NY_OPEN_BLOCK_START_MIN = 13 * 60;        // 13:00 UTC
+const NY_OPEN_BLOCK_END_MIN   = 15 * 60 + 30;   // 15:30 UTC
+// Pre-NY-open SL→BE protection window (UTC minutes). Auto-move SL to BE for
+// any in-profit trade when we enter the 5min window before NY open. Trades
+// not in profit yet stay at original SL.
+const PRE_NY_BE_WINDOW_START_MIN = 13 * 60 - 5; // 12:55 UTC
+const PRE_NY_BE_WINDOW_END_MIN   = 13 * 60;     // 13:00 UTC
 const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
   ? 'sandbox-api.paddle.com'
   : 'api.paddle.com';
@@ -3808,6 +3826,31 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     fireExecutor('handleEntryHit', { signalId: ps.signalId, fillPrice: price }, 'entryHit');
   }
 
+  // Pre-NY-open SL→BE protection. If we're in the 5min window before NY equity
+  // open (12:55-13:00 UTC) and the trade is currently in profit, force-move
+  // SL to BE regardless of the normal BE_TRIGGER_PCT threshold. Trades that
+  // get swept at NY open recover ~46% of the time per analyze_ny_sweep.py.
+  if (ps._entryAlerted && !ps._beAlerted && !ps._preNyBeFired) {
+    const now = new Date();
+    const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const inPreNyWindow = utcMin >= PRE_NY_BE_WINDOW_START_MIN && utcMin < PRE_NY_BE_WINDOW_END_MIN;
+    const inProfit = isLong ? price > e : price < e;
+    if (inPreNyWindow && inProfit) {
+      ps._preNyBeFired = true;
+      ps._beAlerted = true;
+      console.log('[pre-ny BE]', coin, ps.pendSignal.direction, 'in profit at', price, 'before NY open — moving SL to', e);
+      await notifyUser(userId, isAdmin, {
+        title: '⚡ PRE-NY SL→BE',
+        body: `${coin.replace('USDT', '')} in profit before NY open — moving SL to ${e} to survive the sweep window.`,
+        color: 'am',
+      });
+      if (!ps._weexBeFired && autoTradeAllowed(isAdmin) && ps.signalId) {
+        ps._weexBeFired = true;
+        fireExecutor('handleMoveSlBe', { signalId: ps.signalId, newSl: e }, 'moveSlBe-preNY');
+      }
+    }
+  }
+
   // BE — uses recentHigh (LONG) / recentLow (SHORT) so a wick that briefly
   // tags the BE level between polls still fires the alert.
   if (ps._entryAlerted && !ps._beAlerted) {
@@ -5091,12 +5134,12 @@ function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCand
   if (indicators && indicators.atr14 != null) {
     const am = atrMultiplierForAsset(coin);
     const atrStopDist = indicators.atr14 * am.multiplier;
-    const buffer = indicators.atr14 * 1.5;
+    const buffer = indicators.atr14 * SL_ATR_BUFFER;
     lines.push(
       `\nVOLATILITY (ATR-based stops — REPLACES fixed/round-number stops):` +
       `\n  ATR(14) on ${tf} = ${indicators.atr14.toFixed(4)}` +
       `\n  Asset class: ${am.klass} → multiplier ${am.multiplier}× ATR = ${atrStopDist.toFixed(4)} stop distance from entry` +
-      `\n  STOP PLACEMENT RULE: place SL BEYOND structure (swing low for LONG, swing high for SHORT) + ${buffer.toFixed(4)} (1.5×ATR) buffer.` +
+      `\n  STOP PLACEMENT RULE: place SL BEYOND structure (swing low for LONG, swing high for SHORT) + ${buffer.toFixed(4)} (${SL_ATR_BUFFER.toFixed(1)}×ATR) buffer.` +
       `\n  NEVER place SL on a round number — algos hunt those. Offset by at least 0.5×ATR.`
     );
   }
@@ -5211,16 +5254,16 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     '',
     'STOP-LOSS PLACEMENT — ATR-BASED (CRITICAL):',
     '• Use the ATR value provided in the context block. The asset-class multiplier is also given.',
-    '• Place SL BEYOND the structural invalidation level (swing low for LONG, swing high for SHORT) PLUS a 1.5×ATR buffer.',
-    '• For example, if structure low = 80,100 and ATR = 50, LONG SL should be near 80,100 - (1.5 × 50) = 80,025 — NOT at 80,100 itself.',
-    '• Distance from entry to SL should approximate the asset-class multiplier × ATR (e.g. 2.0×ATR for BTC/ETH, 2.5×ATR for SOL/AVAX/oil, 3.0×ATR for PEPE/DOGE).',
+    `• Place SL BEYOND the structural invalidation level (swing low for LONG, swing high for SHORT) PLUS a ${SL_ATR_BUFFER.toFixed(1)}×ATR buffer.`,
+    `• For example, if structure low = 80,100 and ATR = 50, LONG SL should be near 80,100 - (${SL_ATR_BUFFER.toFixed(1)} × 50) = ${(80100 - SL_ATR_BUFFER * 50).toFixed(0)} — NOT at 80,100 itself.`,
+    '• Distance from entry to SL should approximate the asset-class multiplier × ATR (e.g. 2.5×ATR for BTC/ETH, 3.0×ATR for SOL/AVAX/oil, 3.5×ATR for PEPE/DOGE).',
     '• NEVER place SL exactly on a round number (80,000, 2,300, 100, etc). 80% of retail stops cluster there and get hunted by algos. Offset by at least 0.5×ATR.',
-    '• Tighter stops than 1.5×ATR will fail more often. Wider than 4×ATR will tank your RR.',
+    `• Tighter stops than ${SL_ATR_BUFFER.toFixed(1)}×ATR will fail more often. Wider than 4×ATR will tank your RR.`,
     '',
     'BE_NOTE RULES:',
     'be_note is the price at which the user moves SL to entry (breakeven).',
-    'For LONG: BE price MUST be ABOVE entry, BELOW TP. Recommended: 70% of the way from entry to TP (gives the trade more room before locking in BE).',
-    'For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: 70% of the way from entry to TP.',
+    `For LONG: BE price MUST be ABOVE entry, BELOW TP. Recommended: ${Math.round(BE_TRIGGER_PCT * 100)}% of the way from entry to TP.`,
+    `For SHORT: BE price MUST be BELOW entry, ABOVE TP. Recommended: ${Math.round(BE_TRIGGER_PCT * 100)}% of the way from entry to TP.`,
     'Format: "Move SL to BE at <PRICE>".',
     '',
     'TRADE-OR-SKIP: every trigger reaches you with full filter context. Use your judgment to take or return "NO TRADE". A NO TRADE costs nothing; a bad signal costs 1R.',
@@ -5722,6 +5765,23 @@ async function processPair(userId, sub, coin) {
     }
   }
 
+  // NY-open entry block (13:00-15:30 UTC) — skip new signal generation during
+  // the NY sweep window. Per analyze_ny_sweep.py (2026-05-30), NY-window
+  // entries had elevated SL hit rate; existing trades stay monitored. Toggle
+  // via HENRY_BLOCK_NY_OPEN env var.
+  if (HENRY_BLOCK_NY_OPEN) {
+    const now = new Date();
+    const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (utcMin >= NY_OPEN_BLOCK_START_MIN && utcMin < NY_OPEN_BLOCK_END_MIN) {
+      ps.lastStatus = 'ny-open-block';
+      ps.lastVetoReason = `NY-open entry block (13:00-15:30 UTC, sweep window)`;
+      // Long cooldown so we don't spam this check every tick — the gate runs
+      // at most once every 5 min while in window.
+      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+      return;
+    }
+  }
+
   try {
     // Fetch candles + detect trigger (using the pair's appropriate broker)
     let candles, trigger;
@@ -6149,12 +6209,12 @@ async function runBacktestAI(coin, tf, broker, baseCandles, h1Slice, h4Slice, bt
   if (indicators && indicators.atr14 != null) {
     const am = atrMultiplierForAsset(coin);
     const atrStopDist = indicators.atr14 * am.multiplier;
-    const buffer = indicators.atr14 * 1.5;
+    const buffer = indicators.atr14 * SL_ATR_BUFFER;
     ctxLines.push(
       `\nVOLATILITY (ATR-based stops — REPLACES fixed/round-number stops):` +
       `\n  ATR(14) on ${tf} = ${indicators.atr14.toFixed(4)}` +
       `\n  Asset class: ${am.klass} → multiplier ${am.multiplier}× ATR = ${atrStopDist.toFixed(4)} stop distance from entry` +
-      `\n  STOP PLACEMENT RULE: place SL BEYOND structure (swing low for LONG, swing high for SHORT) + ${buffer.toFixed(4)} (1.5×ATR) buffer.` +
+      `\n  STOP PLACEMENT RULE: place SL BEYOND structure (swing low for LONG, swing high for SHORT) + ${buffer.toFixed(4)} (${SL_ATR_BUFFER.toFixed(1)}×ATR) buffer.` +
       `\n  NEVER place SL on a round number. Offset by at least 0.5×ATR.`
     );
   }
