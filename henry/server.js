@@ -2193,16 +2193,22 @@ app.get('/login.html', (_req, res) => res.redirect('/login'));
 
 // ── Landing (public) + Terminal (auth-gated) ────────────────────────────────
 app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'landing.html')));
-// Cutover env var. When true:
-//   - /app    → /v2     (default app shell switches to v2)
-//   - /kingdom → /v2#kingdom   (legacy kingdom URL lands on v2 Kingdom tab)
-//   - /performance → /v2#perf  (legacy perf URL lands on v2 Performance tab)
-// Both /terminal and /v2 still resolve directly so admin can switch back
-// at any time without a redeploy. Flip via Railway env var, no code change.
-const HENRY_V2_DEFAULT = (process.env.HENRY_V2_DEFAULT || '').toLowerCase() === 'true';
-app.get('/app', requireAuth, (_req, res) => res.redirect(HENRY_V2_DEFAULT ? '/v2' : '/terminal'));
-app.get('/terminal', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-app.get('/v2', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
+// Phase 5 cutover: /terminal and /app both serve v2 by default. Every
+// internal redirect (login → /terminal, subscribe → /terminal, etc.)
+// now lands on v2 without touching any other HTML file.
+//
+// Rollback: set HENRY_V2_LEGACY=true on Railway. /terminal and /app
+// will serve the legacy index.html instead. /terminal-legacy always
+// serves legacy regardless so admin can A/B compare any time.
+const HENRY_V2_LEGACY = (process.env.HENRY_V2_LEGACY || '').toLowerCase() === 'true';
+app.get('/app', requireAuth, (_req, res) =>
+  res.redirect(HENRY_V2_LEGACY ? '/terminal-legacy' : '/v2'));
+app.get('/terminal', requireAuth, (_req, res) =>
+  res.sendFile(path.join(PUBLIC_DIR, HENRY_V2_LEGACY ? 'index.html' : 'v2.html')));
+app.get('/terminal-legacy', requireAuth, (_req, res) =>
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+app.get('/v2', requireAuth, (_req, res) =>
+  res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
 
 // Catch-all static — serves terminal assets (js, css, sw.js, etc.) to authenticated users only.
 app.use(requireAuth, express.static(PUBLIC_DIR, { index: false, extensions: ['html'] }));
