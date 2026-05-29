@@ -2193,13 +2193,14 @@ app.get('/login.html', (_req, res) => res.redirect('/login'));
 
 // ── Landing (public) + Terminal (auth-gated) ────────────────────────────────
 app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'landing.html')));
-// Cutover shortcut: when HENRY_V2_DEFAULT=true, /app routes to v2; otherwise
-// to legacy /terminal. Subscribers and admin can always pick either explicitly.
-app.get('/app', requireAuth, (_req, res) => res.redirect(HENRY_V2_DEFAULT ? '/v2' : '/terminal'));
-// Cutover env var. When true, root `/` redirects to /v2. Both /terminal and
-// /v2 still resolve directly so admin can switch back at any time without a
-// redeploy. Flip via Railway env var, no code change needed.
+// Cutover env var. When true:
+//   - /app    → /v2     (default app shell switches to v2)
+//   - /kingdom → /v2#kingdom   (legacy kingdom URL lands on v2 Kingdom tab)
+//   - /performance → /v2#perf  (legacy perf URL lands on v2 Performance tab)
+// Both /terminal and /v2 still resolve directly so admin can switch back
+// at any time without a redeploy. Flip via Railway env var, no code change.
 const HENRY_V2_DEFAULT = (process.env.HENRY_V2_DEFAULT || '').toLowerCase() === 'true';
+app.get('/app', requireAuth, (_req, res) => res.redirect(HENRY_V2_DEFAULT ? '/v2' : '/terminal'));
 app.get('/terminal', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 app.get('/v2', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
 

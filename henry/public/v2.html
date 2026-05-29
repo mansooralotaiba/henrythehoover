@@ -312,6 +312,134 @@
   .stats-hdr h2{font-size:18px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:10px}
   .stats-hdr .admin-badge{font-size:10px;letter-spacing:0.16em;padding:3px 9px;background:rgba(247,201,72,0.15);color:var(--go);border:1px solid rgba(247,201,72,0.4);border-radius:4px;font-weight:700;text-transform:uppercase}
   .stats-hdr p{font-size:13px;color:var(--mu)}
+
+  /* ═══════════════════════════════════════════════════════════════════
+     MOBILE — phone & small tablet adaptations
+     ═══════════════════════════════════════════════════════════════════ */
+  @media (max-width: 900px) {
+    /* Layout: switch from fixed-viewport panels to natural body scroll */
+    html, body { height: auto; overflow: auto; }
+    .main { height: auto; overflow: visible; padding-bottom: 24px; }
+    .panel { height: auto; overflow: visible; padding: 12px; }
+    .panel.active { gap: 10px; }
+
+    /* Topbar wraps; tabs scroll horizontally */
+    .topbar { height: auto; padding: 8px 12px; gap: 8px; flex-wrap: wrap; }
+    .brand { font-size: 13px; gap: 8px; }
+    .brand .crown { font-size: 16px; }
+    .brand .sub { display: none; }
+    .live { font-size: 9px; letter-spacing: 0.06em; }
+    .live::before { width: 6px; height: 6px; }
+    .tabs { order: 3; width: 100%; overflow-x: auto; padding: 4px 0 6px; gap: 2px; -webkit-overflow-scrolling: touch; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { padding: 7px 11px; font-size: 10px; letter-spacing: 0.1em; white-space: nowrap; flex-shrink: 0; }
+    .topbar-right { margin-left: auto; }
+    .auto-pill { padding: 3px 8px; font-size: 9px; letter-spacing: 0.08em; }
+
+    /* Banner */
+    .v2-banner { font-size: 10px; padding: 5px 12px; line-height: 1.4; }
+
+    /* Kingdom grid collapses to single column */
+    .kingdom-grid { grid-template-columns: 1fr; height: auto; gap: 10px; }
+    .big-pnl { grid-template-columns: 1fr 1fr; padding: 10px 12px; }
+    .big-pnl .num { font-size: 22px; }
+    .month-bignums .bn .v { font-size: 15px; }
+    .bar-chart { min-height: 60px; }
+    .wallet-card { padding: 10px 12px; }
+
+    /* Watchlist header: buttons wrap to next line */
+    .wp-hdr { flex-wrap: wrap; gap: 6px; }
+    .wp-hdr .r { margin-left: auto; }
+    .wp-grid { grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, minmax(140px, 1fr)); }
+
+    /* Terminal: chart on top, right column below */
+    .term-controls { padding: 8px 10px; gap: 6px; }
+    .term-controls label { font-size: 9px; letter-spacing: 0.08em; }
+    .term-controls select { font-size: 12px; padding: 5px 7px; }
+    .term-controls .tf-btn { padding: 4px 8px; font-size: 10px; }
+    .term-controls .price-display { font-size: 14px; padding: 0 6px; }
+    .term-controls .analyse-btn { padding: 7px 13px; font-size: 11px; letter-spacing: 0.08em; }
+    .term-main { grid-template-columns: 1fr; }
+    .chart-card { padding: 10px 12px; }
+    .chart-body { min-height: 300px; }
+    .term-right { gap: 10px; }
+    .hm-wrap { height: 260px; }
+    .heatmap-card { padding: 10px 12px; }
+
+    /* Autoscan card */
+    .autoscan-card { padding: 10px 12px; gap: 8px; }
+    .au-hdr { gap: 8px; }
+    .au-summary { width: 100%; margin-left: 0; font-size: 10px; }
+    .au-row { flex-wrap: wrap; }
+    .au-toggle { padding: 7px 12px; font-size: 10px; }
+    .au-grid { grid-template-columns: 1fr 1fr; }
+
+    /* News + calendar stack */
+    .news { grid-template-columns: 1fr; height: auto; gap: 10px; }
+    .news-feed, .news-calendar { max-height: none; padding: 12px; }
+
+    /* Stats / Performance grids stack */
+    .stats-grid, .perf-grid { grid-template-columns: 1fr; gap: 12px; }
+    .perf-overall { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+    .ov-card .v { font-size: 22px; }
+    .stats-hdr h2, .perf-hdr h2 { font-size: 16px; }
+    .stats-hdr p, .perf-sub { font-size: 12px; }
+
+    /* Tables in stat cards can scroll horizontally if too wide */
+    .stat-card { overflow-x: auto; }
+    .stat-table { font-size: 10px; }
+    .stat-table th, .stat-table td { padding: 5px 6px; }
+
+    /* AI modal — fills the viewport */
+    .modal-overlay { padding: 0; }
+    .modal { max-width: 100%; width: 100%; max-height: 100vh; border-radius: 0; }
+    .modal-hdr { padding: 12px 14px; gap: 10px; }
+    .modal-hdr .title { font-size: 14px; }
+    .modal-hdr .conf .v { font-size: 18px; }
+    .modal-body { padding: 14px; }
+    .levels-grid { grid-template-columns: 1fr; gap: 6px; margin-bottom: 12px; }
+    .modal-actions { padding: 10px 14px; }
+
+    /* Touch tap feedback */
+    .tab, .au-watch, .au-cell, .tf-btn, .au-toggle, .k-auto-trade, .k-resume,
+    .analyse-btn, .modal-close, .au-row button { -webkit-tap-highlight-color: rgba(0,212,255,0.15); }
+  }
+
+  /* Extra-tight for narrow phones */
+  @media (max-width: 480px) {
+    .topbar { padding: 6px 10px; }
+    .brand { font-size: 12px; }
+    .tabs { padding: 4px 0 4px; }
+    .tab { padding: 6px 9px; font-size: 9px; }
+
+    /* Big-pnl: stack columns so stats row sits under headline */
+    .big-pnl { grid-template-columns: 1fr; }
+    .big-pnl .num { font-size: 24px; }
+
+    /* Watchlist grid: 1 column, slightly taller cells */
+    .wp-grid { grid-template-columns: 1fr; grid-template-rows: repeat(6, minmax(130px, auto)); }
+
+    /* Terminal controls: 2 rows */
+    .term-controls .price-display { width: 100%; text-align: right; margin: 4px 0 0; padding: 0; }
+    .term-controls .analyse-btn { flex: 1; }
+    .chart-body { min-height: 260px; }
+    .hm-wrap { height: 220px; }
+
+    /* Heatmap legend hides — too tight */
+    .heatmap-card h3 .hm-legend { display: none; }
+
+    /* DXY 1-column */
+    .dxy-grid { grid-template-columns: 1fr; }
+
+    /* Autoscan grid: 1 column */
+    .au-grid { grid-template-columns: 1fr; }
+    .au-watch { padding: 4px 8px; font-size: 9px; }
+
+    /* Performance overview: stack to 1 column */
+    .perf-overall { grid-template-columns: 1fr; }
+    .ov-card { padding: 10px 12px; }
+    .ov-card .v { font-size: 20px; }
+  }
 </style>
 </head>
 <body>
@@ -335,8 +463,8 @@
   </div>
 </div>
 
-<div class="v2-banner">
-  ⚑ V2 preview · Stats / Performance / News / Kingdom are wired to real data. Terminal still in legacy. <a href="/terminal">→ open legacy /terminal</a>
+<div class="v2-banner" id="v2-banner">
+  ⚑ New layout · Same data, same scan. <a href="/terminal">→ open legacy /terminal</a> if something looks off.
 </div>
 
 <div class="main">
