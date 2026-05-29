@@ -2044,17 +2044,18 @@ app.get('/api/news/macro-summary', requireAuth, async (_req, res) => {
 // client stays thin) + Claude call. Returns parsed signal JSON. Subset of the
 // autoscan context — no per-pair scan state since this is one-off manual.
 app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
-  const { coin, tf = '15m', broker = 'weex', notes } = req.body || {};
+  const { coin, tf = '15m', broker = 'weex', notes, mode } = req.body || {};
   if (!coin) return res.status(400).json({ error: 'missing coin' });
   try {
     const isMetalOrOilPair = /^(GOLD|XAU|XAG|XTI|XBR)/.test(coin);
     const pairBroker = brokerForPair(coin, broker);
+    const useMulti = String(mode || 'single').toLowerCase() === 'multi' && !isMetalOrOilPair;
     const baseCandles = await fetchCandlesServer(coin, tf, 100, pairBroker);
     if (!baseCandles || baseCandles.length < 20) {
       return res.status(503).json({ error: `Insufficient candle data for ${coin} on ${tf} (${pairBroker})` });
     }
     const btcBroker = (pairBroker === 'massive') ? 'binance' : pairBroker;
-    const [mtfH1, mtfH4, btcCandles, funding, oi, newsCtx, calCtx, dxyData] = await Promise.all([
+    const [mtfH1, mtfH4, btcCandles, funding, oi, newsCtx, calCtx, dxyData, crossBrokerCtx] = await Promise.all([
       fetchCandlesServer(coin, '1h', 50, pairBroker).catch(() => []),
       fetchCandlesServer(coin, '4h', 30, pairBroker).catch(() => []),
       (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
@@ -2063,6 +2064,10 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
       fetchNewsContext().catch(() => ''),
       fetchCalendarContext().catch(() => ''),
       isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
+      // Reuses the existing autoscan cross-broker helper (defined further down
+      // in this file). Only runs when MULTI mode is requested and the pair
+      // isn't massive-only.
+      useMulti ? buildCrossBrokerContextServer(coin, tf, pairBroker).catch(() => '') : Promise.resolve(''),
     ]);
     const atr14 = computeATR(baseCandles, 14);
     const adx = computeADX(baseCandles, 14);
@@ -2074,6 +2079,7 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
     if (newsCtx) contextStr += '\n\n' + newsCtx;
     if (calCtx) contextStr += '\n\n' + calCtx;
     if (dxyData) contextStr += buildDXYContextString(dxyData);
+    if (crossBrokerCtx) contextStr += '\n' + crossBrokerCtx;
     const lastClose = baseCandles[baseCandles.length - 1].c;
     const systemPrompt = buildServerSystemPrompt(coin, tf, pairBroker, contextStr, lastClose);
     const userMessage = `Analyse ${coin} on ${tf} (${pairBroker}) right now.` +
