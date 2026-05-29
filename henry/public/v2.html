@@ -45,7 +45,7 @@
   .v2-banner a:hover{text-decoration:underline}
 
   /* Body and panels */
-  .main{height:calc(100vh - 80px);overflow:hidden;position:relative}
+  .main{height:calc(100vh - 54px);overflow:hidden;position:relative}
   .panel{display:none;height:100%;padding:16px 20px;overflow-y:auto}
   .panel.active{display:flex;flex-direction:column;gap:14px}
   body.view-public .admin-only-content{display:none !important}
@@ -471,23 +471,25 @@
   </div>
 </div>
 
-<div class="v2-banner" id="v2-banner">
-  ⚑ New layout · Same data, same scan. <a href="/terminal-legacy">→ open legacy</a> if something looks off.
-</div>
-
 <div class="main">
 
   <!-- ── Terminal: full interactive ─────────────────────────────────── -->
   <div class="panel" id="panel-terminal">
     <div class="term-controls">
       <label>Broker</label>
-      <select id="t-broker"><option value="weex">WEEX</option><option value="binance">Binance</option><option value="hyperliquid">Hyperliquid</option></select>
+      <select id="t-broker">
+        <option value="weex">WEEX</option>
+        <option value="binance">Binance</option>
+        <option value="hyperliquid">Hyperliquid</option>
+        <option value="massive">Massive · Gold</option>
+      </select>
       <label style="margin-left:8px">Pair</label>
       <select id="t-pair">
         <option>BTCUSDT</option><option>ETHUSDT</option><option>SOLUSDT</option>
         <option>LINKUSDT</option><option>AAVEUSDT</option><option>XAUTUSDT</option>
         <option>DOGEUSDT</option><option>ADAUSDT</option><option>BNBUSDT</option>
         <option>SUIUSDT</option><option>AVAXUSDT</option><option>XRPUSDT</option>
+        <option>GOLD</option>
       </select>
       <label style="margin-left:8px">TF</label>
       <div class="tf-row" id="t-tf-row">
@@ -1203,7 +1205,22 @@ function fetchBinanceCandles(){
   }).catch(function(){ return []; });
 }
 
+// Massive: server-side /api/gold/candles (Binance PAXG/USDT spot, gold-tracked).
+// The endpoint already normalises to {time(sec), o, h, l, c, v}.
+function fetchMassiveCandles(){
+  var url = '/api/gold/candles?interval=' + encodeURIComponent(t_tf) + '&limit=200';
+  return fetch(url,{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
+    if(!d || !Array.isArray(d.candles)) return [];
+    return d.candles.map(function(k){
+      return { time: k.time, open: k.o, high: k.h, low: k.l, close: k.c };
+    });
+  }).catch(function(){ return []; });
+}
+
 function fetchTermCandles(){
+  // GOLD pair forces the massive broker regardless of selector, mirroring the
+  // server-side brokerForPair() routing. Same for the explicit "massive" choice.
+  if(t_broker==='massive' || t_pair==='GOLD') return fetchMassiveCandles();
   if(t_broker==='binance')     return fetchBinanceCandles();
   if(t_broker==='hyperliquid') return fetchHlCandles();
   return fetchWeexCandles();
@@ -1238,8 +1255,36 @@ function renderChart(){
 
 // Wire selectors — chart + heatmap follow the same selection
 function setupTermControls(){
-  el('t-broker').addEventListener('change', function(e){ t_broker = e.target.value; renderChart(); loadHeatmap(); });
-  el('t-pair').addEventListener('change', function(e){ t_pair = e.target.value; renderChart(); loadHeatmap(); });
+  el('t-broker').addEventListener('change', function(e){
+    t_broker = e.target.value;
+    // Massive only serves GOLD — auto-switch the pair so the chart doesn't
+    // try to fetch BTCUSDT against the gold endpoint.
+    if(t_broker === 'massive' && t_pair !== 'GOLD'){
+      t_pair = 'GOLD';
+      el('t-pair').value = 'GOLD';
+    }
+    // Coming back from massive → restore to BTCUSDT if user left pair on GOLD
+    if(t_broker !== 'massive' && t_pair === 'GOLD'){
+      t_pair = 'BTCUSDT';
+      el('t-pair').value = 'BTCUSDT';
+    }
+    renderChart(); loadHeatmap();
+  });
+  el('t-pair').addEventListener('change', function(e){
+    t_pair = e.target.value;
+    // GOLD pair forces the massive broker (Polygon/PAXG) — the only place gold
+    // candles exist server-side. Server's brokerForPair() does the same routing.
+    if(t_pair === 'GOLD' && t_broker !== 'massive'){
+      t_broker = 'massive';
+      el('t-broker').value = 'massive';
+    }
+    // Leaving GOLD while broker is still massive → bounce broker back to weex
+    if(t_pair !== 'GOLD' && t_broker === 'massive'){
+      t_broker = 'weex';
+      el('t-broker').value = 'weex';
+    }
+    renderChart(); loadHeatmap();
+  });
   document.querySelectorAll('#t-tf-row .tf-btn').forEach(function(b){
     b.addEventListener('click', function(){
       document.querySelectorAll('#t-tf-row .tf-btn').forEach(function(x){x.classList.remove('on')});
