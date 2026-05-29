@@ -1982,6 +1982,70 @@ app.get('/api/news/macro-summary', requireAuth, async (_req, res) => {
   }
 });
 
+// ── /api/v2/watchlist ── Per-pair state + mini candle series for Kingdom's
+// 6 chart panels in the v2 UI. Returns one entry per admin-watchlist pair
+// with: state (scanning/in-trade/waiting/cooldown), last price, % change,
+// recent candle preview, signal info if any. Single roundtrip → 6 panels.
+app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
+  try {
+    const adminId = await getAdminUserId();
+    if (!adminId) return res.json({ pairs: [] });
+    const sub = scanSubscriptions.get(adminId);
+    if (!sub) return res.json({ pairs: [], active: false });
+
+    const watchlist = (sub.watchlist && sub.watchlist.length) ? sub.watchlist : [sub.coin].filter(Boolean);
+    const broker = sub.broker || 'weex';
+    const tf = sub.tf || '15m';
+
+    // Fetch candles for each pair in parallel (12 bars each, lightweight)
+    const candleArrays = await Promise.all(watchlist.map(coin => {
+      const pairBroker = brokerForPair(coin, broker);
+      const pairTf = (typeof tfForCoin === 'function') ? tfForCoin(coin, tf) : tf;
+      return fetchCandlesServer(coin, pairTf, 12, pairBroker).catch(() => []);
+    }));
+
+    // Map each pair into a panel-ready shape
+    const now = Date.now();
+    const pairs = watchlist.map((coin, i) => {
+      const candles = candleArrays[i] || [];
+      const ps = sub.pairs && sub.pairs[coin];
+      const lastPrice = candles.length ? candles[candles.length - 1].c : (ps?.lastPrice || null);
+      const firstPrice = candles.length ? candles[0].c : null;
+      const pctChange = (firstPrice && lastPrice) ? ((lastPrice - firstPrice) / firstPrice) * 100 : null;
+      // State derivation
+      let state = 'scanning';
+      if (ps?.pendSignal) {
+        if (ps._entryAlerted) state = 'in-trade';
+        else if (ps._confirmationPending) state = 'waiting-confirm';
+        else state = 'waiting';
+      }
+      if (ps?.cooldownUntil && ps.cooldownUntil > now && !ps?.pendSignal) state = 'cooldown';
+      if (ps?.pauseUntil && ps.pauseUntil > now) state = 'paused';
+      return {
+        coin,
+        broker: brokerForPair(coin, broker),
+        tf: (typeof tfForCoin === 'function') ? tfForCoin(coin, tf) : tf,
+        state,
+        lastPrice,
+        pctChange: pctChange != null ? +pctChange.toFixed(2) : null,
+        candles: candles.map(c => ({ o: c.o, h: c.h, l: c.l, c: c.c })), // strip timestamps/volume for size
+        signal: ps?.pendSignal ? {
+          direction: ps.pendSignal.direction,
+          entry: ps.pendSignal.entry,
+          sl: ps.pendSignal.sl,
+          tp: ps.pendSignal.tp,
+          rr: ps.pendSignal.rr,
+          confidence: ps.pendSignal.confidence,
+        } : null,
+      };
+    });
+    res.json({ active: !!sub.active, pairs, broker, tf, generatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[v2/watchlist]', err.message || err);
+    res.status(500).json({ error: err.message || String(err), pairs: [] });
+  }
+});
+
 // ── Futures proxies ─────────────────────────────────────────────────────────
 const proxyOpts = (target, prefix) => ({
   target,
@@ -2036,10 +2100,14 @@ app.get('/login.html', (_req, res) => res.redirect('/login'));
 
 // ── Landing (public) + Terminal (auth-gated) ────────────────────────────────
 app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'landing.html')));
+// Cutover shortcut: when HENRY_V2_DEFAULT=true, /app routes to v2; otherwise
+// to legacy /terminal. Subscribers and admin can always pick either explicitly.
+app.get('/app', requireAuth, (_req, res) => res.redirect(HENRY_V2_DEFAULT ? '/v2' : '/terminal'));
+// Cutover env var. When true, root `/` redirects to /v2. Both /terminal and
+// /v2 still resolve directly so admin can switch back at any time without a
+// redeploy. Flip via Railway env var, no code change needed.
+const HENRY_V2_DEFAULT = (process.env.HENRY_V2_DEFAULT || '').toLowerCase() === 'true';
 app.get('/terminal', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-// v2 preview of the redesigned app shell — same auth as /terminal. Lives
-// side-by-side until the v3 cutover. Subscribers + admin can access; the page
-// itself role-gates internally via /api/me.
 app.get('/v2', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
 
 // Catch-all static — serves terminal assets (js, css, sw.js, etc.) to authenticated users only.
