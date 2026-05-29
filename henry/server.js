@@ -4737,6 +4737,100 @@ function buildLiquidityContextServer(candles, tf) {
   return '\n' + lines.join('\n');
 }
 
+// ── HEATMAP LEVELS (server-side computation for the browser canvas) ────────
+// Mirrors the browser's renderHeatmap level-computation pass so the browser
+// can draw without making per-candle fetches. Necessary because Binance
+// geo-blocks Railway's egress IPs intermittently — server-side fetch works
+// (server uses direct https://fapi.binance.com calls) but the browser proxy
+// path through /binance-futures returns nothing in those windows.
+function computeHeatmapLevels(candles) {
+  if (!candles || candles.length < 10) {
+    return { levels: [], cp: null, pMin: null, pMax: null };
+  }
+  const highs = candles.map(c => c.h);
+  const lows = candles.map(c => c.l);
+  const closes = candles.map(c => c.c);
+  const pMax = Math.max(...highs);
+  const pMin = Math.min(...lows);
+  const pR = (pMax - pMin) || 1;
+  const cp = closes[closes.length - 1];
+  const levels = [];
+  // Swing highs/lows (5-bar pivots)
+  for (let i = 2; i < candles.length - 2; i++) {
+    if (candles[i].h > candles[i-1].h && candles[i].h > candles[i-2].h
+        && candles[i].h > candles[i+1].h && candles[i].h > candles[i+2].h) {
+      levels.push({ price: candles[i].h, label: 'SH', color: 'rgba(255,68,102,0.7)', strength: 1 });
+    }
+    if (candles[i].l < candles[i-1].l && candles[i].l < candles[i-2].l
+        && candles[i].l < candles[i+1].l && candles[i].l < candles[i+2].l) {
+      levels.push({ price: candles[i].l, label: 'SL', color: 'rgba(0,229,160,0.7)', strength: 1 });
+    }
+  }
+  // Equal highs / lows (rest liquidity)
+  const srtH = candles.slice().sort((a, b) => b.h - a.h);
+  for (let i = 0; i < Math.min(srtH.length - 1, 20); i++) {
+    if (Math.abs(srtH[i].h - srtH[i+1].h) < pR * 0.002) {
+      levels.push({ price: (srtH[i].h + srtH[i+1].h) / 2, label: 'EQH', color: 'rgba(255,68,102,0.9)', strength: 2 });
+    }
+  }
+  const srtL = candles.slice().sort((a, b) => a.l - b.l);
+  for (let i = 0; i < Math.min(srtL.length - 1, 20); i++) {
+    if (Math.abs(srtL[i].l - srtL[i+1].l) < pR * 0.002) {
+      levels.push({ price: (srtL[i].l + srtL[i+1].l) / 2, label: 'EQL', color: 'rgba(0,229,160,0.9)', strength: 2 });
+    }
+  }
+  // Round numbers — retail stop magnets
+  const step = cp >= 1000 ? 100 : cp >= 100 ? 10 : cp >= 10 ? 1 : 0.1;
+  const rndStart = Math.floor(pMin / step) * step;
+  for (let r = rndStart; r <= pMax + step; r += step) {
+    if (r >= pMin && r <= pMax) {
+      levels.push({ price: r, label: 'R', color: 'rgba(255,184,48,0.4)', strength: 1 });
+    }
+  }
+  // Dedup nearby levels — keep the stronger one
+  levels.sort((a, b) => a.price - b.price);
+  const dedup = [];
+  for (const l of levels) {
+    if (!dedup.length || Math.abs(l.price - dedup[dedup.length - 1].price) > pR * 0.004) {
+      dedup.push(l);
+    } else if (l.strength > dedup[dedup.length - 1].strength) {
+      dedup[dedup.length - 1] = l;
+    }
+  }
+  return { levels: dedup, cp, pMin, pMax };
+}
+
+// 5-second cache per (coin, tf, broker) — heatmap doesn't need to rebuild on
+// every refresh-button click during a single user session.
+const _heatmapCache = new Map(); // key → { ts, payload }
+const HEATMAP_CACHE_MS = 5_000;
+
+app.get('/api/heatmap', requireAuth, async (req, res) => {
+  const coin = String(req.query.coin || '').toUpperCase();
+  const tf = String(req.query.tf || '15m');
+  const broker = String(req.query.broker || 'weex').toLowerCase();
+  if (!coin) return res.status(400).json({ error: 'missing_coin', levels: [] });
+  const cacheKey = `${coin}|${tf}|${broker}`;
+  const cached = _heatmapCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < HEATMAP_CACHE_MS) {
+    return res.json(cached.payload);
+  }
+  try {
+    const candles = await fetchCandlesServer(coin, tf, 100, broker);
+    if (!candles || candles.length < 10) {
+      const payload = { levels: [], cp: null, pMin: null, pMax: null, note: `Insufficient ${broker} candles for ${coin} (got ${candles ? candles.length : 0})` };
+      _heatmapCache.set(cacheKey, { ts: Date.now(), payload });
+      return res.json(payload);
+    }
+    const payload = computeHeatmapLevels(candles);
+    _heatmapCache.set(cacheKey, { ts: Date.now(), payload });
+    res.json(payload);
+  } catch (err) {
+    console.error('[heatmap]', coin, tf, broker, err.message || err);
+    res.status(500).json({ error: err.message || String(err), levels: [] });
+  }
+});
+
 // ── 4. ORDER FLOW / FOOTPRINT CONTEXT — recent trades from Binance ──
 async function fetchTradesServer(coin, broker) {
   try {
