@@ -2043,69 +2043,18 @@ app.get('/api/news/macro-summary', requireAuth, async (_req, res) => {
 // ── /api/v2/analyse ── Manual AI analysis. Server-side context build (so v2
 // client stays thin) + Claude call. Returns parsed signal JSON. Subset of the
 // autoscan context — no per-pair scan state since this is one-off manual.
-// Cross-broker comparison string for the MULTI analyse mode. Compares price
-// spread, trend agreement (simple EMA slope), and order-flow delta across
-// the brokers we have candles for. Returned text gets appended to the AI
-// context so the model can weigh confluence/divergence across venues.
-function buildCrossBrokerContextServer(coin, sets) {
-  const lines = [`CROSS-BROKER ANALYSIS (${sets.map(s => s.label).join(' + ')}):`];
-  const closesByBroker = sets.map(s => {
-    const cs = s.candles || [];
-    return cs.length ? cs[cs.length - 1].c : null;
-  });
-  const valid = closesByBroker.filter(v => v != null);
-  if (valid.length > 1) {
-    const maxP = Math.max(...valid), minP = Math.min(...valid);
-    const spread = ((maxP - minP) / minP * 100).toFixed(4);
-    lines.push(`Price spread across venues: ${spread}% (${minP.toFixed(4)} — ${maxP.toFixed(4)})`);
-    if (parseFloat(spread) > 0.05) {
-      const leadIdx = closesByBroker.indexOf(maxP);
-      if (leadIdx >= 0) lines.push(`Price leader: ${sets[leadIdx].label} pricing highest — likely leading discovery`);
-    }
-  }
-  // Trend agreement via short EMA slope sign on each set's last 20 closes
-  const trends = sets.map(s => {
-    const cs = s.candles || [];
-    if (cs.length < 21) return null;
-    const last20 = cs.slice(-20).map(c => c.c);
-    const a = last20.slice(0, 10).reduce((x, y) => x + y, 0) / 10;
-    const b = last20.slice(10).reduce((x, y) => x + y, 0) / 10;
-    const pctSlope = (b - a) / a * 100;
-    if (pctSlope > 0.1) return 'BULLISH';
-    if (pctSlope < -0.1) return 'BEARISH';
-    return 'RANGING';
-  });
-  let bull = 0, bear = 0, nValid = 0;
-  trends.forEach((t, i) => {
-    if (t == null) return;
-    nValid++;
-    if (t === 'BULLISH') bull++; else if (t === 'BEARISH') bear++;
-    lines.push(`${sets[i].label} structure: ${t}`);
-  });
-  if (nValid > 1) {
-    if (bull === nValid) lines.push(`✓ ALL VENUES AGREE BULLISH — maximum confluence`);
-    else if (bear === nValid) lines.push(`✓ ALL VENUES AGREE BEARISH — maximum confluence`);
-    else if (bull > bear) lines.push(`⚡ MAJORITY BULLISH (${bull}/${nValid}) — moderate confluence`);
-    else if (bear > bull) lines.push(`⚡ MAJORITY BEARISH (${bear}/${nValid}) — moderate confluence`);
-    else lines.push(`⚠ VENUES DISAGREE — mixed structure, reduce confidence, wait for alignment`);
-  }
-  return '\n' + lines.join('\n');
-}
-
 app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
-  const { coin, tf = '15m', broker = 'weex', notes, mode } = req.body || {};
+  const { coin, tf = '15m', broker = 'weex', notes } = req.body || {};
   if (!coin) return res.status(400).json({ error: 'missing coin' });
   try {
     const isMetalOrOilPair = /^(GOLD|XAU|XAG|XTI|XBR)/.test(coin);
     const pairBroker = brokerForPair(coin, broker);
-    const useMulti = String(mode || 'single').toLowerCase() === 'multi' && !isMetalOrOilPair;
     const baseCandles = await fetchCandlesServer(coin, tf, 100, pairBroker);
     if (!baseCandles || baseCandles.length < 20) {
       return res.status(503).json({ error: `Insufficient candle data for ${coin} on ${tf} (${pairBroker})` });
     }
     const btcBroker = (pairBroker === 'massive') ? 'binance' : pairBroker;
-    const [mtfH1, mtfH4, btcCandles, funding, oi, newsCtx, calCtx, dxyData,
-           multiSecondCandles, multiThirdCandles] = await Promise.all([
+    const [mtfH1, mtfH4, btcCandles, funding, oi, newsCtx, calCtx, dxyData] = await Promise.all([
       fetchCandlesServer(coin, '1h', 50, pairBroker).catch(() => []),
       fetchCandlesServer(coin, '4h', 30, pairBroker).catch(() => []),
       (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
@@ -2114,9 +2063,6 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
       fetchNewsContext().catch(() => ''),
       fetchCalendarContext().catch(() => ''),
       isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
-      // Multi-broker fetches — pull from the two brokers the user didn't pick
-      useMulti ? fetchCandlesServer(coin, tf, 100, pairBroker === 'binance' ? 'hyperliquid' : 'binance').catch(() => []) : Promise.resolve([]),
-      useMulti ? fetchCandlesServer(coin, tf, 100, pairBroker === 'hyperliquid' ? 'binance' : 'hyperliquid').catch(() => []) : Promise.resolve([]),
     ]);
     const atr14 = computeATR(baseCandles, 14);
     const adx = computeADX(baseCandles, 14);
@@ -2128,21 +2074,6 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
     if (newsCtx) contextStr += '\n\n' + newsCtx;
     if (calCtx) contextStr += '\n\n' + calCtx;
     if (dxyData) contextStr += buildDXYContextString(dxyData);
-    // Cross-broker comparison appended only when MULTI mode + we have at least 2 sets
-    if (useMulti) {
-      const labelFor = (b) => b === 'binance' ? 'Binance' : b === 'hyperliquid' ? 'Hyperliquid' : 'WEEX';
-      const secondBroker = pairBroker === 'binance' ? 'hyperliquid' : 'binance';
-      const thirdBroker  = pairBroker === 'hyperliquid' ? 'binance' : 'hyperliquid';
-      const sets = [
-        { label: labelFor(pairBroker), candles: baseCandles },
-        { label: labelFor(secondBroker), candles: multiSecondCandles },
-        { label: labelFor(thirdBroker), candles: multiThirdCandles },
-      ].filter(s => s.candles && s.candles.length > 0);
-      // De-dup if any two brokers fell back to the same source (e.g. Binance geo-block → WEEX)
-      const seen = new Set();
-      const dedup = sets.filter(s => { if (seen.has(s.label)) return false; seen.add(s.label); return true; });
-      if (dedup.length >= 2) contextStr += buildCrossBrokerContextServer(coin, dedup);
-    }
     const lastClose = baseCandles[baseCandles.length - 1].c;
     const systemPrompt = buildServerSystemPrompt(coin, tf, pairBroker, contextStr, lastClose);
     const userMessage = `Analyse ${coin} on ${tf} (${pairBroker}) right now.` +
