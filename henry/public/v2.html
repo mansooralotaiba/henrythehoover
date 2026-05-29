@@ -1369,20 +1369,36 @@ setupTermControls();
 // Mirrors the legacy /terminal "AUTO" panel: start/stop server-side scan,
 // pick watchlist, set cooldown + Discord status cadence. Polls
 // /api/scan/all-pairs every 5s while the scan is active.
+// Autoscan watchlist pairs — these must be WEEX-tradeable symbols so the
+// executor can actually fire orders. "GOLD" is a chart-only view (Polygon/
+// PAXG) and isn't tradeable on WEEX. The executor uses XAUTUSDT (tokenised
+// tether-gold) for the gold trade.
 var AU_PAIRS = [
   'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','AVAXUSDT',
   'AAVEUSDT','1000PEPEUSDT','LINKUSDT','SUIUSDT','ADAUSDT','BNBUSDT',
-  'GOLD','XAGUSDT','XTIUSDT'
+  'XAUTUSDT','XAGUSDT','XTIUSDT'
 ];
 var _au_active = false;
 var _au_watchlist = [];
 var _au_cooldownMs = 180000;
 var _au_pollTimer = null;
 
+// Migrate legacy "GOLD" references in any persisted watchlist to "XAUTUSDT"
+// since only XAUTUSDT is a WEEX-tradeable gold symbol. Returns a fresh array.
+function _auFixGoldSymbol(list){
+  if(!Array.isArray(list)) return list;
+  var out = [], seen = {};
+  list.forEach(function(s){
+    var v = (s === 'GOLD' || s === 'XAUUSD') ? 'XAUTUSDT' : s;
+    if(!seen[v]){ seen[v] = 1; out.push(v); }
+  });
+  return out;
+}
+
 function auLoadStateFromStorage(){
   try{
     var wl = JSON.parse(localStorage.getItem('v2_au_watchlist') || '[]');
-    if(Array.isArray(wl)) _au_watchlist = wl;
+    if(Array.isArray(wl)) _au_watchlist = _auFixGoldSymbol(wl);
   }catch(e){}
   try{
     var cd = parseInt(localStorage.getItem('v2_au_cooldownMs') || '180000', 10);
@@ -1636,9 +1652,14 @@ function setupAutoscan(){
       if(!d || !d.active) { auApplyActiveUI(); return; }
       _au_active = true;
       if(Array.isArray(d.watchlist) && d.watchlist.length){
-        _au_watchlist = d.watchlist.slice();
+        var fixed = _auFixGoldSymbol(d.watchlist);
+        var changed = fixed.length !== d.watchlist.length || fixed.some(function(s, i){ return s !== d.watchlist[i]; });
+        _au_watchlist = fixed;
         auSaveStateToStorage();
         auRenderWatchPicks();
+        // If we silently rewrote GOLD → XAUTUSDT, push the cleaned list back to the
+        // server so the autoscan engine starts scanning the tradeable symbol.
+        if(changed) auPushWatchlist();
       }
       if(d.cooldownMs){ _au_cooldownMs = d.cooldownMs; if(sel) sel.value = String(_au_cooldownMs); }
       auApplyActiveUI();
