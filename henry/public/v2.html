@@ -343,6 +343,9 @@
   .term-controls .analyse-btn{padding:8px 18px;background:linear-gradient(135deg,var(--cy),#00a8ff);color:#000;border:none;border-radius:6px;font-weight:700;font-size:12px;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;box-shadow:0 4px 14px rgba(0,212,255,0.25)}
   .term-controls .analyse-btn:hover{transform:translateY(-1px)}
   .term-controls .analyse-btn:disabled{opacity:0.5;cursor:wait}
+  .term-controls .multi-btn{padding:7px 12px;background:transparent;border:1px solid var(--border-strong);color:var(--mu);border-radius:5px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;transition:all 0.15s}
+  .term-controls .multi-btn:hover{color:var(--fg);border-color:var(--fg)}
+  .term-controls .multi-btn.on{background:rgba(153,102,255,0.14);color:#9966ff;border-color:rgba(153,102,255,0.55);box-shadow:0 0 12px rgba(153,102,255,0.25)}
 
   .term-main{display:grid;grid-template-columns:1fr 360px;gap:12px;flex:1;min-height:0}
   .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;min-height:0}
@@ -636,6 +639,7 @@
         <button class="tf-btn" data-tf="4h">4h</button>
       </div>
       <div class="price-display" id="t-price">—</div>
+      <button class="multi-btn off" id="t-multi" onclick="toggleMulti()" title="Multi-broker: compare WEEX + Binance + Hyperliquid in the AI prompt">⛓ SINGLE</button>
       <button class="analyse-btn" id="t-analyse" onclick="runAnalyse()">⚡ Analyse</button>
     </div>
 
@@ -2252,19 +2256,41 @@ function setupAutoscan(){
 // Tracks the persisted manual signal so the outcome buttons can PATCH the
 // right row. Cleared on modal close / discard.
 window._lastManualSignal = null;
+// Multi-broker mode for ANALYSE — when ON, the server fetches candles from
+// all 3 brokers and injects a cross-broker comparison into the AI prompt.
+var _t_multi = (localStorage.getItem('v2_analyse_multi') === '1');
+function _applyMultiUI(){
+  var b = el('t-multi'); if(!b) return;
+  if(_t_multi){
+    b.className = 'multi-btn on';
+    b.textContent = '⛓ MULTI';
+    b.title = 'Multi-broker ON: fetching WEEX + Binance + Hyperliquid for cross-venue comparison';
+  } else {
+    b.className = 'multi-btn off';
+    b.textContent = '⛓ SINGLE';
+    b.title = 'Single broker · click to compare across WEEX + Binance + Hyperliquid';
+  }
+}
+function toggleMulti(){
+  _t_multi = !_t_multi;
+  try{ localStorage.setItem('v2_analyse_multi', _t_multi ? '1' : '0'); }catch(e){}
+  _applyMultiUI();
+}
+_applyMultiUI();
 
 function runAnalyse(){
   var btn = el('t-analyse');
   btn.disabled = true; btn.textContent = '⏳ Analysing…';
   openAiModal();
   window._lastManualSignal = null;
-  el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf;
-  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 10-20s on Opus 4.8</div>';
+  var modeLabel = _t_multi ? ' · MULTI-BROKER' : '';
+  el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf + modeLabel;
+  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 10-20s on Opus 4.8' + (_t_multi ? ' · cross-venue compare' : '') + '</div>';
   el('ai-modal-actions').innerHTML = '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
   fetch('/api/v2/analyse', {
     method:'POST', credentials:'same-origin',
     headers:{ 'Content-Type':'application/json' },
-    body: JSON.stringify({ coin: t_pair, tf: t_tf, broker: t_broker })
+    body: JSON.stringify({ coin: t_pair, tf: t_tf, broker: t_broker, mode: _t_multi ? 'multi' : 'single' })
   }).then(function(r){
     if(!r.ok) return r.json().then(function(d){ throw new Error(d.error || 'HTTP '+r.status); });
     return r.json();
