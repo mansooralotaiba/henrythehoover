@@ -36,6 +36,48 @@
   .utc-clock{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.08em;color:var(--mu);background:var(--bg3);border:1px solid var(--border)}
   .utc-clock::before{content:'UTC';font-size:9px;color:var(--di);letter-spacing:0.14em;margin-right:2px;font-weight:600}
 
+  /* Trading session bar — strip under the topbar */
+  .session-bar{display:flex;align-items:center;gap:8px;padding:5px 16px;background:rgba(13,15,22,0.85);border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;letter-spacing:0.1em;position:relative;z-index:55}
+  .session-bar .chip{padding:3px 9px;border-radius:3px;border:1px solid var(--border);background:var(--bg3);color:var(--mu);font-weight:700;letter-spacing:0.14em;transition:all 0.3s}
+  .session-bar .chip.on{color:#fff;background:linear-gradient(135deg,rgba(0,212,255,0.32),rgba(0,212,255,0.12));border-color:rgba(0,212,255,0.55);box-shadow:0 0 12px rgba(0,212,255,0.25)}
+  .session-bar .chip.on.lo{background:linear-gradient(135deg,rgba(0,229,160,0.32),rgba(0,229,160,0.12));border-color:rgba(0,229,160,0.55);box-shadow:0 0 12px rgba(0,229,160,0.25)}
+  .session-bar .chip.on.ov{background:linear-gradient(135deg,rgba(255,170,48,0.36),rgba(255,170,48,0.12));border-color:rgba(255,170,48,0.6);box-shadow:0 0 14px rgba(255,170,48,0.3)}
+  .session-bar .chip.on.ny{background:linear-gradient(135deg,rgba(247,201,72,0.32),rgba(247,201,72,0.12));border-color:rgba(247,201,72,0.55);box-shadow:0 0 12px rgba(247,201,72,0.25)}
+  .session-bar .next{margin-left:auto;color:var(--mu);font-size:10px;letter-spacing:0.06em}
+  .session-bar .next.now{color:var(--cy);font-weight:700}
+  body.with-session-bar .main{height:calc(100vh - 54px - 28px)}
+  body.with-expiry-banner.with-session-bar .main{height:calc(100vh - 54px - 28px - 38px)}
+
+  /* Kingdom walking-coin + spell-burst overlays */
+  .panel-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:4}
+  .coin-char{position:absolute;bottom:8px;width:28px;height:40px;will-change:transform,left;z-index:5}
+  .coin-char svg{display:block;animation:wpCharBob 0.5s ease-in-out infinite;transform-origin:bottom center}
+  @keyframes wpCharBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
+  .coin-char .arm-l{animation:wpArmL 0.5s ease-in-out infinite;transform-origin:8px 18px;transform-box:fill-box}
+  .coin-char .arm-r{animation:wpArmR 0.5s ease-in-out infinite;transform-origin:24px 18px;transform-box:fill-box}
+  .coin-char .leg-l{animation:wpLegL 0.5s ease-in-out infinite;transform-origin:13px 28px;transform-box:fill-box}
+  .coin-char .leg-r{animation:wpLegR 0.5s ease-in-out infinite;transform-origin:19px 28px;transform-box:fill-box}
+  @keyframes wpLegL{0%,100%{transform:rotate(-18deg)}50%{transform:rotate(18deg)}}
+  @keyframes wpLegR{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-18deg)}}
+  @keyframes wpArmL{0%,100%{transform:rotate(15deg)}50%{transform:rotate(-15deg)}}
+  @keyframes wpArmR{0%,100%{transform:rotate(-15deg)}50%{transform:rotate(15deg)}}
+  .coin-char.walk{animation:wpCoinWalk 14s linear infinite}
+  @keyframes wpCoinWalk{0%{left:6%;transform:scaleX(1)}48%{left:80%;transform:scaleX(1)}50%{left:80%;transform:scaleX(-1)}98%{left:6%;transform:scaleX(-1)}100%{left:6%;transform:scaleX(1)}}
+  .wp-panel.in-trade .coin-char{animation-play-state:paused;left:50%!important;margin-left:-14px}
+  .wp-panel.in-trade .coin-char .leg-l,.wp-panel.in-trade .coin-char .leg-r{animation-play-state:paused}
+  .wp-panel.in-trade .coin-char .arm-l,.wp-panel.in-trade .coin-char .arm-r{animation:wpArmUp 1.1s ease-in-out infinite}
+  @keyframes wpArmUp{0%,100%{transform:rotate(-100deg)}50%{transform:rotate(-110deg)}}
+  .wp-panel.in-trade .coin-char::before{content:'';position:absolute;left:50%;top:30%;transform:translate(-50%,-50%);width:56px;height:56px;border-radius:50%;background:radial-gradient(circle,rgba(0,212,255,0.4) 0%,transparent 70%);animation:wpHaloPulse 1.4s ease-in-out infinite}
+  @keyframes wpHaloPulse{0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(0.9)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.2)}}
+  .wp-panel.cooldown .coin-char{opacity:0.4}
+  .wp-panel.paused .coin-char{animation-play-state:paused;opacity:0.5}
+  .wp-panel.paused .coin-char .leg-l,.wp-panel.paused .coin-char .leg-r,.wp-panel.paused .coin-char .arm-l,.wp-panel.paused .coin-char .arm-r{animation-play-state:paused}
+  .spell-burst{position:absolute;width:80px;height:80px;margin-left:-40px;margin-top:-40px;pointer-events:none;z-index:6}
+  .spell-burst .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--spell-color,#00d4ff);opacity:0.9;animation:wpBurstRing 1.2s ease-out forwards}
+  .spell-burst .ring.r2{animation-delay:0.15s}
+  .spell-burst .ring.r3{animation-delay:0.3s}
+  @keyframes wpBurstRing{0%{transform:scale(0.1);opacity:0.9}100%{transform:scale(2.4);opacity:0}}
+
   /* Subscription expiry banner */
   .expiry-banner{display:flex;align-items:center;gap:12px;padding:8px 18px;font-size:12px;font-weight:600;letter-spacing:0.03em;border-bottom:1px solid var(--border-strong);position:relative;z-index:60}
   .expiry-banner.soon{background:linear-gradient(90deg,rgba(255,170,48,0.18),rgba(255,170,48,0.04));color:var(--am)}
@@ -508,6 +550,14 @@
   </div>
 </div>
 
+<div class="session-bar" id="session-bar">
+  <span class="chip" id="sess-asia">ASIA</span>
+  <span class="chip lo" id="sess-london">LONDON</span>
+  <span class="chip ov" id="sess-overlap">LDN/NY OVERLAP</span>
+  <span class="chip ny" id="sess-ny">NEW YORK</span>
+  <span class="next" id="sess-next">loading…</span>
+</div>
+
 <div class="main">
 
   <!-- ── Terminal: full interactive ─────────────────────────────────── -->
@@ -919,6 +969,13 @@ function checkAlertTransitions(pairs){
     if(prev.hasSignal && !prev.entryAlerted && curr.entryAlerted){
       _toast('▶ ENTRY HIT', coin + ' ' + (p.signal && p.signal.direction || '') + ' active', 'entry');
       _alertBeep(880, 1100);
+      // Triple-ring burst on the Kingdom panel; second burst slightly delayed
+      if(typeof spawnBurstOnPanel === 'function'){
+        var dir = (p.signal && p.signal.direction) || '';
+        var col = dir === 'LONG' ? '#00e5a0' : dir === 'SHORT' ? '#ff5577' : '#00d4ff';
+        spawnBurstOnPanel(p.coin, col);
+        setTimeout(function(){ spawnBurstOnPanel(p.coin, col); }, 400);
+      }
     }
     // BE move
     if(!prev.beAlerted && curr.beAlerted){
@@ -967,15 +1024,45 @@ function refreshAutoTrade(){
 refreshAutoTrade();
 setInterval(refreshAutoTrade, 10_000);
 
-// ── UTC clock ─────────────────────────────
+// ── UTC clock + session bar ───────────────
+// Sessions are UTC-fixed (no DST shift). Asia is the broad window before
+// London. Overlap is the high-liquidity LDN/NY window. NY runs until close.
+// 22:00-00:00 UTC falls through to OFF HOURS.
+var _v2Sessions = [
+  { id: 'sess-asia',    label: 'ASIA',           s:   0, e:  480 }, // 00:00-08:00
+  { id: 'sess-london',  label: 'LONDON',         s: 480, e:  720 }, // 08:00-12:00
+  { id: 'sess-overlap', label: 'LDN/NY OVERLAP', s: 720, e: 1020 }, // 12:00-17:00
+  { id: 'sess-ny',      label: 'NEW YORK',       s:1020, e: 1320 }, // 17:00-22:00
+];
 function _utcTick(){
   var d = new Date();
   var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
-  var el2 = el('utc-clock'); if(!el2) return;
-  el2.textContent = pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+  var cl = el('utc-clock');
+  if(cl) cl.textContent = pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+  var m = d.getUTCHours() * 60 + d.getUTCMinutes();
+  var active = null;
+  _v2Sessions.forEach(function(s){
+    var on = m >= s.s && m < s.e;
+    if(on) active = s;
+    var ch = el(s.id);
+    if(ch) ch.classList.toggle('on', on);
+  });
+  var nxBox = el('sess-next');
+  if(nxBox){
+    if(active){
+      nxBox.textContent = active.label + ' ACTIVE';
+      nxBox.classList.add('now');
+    } else {
+      var nxt = _v2Sessions.find(function(s){ return s.s > m; }) || _v2Sessions[0];
+      var diff = nxt.s > m ? nxt.s - m : 1440 - m + nxt.s;
+      nxBox.textContent = 'NEXT: ' + nxt.label + ' in ' + Math.floor(diff/60) + 'h ' + pad(diff%60) + 'm';
+      nxBox.classList.remove('now');
+    }
+  }
 }
 _utcTick();
 setInterval(_utcTick, 1000);
+document.body.classList.add('with-session-bar');
 
 // Toggle handler
 document.addEventListener('click', function(ev){
@@ -1065,6 +1152,53 @@ function coinColor(c){ var s = String(c||'').replace('USDT','').replace('1000','
 function coinSymbol(c){ var s = String(c||'').replace('USDT','').replace('1000',''); var m = { BTC:'₿', ETH:'Ξ', GOLD:'AU', XAUT:'AU' }; return m[s] || s.charAt(0); }
 function shortCoinQ(c){ return String(c||'').replace('USDT','').replace('1000',''); }
 
+// Darken a hex colour (#rrggbb) by `amt` (0..1) for the sprite's stroke shade.
+function darkenHex(hex, amt){
+  var h = String(hex||'').replace('#','');
+  if(h.length !== 6) return '#222';
+  var r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+  var d = function(c){ return Math.max(0, Math.round(c * (1 - amt))); };
+  var p2 = function(n){ var s = n.toString(16); return s.length<2 ? '0'+s : s; };
+  return '#' + p2(d(r)) + p2(d(g)) + p2(d(b));
+}
+
+// SVG sprite for the walking coin character on each Kingdom panel. Ports
+// the legacy coinSpriteSvg shape — coin head with arms + legs that swing.
+function coinSpriteSvg(coin){
+  var col = coinColor(coin);
+  var dark = darkenHex(col, 0.45);
+  var sym = coinSymbol(coin);
+  var symFs = sym.length > 1 ? 8 : 11;
+  return '<svg viewBox="0 0 32 46" width="28" height="40">'
+    +'<ellipse cx="16" cy="44" rx="8" ry="1.4" fill="rgba(0,0,0,0.55)"/>'
+    +'<g class="arm-l"><line x1="8" y1="18" x2="6" y2="26" stroke="'+dark+'" stroke-width="2" stroke-linecap="round"/><circle cx="6" cy="27" r="1.4" fill="'+col+'"/></g>'
+    +'<g class="arm-r"><line x1="24" y1="18" x2="26" y2="26" stroke="'+dark+'" stroke-width="2" stroke-linecap="round"/><circle cx="26" cy="27" r="1.4" fill="'+col+'"/></g>'
+    +'<g><circle cx="16" cy="14" r="11" fill="'+col+'" stroke="'+dark+'" stroke-width="1.2"/>'
+    +'<circle cx="16" cy="14" r="9" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="0.6"/>'
+    +'<text x="16" y="18" text-anchor="middle" font-size="'+symFs+'" font-weight="900" fill="#fff" font-family="Arial Black, Arial">'+sym+'</text>'
+    +'<ellipse cx="12" cy="10" rx="2.5" ry="1.8" fill="rgba(255,255,255,0.25)"/></g>'
+    +'<g class="leg-l"><line x1="13" y1="25" x2="13" y2="40" stroke="#2a1a0e" stroke-width="2.5" stroke-linecap="round"/><ellipse cx="13" cy="42" rx="2.5" ry="1.3" fill="#0a0604"/></g>'
+    +'<g class="leg-r"><line x1="19" y1="25" x2="19" y2="40" stroke="#2a1a0e" stroke-width="2.5" stroke-linecap="round"/><ellipse cx="19" cy="42" rx="2.5" ry="1.3" fill="#0a0604"/></g>'
+    +'</svg>';
+}
+
+// Spawn a triple-ring burst over the Kingdom panel's overlay layer when
+// a pair transitions to in-trade. Auto-removes after the animation finishes.
+function spawnBurstOnPanel(coin, color){
+  var entry = _wpCharts && _wpCharts[coin];
+  if(!entry) return;
+  var overlay = entry.panel.querySelector('.panel-overlay');
+  if(!overlay) return;
+  var burst = document.createElement('div');
+  burst.className = 'spell-burst';
+  burst.style.left = '50%';
+  burst.style.top = '50%';
+  burst.style.setProperty('--spell-color', color || '#00d4ff');
+  burst.innerHTML = '<div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>';
+  overlay.appendChild(burst);
+  setTimeout(function(){ try{ burst.remove(); }catch(e){} }, 1500);
+}
+
 // ── Watchlist panels (Kingdom) ────────────
 // Per-coin Lightweight Charts instances kept alive across poll cycles so we
 // only setData() new candles instead of recreating the chart every 10s.
@@ -1079,7 +1213,9 @@ function _wpCreatePanel(p, grid){
     + '<div class="pair"><span class="badge" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:' + coinColor(p.coin) + ';color:#fff;font-weight:900;font-size:11px;margin-right:6px">' + coinSymbol(p.coin) + '</span><span class="pname"></span></div>'
     + '<div class="r"><span class="price"></span><span class="wp-tag"></span></div>'
     + '</div>'
-    + '<div class="wp-body"></div>';
+    + '<div class="wp-body">'
+    +   '<div class="panel-overlay"><div class="coin-char walk">' + coinSpriteSvg(p.coin) + '</div></div>'
+    + '</div>';
   grid.appendChild(panel);
   var body = panel.querySelector('.wp-body');
   var chart = LightweightCharts.createChart(body, {
