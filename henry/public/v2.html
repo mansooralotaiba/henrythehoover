@@ -125,8 +125,7 @@
   .wp-tag.in-trade{background:rgba(0,212,255,0.15);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
   .wp-tag.waiting{background:rgba(255,170,48,0.15);color:var(--am);border:1px solid rgba(255,170,48,0.4)}
   .wp-tag.cooldown{background:var(--bg3);color:var(--mu);border:1px solid var(--border)}
-  .wp-body{flex:1;position:relative;padding:4px 4px 4px 4px;min-height:0;overflow:hidden}
-  .wp-body canvas{position:absolute;inset:4px;width:calc(100% - 8px);height:calc(100% - 8px);display:block}
+  .wp-body{flex:1;position:relative;min-height:0;overflow:hidden}
 
   /* DXY widget on Terminal */
   .dxy-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px}
@@ -832,149 +831,133 @@ function coinSymbol(c){ var s = String(c||'').replace('USDT','').replace('1000',
 function shortCoinQ(c){ return String(c||'').replace('USDT','').replace('1000',''); }
 
 // ── Watchlist panels (Kingdom) ────────────
+// Per-coin Lightweight Charts instances kept alive across poll cycles so we
+// only setData() new candles instead of recreating the chart every 10s.
+var _wpCharts = {};       // coin → { panel, chart, series, lines: [], hdrEls: { pair, price, tag }, lastTime }
+var _wpResizeBound = false;
+
+function _wpCreatePanel(p, grid){
+  var panel = document.createElement('div');
+  panel.className = 'wp-panel ' + p.state;
+  panel.innerHTML =
+    '<div class="wp-hdr-inner">'
+    + '<div class="pair"><span class="badge" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:' + coinColor(p.coin) + ';color:#fff;font-weight:900;font-size:11px;margin-right:6px">' + coinSymbol(p.coin) + '</span><span class="pname"></span></div>'
+    + '<div class="r"><span class="price"></span><span class="wp-tag"></span></div>'
+    + '</div>'
+    + '<div class="wp-body"></div>';
+  grid.appendChild(panel);
+  var body = panel.querySelector('.wp-body');
+  var chart = LightweightCharts.createChart(body, {
+    layout: { background: { type: 'solid', color: 'rgba(0,0,0,0)' }, textColor: '#5a5f7a', fontSize: 10 },
+    grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.08)', barSpacing: 5 },
+    rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.08, bottom: 0.08 } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    handleScroll: false,
+    handleScale: false,
+    width: body.clientWidth || 200,
+    height: body.clientHeight || 180,
+  });
+  var series = chart.addCandlestickSeries({
+    upColor: '#00e5a0', downColor: '#ff5577',
+    borderUpColor: '#00e5a0', borderDownColor: '#ff5577',
+    wickUpColor: '#00e5a0', wickDownColor: '#ff5577',
+  });
+  return {
+    panel: panel,
+    chart: chart,
+    series: series,
+    lines: [],
+    hdrEls: {
+      pname: panel.querySelector('.pname'),
+      price: panel.querySelector('.price'),
+      tag:   panel.querySelector('.wp-tag'),
+    },
+  };
+}
+
+function _wpUpdatePanel(entry, p){
+  // Header bits
+  entry.panel.className = 'wp-panel ' + p.state;
+  entry.hdrEls.pname.textContent = String(p.coin).replace('USDT','').replace('1000','');
+  entry.hdrEls.price.textContent = p.lastPrice != null ? formatPrice(p.lastPrice) : '—';
+  var tag = entry.hdrEls.tag;
+  tag.className = 'wp-tag ' + p.state;
+  tag.textContent = p.state.toUpperCase().replace('-', ' ');
+  // Candles — synthesise time if server didn't include t (fallback)
+  if(p.candles && p.candles.length){
+    var data = p.candles.map(function(c){
+      // c.t is ms when present; lightweight-charts wants seconds for unix time.
+      var t = c.t != null ? Math.floor(c.t / 1000) : null;
+      return { time: t, open: c.o, high: c.h, low: c.l, close: c.c };
+    }).filter(function(c){ return c.time != null; });
+    // Dedup by time (just in case) and sort ascending
+    data.sort(function(a, b){ return a.time - b.time; });
+    var seen = {};
+    data = data.filter(function(c){ if(seen[c.time]) return false; seen[c.time] = 1; return true; });
+    if(data.length) entry.series.setData(data);
+  }
+  // Refresh trade overlay (ENTRY/SL/TP price lines)
+  entry.lines.forEach(function(ln){ try{ entry.series.removePriceLine(ln); }catch(e){} });
+  entry.lines = [];
+  if(p.signal){
+    var e = parseFloat(p.signal.entry), sl = parseFloat(p.signal.sl), tp = parseFloat(p.signal.tp);
+    if(isFinite(e))  entry.lines.push(entry.series.createPriceLine({ price: e,  color: '#9aa0a6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'ENTRY' }));
+    if(isFinite(sl)) entry.lines.push(entry.series.createPriceLine({ price: sl, color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
+    if(isFinite(tp)) entry.lines.push(entry.series.createPriceLine({ price: tp, color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
+  }
+}
+
+function _wpResizeAll(){
+  Object.keys(_wpCharts).forEach(function(coin){
+    var e = _wpCharts[coin];
+    var body = e.panel.querySelector('.wp-body');
+    if(body && e.chart) e.chart.resize(body.clientWidth, body.clientHeight);
+  });
+}
+
 function loadWatchlist(){
   fetch('/api/v2/watchlist',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     var grid = el('k-wp-grid');
-    if(!d.pairs || !d.pairs.length){ grid.innerHTML = '<div class="wp-panel" style="text-align:center;justify-content:center;color:var(--di);font-size:11px">No active scan</div>'; return; }
-    el('k-pair-count').textContent = d.pairs.length + ' / 6 max';
-    grid.innerHTML = '';
-    d.pairs.slice(0, 6).forEach(function(p){
-      var panel = document.createElement('div');
-      panel.className = 'wp-panel ' + p.state;
-      var tag = p.state.toUpperCase().replace('-', ' ');
-      var pairName = String(p.coin).replace('USDT','').replace('1000','');
-      var priceStr = p.lastPrice != null ? formatPrice(p.lastPrice) : '—';
-      panel.innerHTML =
-        '<div class="wp-hdr-inner">'
-        + '<div class="pair"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:' + coinColor(p.coin) + ';color:#fff;font-weight:900;font-size:11px;margin-right:6px">' + coinSymbol(p.coin) + '</span>' + pairName + '</div>'
-        + '<div class="r"><span class="price">' + priceStr + '</span><span class="wp-tag ' + p.state + '">' + tag + '</span></div>'
-        + '</div>'
-        + '<div class="wp-body"><canvas></canvas></div>';
-      grid.appendChild(panel);
-      // Defer canvas draw to next paint so the wp-body has measured dimensions
-      var canvas = panel.querySelector('canvas');
-      var trade = p.signal ? {
-        entry: parseFloat(p.signal.entry),
-        sl: parseFloat(p.signal.sl),
-        tp: parseFloat(p.signal.tp),
-        direction: p.signal.direction,
-        // state === 'in-trade' implies _entryAlerted on the server — use the
-        // existing field instead of asking the endpoint for new ones.
-        entered: p.state === 'in-trade',
-      } : null;
-      requestAnimationFrame(function(){ drawMiniCandles(canvas, p.candles || [], trade); });
+    var pairs = (d.pairs || []).slice(0, 6);
+    el('k-pair-count').textContent = pairs.length + ' / 6 max';
+
+    // Drop charts for coins that fell off the watchlist
+    Object.keys(_wpCharts).forEach(function(coin){
+      if(!pairs.find(function(p){ return p.coin === coin; })){
+        try{ _wpCharts[coin].chart.remove(); }catch(e){}
+        if(_wpCharts[coin].panel.parentNode) _wpCharts[coin].panel.parentNode.removeChild(_wpCharts[coin].panel);
+        delete _wpCharts[coin];
+      }
     });
-    // Repaint on window resize so panels reflow cleanly
+
+    if(!pairs.length){
+      grid.innerHTML = '<div class="wp-panel" style="text-align:center;justify-content:center;color:var(--di);font-size:11px">No active scan</div>';
+      return;
+    }
+    // Clear the placeholder (single empty .wp-panel) the first time real pairs land
+    var placeholder = grid.querySelector('.wp-panel:not([data-coin])');
+    if(placeholder && !Object.keys(_wpCharts).length) placeholder.remove();
+
+    pairs.forEach(function(p){
+      var entry = _wpCharts[p.coin];
+      if(!entry){
+        entry = _wpCreatePanel(p, grid);
+        entry.panel.dataset.coin = p.coin;
+        _wpCharts[p.coin] = entry;
+      }
+      _wpUpdatePanel(entry, p);
+    });
+
     if(!_wpResizeBound){
       _wpResizeBound = true;
-      window.addEventListener('resize', function(){
-        document.querySelectorAll('#k-wp-grid .wp-panel canvas').forEach(function(c){
-          if(c.__candles) drawMiniCandles(c, c.__candles, c.__trade || null);
-        });
-      });
+      window.addEventListener('resize', _wpResizeAll);
     }
+    // Reflow after any DOM additions in case panel sizes changed
+    requestAnimationFrame(_wpResizeAll);
   }).catch(function(e){
     el('k-wp-grid').innerHTML = '<div class="error-banner">' + e.message + '</div>';
   });
-}
-var _wpResizeBound = false;
-
-// Mini-candle renderer for Kingdom watchlist panels.
-// 12 candles drawn proportionally with proper wicks + bodies on a DPR-scaled canvas.
-// Optional trade overlay draws ENTRY (dashed), SL (red), TP (green), and a BE
-// marker (amber) when beAlerted — matches the legacy Kingdom price-line look.
-function drawMiniCandles(canvas, candles, trade){
-  if(!canvas) return;
-  canvas.__candles = candles;
-  canvas.__trade = trade || null;
-  var W = canvas.clientWidth, H = canvas.clientHeight;
-  if(!W || !H || !candles.length) return;
-  var dpr = window.devicePixelRatio || 1;
-  canvas.width  = Math.floor(W * dpr);
-  canvas.height = Math.floor(H * dpr);
-  var ctx = canvas.getContext('2d');
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, W, H);
-
-  var highs = candles.map(function(c){ return c.h; });
-  var lows  = candles.map(function(c){ return c.l; });
-  var pMax = Math.max.apply(null, highs);
-  var pMin = Math.min.apply(null, lows);
-  // Include trade levels in the range so the lines are guaranteed visible
-  if(trade){
-    [trade.entry, trade.sl, trade.tp].forEach(function(v){
-      if(v != null && isFinite(v)){
-        if(v > pMax) pMax = v;
-        if(v < pMin) pMin = v;
-      }
-    });
-  }
-  if(pMax === pMin){ pMax += 1; pMin -= 1; }
-  var pad = (pMax - pMin) * 0.06;
-  pMax += pad; pMin -= pad;
-  var pR = pMax - pMin;
-
-  var n = candles.length;
-  var slot = W / n;
-  var bodyW = Math.max(2, slot * 0.65);
-
-  function yOf(p){ return ((pMax - p) / pR) * H; }
-
-  // Candles first
-  for(var i = 0; i < n; i++){
-    var c = candles[i];
-    var cx = slot * i + slot / 2;
-    var up = c.c >= c.o;
-    var col = up ? '#00e5a0' : '#ff5577';
-    var yHigh = yOf(c.h);
-    var yLow  = yOf(c.l);
-    var yOpen = yOf(c.o);
-    var yClose = yOf(c.c);
-    var bodyTop = Math.min(yOpen, yClose);
-    var bodyBot = Math.max(yOpen, yClose);
-    var bodyH = Math.max(1, bodyBot - bodyTop);
-
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(Math.round(cx) + 0.5, yHigh);
-    ctx.lineTo(Math.round(cx) + 0.5, yLow);
-    ctx.stroke();
-
-    ctx.fillStyle = col;
-    ctx.fillRect(Math.round(cx - bodyW / 2), Math.round(bodyTop), Math.round(bodyW), Math.round(bodyH));
-  }
-
-  // Trade overlay (Entry dashed grey, SL red, TP green, BE marker amber)
-  if(trade){
-    function hline(y, color, dash, label, labelColor){
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.setLineDash(dash || []);
-      ctx.beginPath();
-      ctx.moveTo(0, Math.round(y) + 0.5);
-      ctx.lineTo(W, Math.round(y) + 0.5);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if(label){
-        ctx.font = '9px JetBrains Mono, Consolas, monospace';
-        var tw = ctx.measureText(label).width;
-        var pad = 4, chipW = tw + pad * 2, chipH = 11;
-        var x = W - chipW - 2, yT = Math.max(0, Math.min(H - chipH, y - chipH / 2));
-        ctx.fillStyle = 'rgba(8,10,15,0.85)';
-        ctx.fillRect(x, yT, chipW, chipH);
-        ctx.fillStyle = labelColor || color;
-        ctx.textBaseline = 'top';
-        ctx.fillText(label, x + pad, yT + 1);
-      }
-      ctx.restore();
-    }
-    if(isFinite(trade.entry)) hline(yOf(trade.entry), '#9aa0a6', [4, 3], 'ENTRY', '#cfd2d8');
-    if(isFinite(trade.sl))    hline(yOf(trade.sl),    '#ff5577', [],     'SL',    '#ff5577');
-    if(isFinite(trade.tp))    hline(yOf(trade.tp),    '#00e5a0', [],     'TP',    '#00e5a0');
-  }
 }
 function formatPrice(p){
   if(p >= 1000) return p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
