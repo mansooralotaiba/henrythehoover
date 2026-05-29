@@ -2037,6 +2037,10 @@ app.get('/login.html', (_req, res) => res.redirect('/login'));
 // ── Landing (public) + Terminal (auth-gated) ────────────────────────────────
 app.get('/', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'landing.html')));
 app.get('/terminal', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+// v2 preview of the redesigned app shell — same auth as /terminal. Lives
+// side-by-side until the v3 cutover. Subscribers + admin can access; the page
+// itself role-gates internally via /api/me.
+app.get('/v2', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
 
 // Catch-all static — serves terminal assets (js, css, sw.js, etc.) to authenticated users only.
 app.use(requireAuth, express.static(PUBLIC_DIR, { index: false, extensions: ['html'] }));
