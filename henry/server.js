@@ -2090,11 +2090,13 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
     const broker = sub.broker || 'weex';
     const tf = sub.tf || '15m';
 
-    // Fetch candles for each pair in parallel (12 bars each, lightweight)
+    // Fetch candles for each pair in parallel. 80 bars gives the Kingdom
+    // mini-charts enough history to look like real charts with a usable
+    // time axis. Still well under broker rate limits.
     const candleArrays = await Promise.all(watchlist.map(coin => {
       const pairBroker = brokerForPair(coin, broker);
       const pairTf = (typeof tfForCoin === 'function') ? tfForCoin(coin, tf) : tf;
-      return fetchCandlesServer(coin, pairTf, 12, pairBroker).catch(() => []);
+      return fetchCandlesServer(coin, pairTf, 80, pairBroker).catch(() => []);
     }));
 
     // Map each pair into a panel-ready shape
@@ -2121,7 +2123,8 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
         state,
         lastPrice,
         pctChange: pctChange != null ? +pctChange.toFixed(2) : null,
-        candles: candles.map(c => ({ o: c.o, h: c.h, l: c.l, c: c.c })), // strip timestamps/volume for size
+        // Keep `t` so the client can render a real time axis. Volume stripped to keep payload small.
+        candles: candles.map(c => ({ t: c.t, o: c.o, h: c.h, l: c.l, c: c.c })),
         signal: ps?.pendSignal ? {
           direction: ps.pendSignal.direction,
           entry: ps.pendSignal.entry,
