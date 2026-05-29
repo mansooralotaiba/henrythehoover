@@ -94,7 +94,58 @@
   .wp-hdr{display:flex;justify-content:space-between;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px}
   .wp-hdr .r{color:var(--cy)}
   .wp-grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:8px;min-height:0}
-  .wp-panel{background:var(--bg3);border:1.5px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:0;text-align:center;justify-content:center;color:var(--di);font-family:var(--mono);font-size:11px}
+  .wp-panel{background:var(--bg3);border:1.5px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:0;transition:border-color 0.3s,box-shadow 0.3s}
+  .wp-panel.scanning{border-color:rgba(0,229,160,0.3)}
+  .wp-panel.in-trade{border-color:rgba(0,212,255,0.6);box-shadow:0 0 20px rgba(0,212,255,0.2),inset 0 0 28px rgba(0,212,255,0.08)}
+  .wp-panel.waiting{border-color:rgba(255,170,48,0.5);box-shadow:inset 0 0 24px rgba(255,170,48,0.08)}
+  .wp-panel.cooldown{opacity:0.55}
+  .wp-hdr-inner{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:8px}
+  .wp-hdr-inner .pair{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--fg)}
+  .wp-hdr-inner .price{font-family:var(--mono);font-size:12px;font-weight:600}
+  .wp-hdr-inner .r{display:flex;align-items:center;gap:6px}
+  .wp-tag{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:700;letter-spacing:0.12em;font-family:var(--mono)}
+  .wp-tag.scanning{background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.3)}
+  .wp-tag.in-trade{background:rgba(0,212,255,0.15);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
+  .wp-tag.waiting{background:rgba(255,170,48,0.15);color:var(--am);border:1px solid rgba(255,170,48,0.4)}
+  .wp-tag.cooldown{background:var(--bg3);color:var(--mu);border:1px solid var(--border)}
+  .wp-body{flex:1;display:flex;align-items:flex-end;gap:3px;padding:8px 4px;min-height:0;overflow:hidden}
+  .wp-candle{flex:1;position:relative;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%}
+  .wp-candle .wick{width:1px;background:currentColor;opacity:0.7;flex-shrink:0}
+  .wp-candle .body{width:100%;background:currentColor;border-radius:1px;min-height:2px}
+  .wp-candle.up{color:var(--gr)}
+  .wp-candle.down{color:var(--re)}
+
+  /* DXY widget on Terminal */
+  .dxy-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px}
+  .dxy-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+  .dxy-card h3 .dot{width:6px;height:6px;border-radius:50%;background:var(--go)}
+  .dxy-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+  .dxy-cell{padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;text-align:center}
+  .dxy-cell .l{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:4px}
+  .dxy-cell .v{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--fg);line-height:1}
+  .dxy-cell .ch{font-family:var(--mono);font-size:11px;font-weight:700;margin-top:3px}
+  .dxy-bias{padding:8px 10px;border-radius:5px;font-size:11px;line-height:1.45;display:flex;flex-direction:column;gap:4px}
+  .dxy-bias .tag{display:inline-block;padding:2px 7px;border-radius:3px;font-size:9px;letter-spacing:0.12em;font-weight:700;font-family:var(--mono);width:fit-content}
+  .dxy-bias.bull{background:rgba(0,229,160,0.06);border-left:2px solid var(--gr)}
+  .dxy-bias.bull .tag{background:rgba(0,229,160,0.18);color:var(--gr)}
+  .dxy-bias.bear{background:rgba(255,85,119,0.06);border-left:2px solid var(--re)}
+  .dxy-bias.bear .tag{background:rgba(255,85,119,0.18);color:var(--re)}
+  .dxy-bias.neutral{background:rgba(255,170,48,0.06);border-left:2px solid var(--am)}
+  .dxy-bias.neutral .tag{background:rgba(255,170,48,0.18);color:var(--am)}
+
+  /* Heatmap card on Terminal */
+  .heatmap-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px}
+  .heatmap-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px}
+  .heatmap-list{max-height:300px;overflow-y:auto}
+  .hm-level{display:flex;align-items:center;gap:10px;padding:5px 8px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px}
+  .hm-level:last-child{border:none}
+  .hm-level .price{flex:1;font-weight:700;color:var(--fg)}
+  .hm-level .label{font-size:9px;padding:1px 5px;border-radius:3px;letter-spacing:0.1em}
+  .hm-level .label.SH{background:rgba(255,85,119,0.15);color:var(--re)}
+  .hm-level .label.SL{background:rgba(0,229,160,0.15);color:var(--gr)}
+  .hm-level .label.EQH{background:rgba(255,85,119,0.25);color:var(--re);font-weight:700}
+  .hm-level .label.EQL{background:rgba(0,229,160,0.25);color:var(--gr);font-weight:700}
+  .hm-level .label.R{background:rgba(255,184,48,0.15);color:var(--am)}
 
   /* ── News tab ────────────────────────────── */
   .news{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;height:100%}
@@ -180,14 +231,31 @@
 
 <div class="main">
 
-  <!-- ── Terminal stub ─────────────────────── -->
+  <!-- ── Terminal: macro context + stub for interactive bits ──────────── -->
   <div class="panel" id="panel-terminal">
-    <div class="terminal-stub">
-      <div class="icon">⚡</div>
-      <h2>Terminal — coming in next phase</h2>
-      <p>The interactive trading terminal (chart, AI ANALYSE button, heatmap, autoscan controls) is being ported next session.</p>
-      <p>For now use the legacy page — fully functional, no changes.</p>
-      <a href="/terminal">Open legacy /terminal</a>
+    <div class="dxy-card">
+      <h3><span class="dot"></span>DXY / Gold Macro</h3>
+      <div class="dxy-grid">
+        <div class="dxy-cell"><div class="l">DXY</div><div class="v" id="dxy-val">—</div><div class="ch" id="dxy-ch">—</div></div>
+        <div class="dxy-cell"><div class="l">XAU / Gold</div><div class="v" id="xau-val">—</div><div class="ch" id="xau-ch">—</div></div>
+      </div>
+      <div class="dxy-bias" id="dxy-bias">
+        <span class="tag">LOADING</span>
+        <span>Fetching live macro context…</span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0">
+      <div class="heatmap-card">
+        <h3>Liquidity Heatmap · BTC 15m</h3>
+        <div class="heatmap-list" id="heatmap-list"><div class="loading">Loading…</div></div>
+      </div>
+      <div class="terminal-stub" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px">
+        <div class="icon">⚡</div>
+        <h2 style="font-size:18px">Chart + Analyse</h2>
+        <p style="max-width:340px;font-size:13px;line-height:1.5">Interactive chart, ANALYSE flow, and autoscan controls land in Phase 4.</p>
+        <a href="/terminal">Open legacy /terminal</a>
+      </div>
     </div>
   </div>
 
@@ -227,7 +295,7 @@
     <div class="watchlist-panels">
       <div class="wp-hdr"><span>Watchlist Panels</span><span class="r" id="k-pair-count">— / 6 max</span></div>
       <div class="wp-grid" id="k-wp-grid">
-        <div class="wp-panel">Chart panels port in next phase<br>(use legacy /kingdom for now)</div>
+        <div class="wp-panel" style="text-align:center;justify-content:center;color:var(--di);font-family:var(--mono);font-size:11px">Loading watchlist…</div>
       </div>
     </div>
   </div>
@@ -317,8 +385,132 @@ document.querySelectorAll('.tab').forEach(function(t){
     if(t.dataset.tab==='news')        loadNews();
     if(t.dataset.tab==='stats')       loadStats();
     if(t.dataset.tab==='perf')        loadPerformance();
+    if(t.dataset.tab==='terminal')    loadTerminal();
   });
 });
+
+// ── Coin icons ────────────────────────────
+var COIN_COLORS = { BTC:'#f7931a', ETH:'#627eea', SOL:'#9945ff', BNB:'#f3ba2f', LINK:'#2a5ada', AAVE:'#b6509e', GOLD:'#d4af37', XAUT:'#d4af37', DOGE:'#c2a633', ADA:'#0033ad', SUI:'#6fbcf0', XRP:'#23292f' };
+function coinColor(c){ var s = String(c||'').replace('USDT','').replace('1000',''); return COIN_COLORS[s] || '#444'; }
+function coinSymbol(c){ var s = String(c||'').replace('USDT','').replace('1000',''); var m = { BTC:'₿', ETH:'Ξ', GOLD:'AU', XAUT:'AU' }; return m[s] || s.charAt(0); }
+
+// ── Watchlist panels (Kingdom) ────────────
+function loadWatchlist(){
+  fetch('/api/v2/watchlist',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var grid = el('k-wp-grid');
+    if(!d.pairs || !d.pairs.length){ grid.innerHTML = '<div class="wp-panel" style="text-align:center;justify-content:center;color:var(--di);font-size:11px">No active scan</div>'; return; }
+    el('k-pair-count').textContent = d.pairs.length + ' / 6 max';
+    grid.innerHTML = '';
+    d.pairs.slice(0, 6).forEach(function(p){
+      var panel = document.createElement('div');
+      panel.className = 'wp-panel ' + p.state;
+      var tag = p.state.toUpperCase().replace('-', ' ');
+      var pairName = String(p.coin).replace('USDT','').replace('1000','');
+      var priceStr = p.lastPrice != null ? formatPrice(p.lastPrice) : '—';
+      // Build candle bars (mini chart)
+      var candleHtml = '';
+      if(p.candles && p.candles.length){
+        var highs = p.candles.map(function(c){return c.h;});
+        var lows = p.candles.map(function(c){return c.l;});
+        var pMax = Math.max.apply(null, highs);
+        var pMin = Math.min.apply(null, lows);
+        var pR = (pMax - pMin) || 1;
+        candleHtml = p.candles.map(function(c){
+          var up = c.c >= c.o;
+          var bodyTop = Math.max(c.o, c.c);
+          var bodyBot = Math.min(c.o, c.c);
+          var totalH = ((pMax - c.l) / pR) * 100; // distance from top to bottom wick
+          var wickTopH = ((pMax - c.h) / pR) * 100; // distance from top to upper wick
+          var wickTopLen = ((c.h - bodyTop) / pR) * 100; // upper wick height
+          var bodyH = Math.max(2, ((bodyTop - bodyBot) / pR) * 100); // body height
+          var wickBotLen = ((bodyBot - c.l) / pR) * 100; // lower wick height
+          return '<div class="wp-candle ' + (up?'up':'down') + '">'
+            + '<div class="wick" style="height:' + wickTopLen.toFixed(1) + '%"></div>'
+            + '<div class="body" style="height:' + bodyH.toFixed(1) + '%"></div>'
+            + '<div class="wick" style="height:' + wickBotLen.toFixed(1) + '%"></div>'
+            + '</div>';
+        }).join('');
+      }
+      panel.innerHTML =
+        '<div class="wp-hdr-inner">'
+        + '<div class="pair"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:' + coinColor(p.coin) + ';color:#fff;font-weight:900;font-size:11px;margin-right:6px">' + coinSymbol(p.coin) + '</span>' + pairName + '</div>'
+        + '<div class="r"><span class="price">' + priceStr + '</span><span class="wp-tag ' + p.state + '">' + tag + '</span></div>'
+        + '</div>'
+        + '<div class="wp-body">' + candleHtml + '</div>';
+      grid.appendChild(panel);
+    });
+  }).catch(function(e){
+    el('k-wp-grid').innerHTML = '<div class="error-banner">' + e.message + '</div>';
+  });
+}
+function formatPrice(p){
+  if(p >= 1000) return p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if(p >= 10) return p.toFixed(2);
+  if(p >= 1) return p.toFixed(3);
+  return p.toFixed(4);
+}
+
+// ── DXY / Gold widget (Terminal) ──────────
+function loadDxy(){
+  fetch('/api/dxy',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    if(!d) return;
+    if(d.dxy != null){
+      el('dxy-val').textContent = d.dxy.toFixed(3);
+      var dxyCh = parseFloat(d.dxyChange) || 0;
+      var dxyEl = el('dxy-ch');
+      dxyEl.textContent = (dxyCh >= 0 ? '▲ +' : '▼ ') + dxyCh.toFixed(2) + '%';
+      dxyEl.style.color = dxyCh >= 0 ? 'var(--gr)' : 'var(--re)';
+    }
+    if(d.xau != null){
+      el('xau-val').textContent = '$' + d.xau.toFixed(2);
+      var xauCh = parseFloat(d.xauChange) || 0;
+      var xauEl = el('xau-ch');
+      xauEl.textContent = (xauCh >= 0 ? '▲ +' : '▼ ') + xauCh.toFixed(2) + '%';
+      xauEl.style.color = xauCh >= 0 ? 'var(--gr)' : 'var(--re)';
+    }
+    // Bias derivation matches buildDXYContextString logic
+    var bias = el('dxy-bias');
+    var dxyCh = parseFloat(d.dxyChange) || 0;
+    var xauCh = parseFloat(d.xauChange) || 0;
+    var biasClass = 'neutral', tagText = 'NEUTRAL', text = 'No clear macro bias right now.';
+    if(dxyCh < 0 && xauCh > 0){ biasClass='bull'; tagText='BULLISH BIAS'; text='Dollar weakness + gold strength → favours LONGs on metals. Crypto risk-on.'; }
+    else if(dxyCh > 0 && xauCh < 0){ biasClass='bear'; tagText='BEARISH BIAS'; text='Dollar strong + gold weak → favours SHORTs. Risk-off.'; }
+    else if(dxyCh > 0 && xauCh > 0){ biasClass='bull'; tagText='STRONG DEMAND'; text='Gold rallying despite dollar strength → institutional demand.'; }
+    else if(dxyCh < 0 && xauCh < 0){ biasClass='neutral'; tagText='LACK OF CONVICTION'; text='Gold not following dollar weakness → reduce size.'; }
+    bias.className = 'dxy-bias ' + biasClass;
+    bias.innerHTML = '<span class="tag">' + tagText + '</span><span>' + text + '</span>';
+  }).catch(function(){ el('dxy-bias').innerHTML = '<span class="tag">UNAVAILABLE</span><span style="color:var(--mu)">DXY feed temporarily unavailable.</span>'; });
+}
+
+// ── Heatmap (Terminal) ────────────────────
+function loadHeatmap(){
+  fetch('/api/heatmap?coin=BTCUSDT&tf=15m&broker=weex',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var box = el('heatmap-list');
+    if(!d.levels || !d.levels.length){ box.innerHTML = '<div class="loading">No levels available</div>'; return; }
+    box.innerHTML = '';
+    // Show above-price levels (descending) then below-price levels (descending)
+    var above = d.levels.filter(function(l){return l.price > d.cp;}).sort(function(a,b){return a.price-b.price;});
+    var below = d.levels.filter(function(l){return l.price <= d.cp;}).sort(function(a,b){return b.price-a.price;});
+    above.reverse().forEach(function(l){ box.appendChild(hmRow(l)); });
+    // Current price marker
+    var cpRow = document.createElement('div');
+    cpRow.className = 'hm-level';
+    cpRow.style.background = 'rgba(0,212,255,0.08)';
+    cpRow.innerHTML = '<div class="price" style="color:var(--cy)">' + formatPrice(d.cp) + ' ← current</div>';
+    box.appendChild(cpRow);
+    below.forEach(function(l){ box.appendChild(hmRow(l)); });
+  }).catch(function(){ el('heatmap-list').innerHTML = '<div class="error-banner">Heatmap unavailable</div>'; });
+}
+function hmRow(l){
+  var row = document.createElement('div');
+  row.className = 'hm-level';
+  row.innerHTML = '<div class="price">' + formatPrice(l.price) + '</div><span class="label ' + l.label + '">' + l.label + '</span>';
+  return row;
+}
+
+// Lazy-load Terminal data when tab is opened
+var _terminalLoaded = false;
+function loadTerminal(){ if(_terminalLoaded) return; _terminalLoaded = true; loadDxy(); loadHeatmap(); }
 
 // ── Kingdom ───────────────────────────────
 function loadKingdom(){
@@ -368,7 +560,11 @@ function loadKingdom(){
   }
 }
 loadKingdom();
+loadWatchlist();
 setInterval(loadKingdom, 15_000);
+setInterval(loadWatchlist, 10_000);
+// Refresh DXY widget every 60s if Terminal is loaded
+setInterval(function(){ if(_terminalLoaded) loadDxy(); }, 60_000);
 
 // ── News ─────────────────────────────────
 var _newsLoaded = false;
