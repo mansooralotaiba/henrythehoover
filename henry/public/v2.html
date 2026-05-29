@@ -261,6 +261,14 @@
   .btn-modal{padding:9px 18px;border:none;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;font-family:var(--sans)}
   .btn-ghost{background:transparent;border:1px solid var(--border-strong);color:var(--mu)}
   .btn-ghost:hover{color:var(--fg);border-color:var(--fg)}
+  .btn-tp{background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.5)}
+  .btn-tp:hover{background:rgba(0,229,160,0.3)}
+  .btn-sl{background:rgba(255,85,119,0.15);color:var(--re);border:1px solid rgba(255,85,119,0.5)}
+  .btn-sl:hover{background:rgba(255,85,119,0.3)}
+  .btn-be{background:rgba(255,170,48,0.15);color:var(--am);border:1px solid rgba(255,170,48,0.5)}
+  .btn-be:hover{background:rgba(255,170,48,0.3)}
+  .btn-exp{background:rgba(255,255,255,0.05);color:var(--mu);border:1px solid var(--border-strong)}
+  .btn-exp:hover{background:rgba(255,255,255,0.12)}
   .modal-loading{padding:60px 22px;text-align:center;color:var(--mu);font-family:var(--mono);font-size:13px}
   .modal-error{padding:20px 22px;color:var(--re);font-family:var(--mono);font-size:13px}
 
@@ -1700,12 +1708,18 @@ function setupAutoscan(){
 // is populated by the time it runs. No setTimeout needed.
 
 // ANALYSE flow
+// Tracks the persisted manual signal so the outcome buttons can PATCH the
+// right row. Cleared on modal close / discard.
+window._lastManualSignal = null;
+
 function runAnalyse(){
   var btn = el('t-analyse');
   btn.disabled = true; btn.textContent = '⏳ Analysing…';
   openAiModal();
+  window._lastManualSignal = null;
   el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf;
   el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 10-20s on Opus 4.8</div>';
+  el('ai-modal-actions').innerHTML = '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
   fetch('/api/v2/analyse', {
     method:'POST', credentials:'same-origin',
     headers:{ 'Content-Type':'application/json' },
@@ -1716,10 +1730,84 @@ function runAnalyse(){
   }).then(function(d){
     btn.disabled = false; btn.textContent = '⚡ Analyse';
     renderAnalyseResult(d);
+    // Persist real LONG/SHORT signals so the user can log an outcome later.
+    // NO TRADE skips persistence (nothing to log).
+    var s = d.signal || {};
+    var dir = (s.direction || '').toUpperCase();
+    if(dir === 'LONG' || dir === 'SHORT'){
+      // Server's /api/signals expects { signal, trigger, broker, tf } shape with
+      // signal.pair populated. Inject pair from t_pair if missing.
+      var payload = {
+        signal: Object.assign({}, s, { pair: s.pair || t_pair }),
+        broker: t_broker,
+        tf: t_tf,
+        // No trigger → trigger_type stays NULL → counts as manual on /api/performance/me?source=manual
+      };
+      fetch('/api/signals', {
+        method:'POST', credentials:'same-origin',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(out){
+          if(out && out.id){
+            window._lastManualSignal = { id: out.id, signal: payload.signal };
+            renderOutcomeButtons();
+          }
+        }).catch(function(){});
+    }
   }).catch(function(e){
     btn.disabled = false; btn.textContent = '⚡ Analyse';
     el('ai-modal-body').innerHTML = '<div class="modal-error">Error: ' + escapeHtml(e.message) + '</div>';
   });
+}
+
+// Renders the TP/SL/BE/EXPIRED/OPEN/DISCARD row in the modal footer.
+// Each button hits PATCH /api/signals/:id/outcome with the right R-multiple.
+function renderOutcomeButtons(){
+  var sig = window._lastManualSignal;
+  if(!sig) return;
+  var box = el('ai-modal-actions');
+  // Compute R for TP: |tp - entry| / |sl - entry|
+  var rr = parseFloat(sig.signal.rr);
+  if(!isFinite(rr) || rr <= 0){
+    var e = parseFloat(sig.signal.entry), sl = parseFloat(sig.signal.sl), tp = parseFloat(sig.signal.tp);
+    if(isFinite(e) && isFinite(sl) && isFinite(tp) && e !== sl){
+      rr = Math.abs(tp - e) / Math.abs(e - sl);
+    } else { rr = 2; }
+  }
+  box.innerHTML =
+    '<button class="btn-modal btn-tp"  onclick="logOutcome(\'TP\',  '  + rr.toFixed(3) + ')">TP HIT</button>'
+  + '<button class="btn-modal btn-sl"  onclick="logOutcome(\'SL\',  -1)">SL HIT</button>'
+  + '<button class="btn-modal btn-be"  onclick="logOutcome(\'BE\',  0)">BREAKEVEN</button>'
+  + '<button class="btn-modal btn-exp" onclick="logOutcome(\'EXPIRED\', 0)">EXPIRED</button>'
+  + '<button class="btn-modal btn-ghost" onclick="discardManual()">DISCARD</button>'
+  + '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
+}
+
+function logOutcome(outcome, rValue){
+  var sig = window._lastManualSignal;
+  if(!sig){ closeAiModal(); return; }
+  var box = el('ai-modal-actions');
+  box.style.opacity = '0.5';
+  fetch('/api/signals/' + sig.id + '/outcome', {
+    method:'PATCH', credentials:'same-origin',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify({ outcome: outcome, outcomeRr: rValue })
+  }).then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(){
+      // Done — invalidate Performance cache so the next visit shows the new row
+      _perfLoaded = false;
+      window._lastManualSignal = null;
+      closeAiModal();
+    })
+    .catch(function(){ box.style.opacity = '1'; alert('Failed to log outcome — try again'); });
+}
+
+function discardManual(){
+  // Just clear the local handle. The signal row stays in Supabase with outcome NULL
+  // (matches legacy DISCARD behaviour — non-destructive).
+  window._lastManualSignal = null;
+  closeAiModal();
 }
 
 function renderAnalyseResult(d){
