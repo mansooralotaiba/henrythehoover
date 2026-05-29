@@ -4598,63 +4598,41 @@ function buildHeatmap(){
   var ctx=canvas.getContext('2d');ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,180);
   ctx.fillStyle='#5a5f7a';ctx.font='11px Courier New';ctx.textAlign='center';
   ctx.fillText('Loading '+coin+' liquidity...',W/2,90);
-  if(status)status.textContent='Fetching '+liqTF+' candles...';
-  fetchCandles(coin,liqTF,100).then(function(candles){
-    if(!candles||candles.length<10){
+  if(status)status.textContent='Fetching '+liqTF+' levels...';
+  // Server-side endpoint — works for all brokers including Binance which is
+  // geo-blocked from some browser-proxy paths. Returns { levels, cp, pMin, pMax }.
+  var url='/api/heatmap?coin='+encodeURIComponent(coin)
+    +'&tf='+encodeURIComponent(liqTF)
+    +'&broker='+encodeURIComponent(activeBroker||'weex');
+  fetch(url,{credentials:'same-origin'})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+    .then(function(data){
+      if(!data||!data.levels||!data.levels.length||data.cp==null){
+        ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,180);
+        ctx.fillStyle='#ff4466';ctx.font='10px Courier New';ctx.textAlign='center';
+        ctx.fillText('No data',W/2,90);
+        if(status)status.textContent=data&&data.note?data.note:'No levels';
+        liqLevels=[];
+        return;
+      }
+      liqLevels=data.levels.slice();
+      renderHeatmapFromLevels(ctx,W,180,data.levels,data.cp,data.pMin,data.pMax);
+      if(status)status.textContent='Updated '+new Date().toUTCString().slice(17,22)+' UTC';
+    })
+    .catch(function(e){
       ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,180);
-      ctx.fillStyle='#ff4466';ctx.font='10px Courier New';ctx.textAlign='center';
-      ctx.fillText('No data',W/2,90);
-      if(status)status.textContent='Could not load — check network';return;
-    }
-    renderHeatmap(ctx,W,180,candles);
-    if(status)status.textContent='Updated '+new Date().toUTCString().slice(17,22)+' UTC';
-  }).catch(function(e){
-    ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,180);
-    ctx.fillStyle='#ff4466';ctx.textAlign='center';ctx.font='10px Courier New';
-    ctx.fillText('Error: '+e.message,W/2,90);
-    if(status)status.textContent='Failed: '+e.message;
-  });
+      ctx.fillStyle='#ff4466';ctx.textAlign='center';ctx.font='10px Courier New';
+      ctx.fillText('Error: '+e.message,W/2,90);
+      if(status)status.textContent='Failed: '+e.message;
+    });
 }
 
-function renderHeatmap(ctx,W,H,candles){
-  liqLevels=[];
-  var highs=candles.map(function(c){return c.h;}),lows=candles.map(function(c){return c.l;});
-  var closes=candles.map(function(c){return c.c;});
-  var pMax=Math.max.apply(null,highs),pMin=Math.min.apply(null,lows),pR=pMax-pMin||1;
-  var cp=closes[closes.length-1];
-  var levels=[];
-  // Swing highs/lows
-  for(var i=2;i<candles.length-2;i++){
-    if(candles[i].h>candles[i-1].h&&candles[i].h>candles[i-2].h&&candles[i].h>candles[i+1].h&&candles[i].h>candles[i+2].h)
-      levels.push({price:candles[i].h,label:'SH',color:'rgba(255,68,102,0.7)',strength:1});
-    if(candles[i].l<candles[i-1].l&&candles[i].l<candles[i-2].l&&candles[i].l<candles[i+1].l&&candles[i].l<candles[i+2].l)
-      levels.push({price:candles[i].l,label:'SL',color:'rgba(0,229,160,0.7)',strength:1});
-  }
-  // Equal highs/lows
-  var srt=candles.slice().sort(function(a,b){return b.h-a.h;});
-  for(var i=0;i<Math.min(srt.length-1,20);i++){
-    if(Math.abs(srt[i].h-srt[i+1].h)<pR*0.002)
-      levels.push({price:(srt[i].h+srt[i+1].h)/2,label:'EQH',color:'rgba(255,68,102,0.9)',strength:2});
-  }
-  var srtL=candles.slice().sort(function(a,b){return a.l-b.l;});
-  for(var i=0;i<Math.min(srtL.length-1,20);i++){
-    if(Math.abs(srtL[i].l-srtL[i+1].l)<pR*0.002)
-      levels.push({price:(srtL[i].l+srtL[i+1].l)/2,label:'EQL',color:'rgba(0,229,160,0.9)',strength:2});
-  }
-  // Round numbers
-  var step=cp>=1000?100:cp>=100?10:cp>=10?1:0.1;
-  var rndStart=Math.floor(pMin/step)*step;
-  for(var r=rndStart;r<=pMax+step;r+=step){
-    if(r>=pMin&&r<=pMax)levels.push({price:r,label:'R',color:'rgba(255,184,48,0.4)',strength:1});
-  }
-  // Dedup
-  levels.sort(function(a,b){return a.price-b.price;});
-  var deduped=[];
-  levels.forEach(function(l){
-    if(deduped.length===0||Math.abs(l.price-deduped[deduped.length-1].price)>pR*0.004)deduped.push(l);
-    else if(l.strength>deduped[deduped.length-1].strength)deduped[deduped.length-1]=l;
-  });
-  liqLevels=deduped.slice();
+// Renders a heatmap from pre-computed levels. Levels are fetched from
+// /api/heatmap (server-side) so we don't depend on per-broker browser-proxy
+// candle fetches. Levels shape: [{ price, label, color, strength }].
+function renderHeatmapFromLevels(ctx,W,H,levels,cp,pMin,pMax){
+  var pR=(pMax-pMin)||1;
+  var deduped=levels;
   // Draw
   ctx.fillStyle='#08090d';ctx.fillRect(0,0,W,H);
   var PL=38,PR=8,PT=8,PB=8,cH=H-PT-PB;
