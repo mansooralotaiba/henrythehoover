@@ -2778,10 +2778,23 @@ function checkPortfolioHeat(sub, coin) {
 // same_cluster_opp_dir category was 18 trades, 25% WR, -4.86R total — clearly
 // trading correlated noise. Blocking it recovers that drag without touching
 // same-direction stacking (which is profitable, +23.25R, 56% WR).
+// Patch 3 (2026-05-31) — crypto super-cluster opposite-direction veto.
+// All non-commodity clusters share BTC's primary direction (corr 0.55-0.95),
+// so BTC SHORT + ETH LONG + AAVE LONG is the same losing pattern as ETH SHORT
+// + SOL LONG (already blocked by Patch 1). Re-run of analyze_stacked.py on
+// 2026-05-31 (268 trades) confirmed cross-cluster opp-dir behaves identically
+// to same-cluster opp-dir: 10 trades, 30% WR, -0.224R/trade vs the blocked
+// bucket's 20 trades, 27.8% WR, -0.239R/trade. Commodities (gold) excluded
+// because XAUT is genuinely decorrelated with crypto.
+const CRYPTO_CLUSTERS = new Set(['btc', 'largeCap', 'defi', 'meme', 'layer1']);
+const HENRY_CRYPTO_SUPERCLUSTER_VETO = (process.env.HENRY_CRYPTO_SUPERCLUSTER_VETO ?? 'true').toLowerCase() === 'true';
+
 function checkOppositeDirectionConflict(sub, coin, newDirection) {
   if (!newDirection || newDirection === 'NO TRADE') return { blocked: false };
   const target = getClusterFor(coin);
   const { byCluster } = getActivePortfolio(sub);
+
+  // Patch 1 — same-cluster opposite-direction veto (shipped 2026-05-23).
   const inCluster = byCluster[target] || [];
   for (const c of inCluster) {
     if (c === coin) continue;
@@ -2797,6 +2810,31 @@ function checkOppositeDirectionConflict(sub, coin, newDirection) {
       };
     }
   }
+
+  // Patch 3 — cross-cluster opposite-direction within the crypto super-cluster.
+  // Skipped if target isn't crypto (e.g. gold trades don't trigger this check).
+  // Skipped via env var HENRY_CRYPTO_SUPERCLUSTER_VETO=false for fast rollback.
+  if (HENRY_CRYPTO_SUPERCLUSTER_VETO && CRYPTO_CLUSTERS.has(target)) {
+    for (const [otherCluster, coins] of Object.entries(byCluster)) {
+      if (otherCluster === target) continue;
+      if (!CRYPTO_CLUSTERS.has(otherCluster)) continue;
+      for (const c of coins) {
+        if (c === coin) continue;
+        const otherPs = sub.pairs?.[c];
+        const existingDir = otherPs?.pendSignal?.direction;
+        if (existingDir && existingDir !== 'NO TRADE' && existingDir !== newDirection) {
+          return {
+            blocked: true,
+            code: 'oppdir-veto-crypto',
+            reason: `Crypto super-cluster: ${otherCluster} already has ${existingDir} on ${c} — refusing ${newDirection} on ${coin} (${target}). BTC direction drives all crypto.`,
+            conflictCoin: c,
+            conflictDirection: existingDir,
+          };
+        }
+      }
+    }
+  }
+
   return { blocked: false };
 }
 
