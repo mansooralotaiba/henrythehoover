@@ -92,8 +92,16 @@
   .ws .l{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:2px}
   .ws .v{font-family:var(--mono);font-size:14px;font-weight:700;line-height:1}
   .watchlist-panels{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:0}
-  .wp-hdr{display:flex;align-items:center;gap:10px;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px}
+  .wp-hdr{display:flex;align-items:center;gap:10px;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px;flex-wrap:wrap}
   .wp-hdr .r{color:var(--cy);margin-left:auto}
+  /* Quick-strip — expectancy / streak / best / worst / next event */
+  .wp-hdr .quick-strip{display:flex;gap:14px;flex-wrap:wrap;font-size:10px;letter-spacing:0.05em;text-transform:none;color:var(--mu)}
+  .wp-hdr .quick-strip .qi{display:flex;gap:6px;align-items:baseline}
+  .wp-hdr .quick-strip .qi .l{color:var(--di);letter-spacing:0.12em;text-transform:uppercase;font-size:9px}
+  .wp-hdr .quick-strip .qi .v{color:var(--fg);font-weight:700;font-family:var(--mono)}
+  .wp-hdr .quick-strip .qi .v.pos{color:var(--gr)}
+  .wp-hdr .quick-strip .qi .v.neg{color:var(--re)}
+  .wp-hdr .quick-strip .qi .v.am{color:var(--am)}
   /* AUTO-TRADE toggle + RESUME SCAN button in Watchlist Panels header */
   .k-auto-trade{display:none;align-items:center;gap:7px;padding:4px 10px;border:1px solid var(--border-strong);border-radius:4px;background:var(--bg3);cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;transition:all 0.2s}
   .k-auto-trade.visible{display:inline-flex}
@@ -606,6 +614,13 @@
     <div class="watchlist-panels">
       <div class="wp-hdr">
         <span>Watchlist Panels</span>
+        <div class="quick-strip" id="k-quick">
+          <div class="qi"><span class="l">EXPECTANCY</span><span class="v" id="q-exp">—</span></div>
+          <div class="qi"><span class="l">STREAK</span><span class="v" id="q-streak">—</span></div>
+          <div class="qi"><span class="l">BEST TODAY</span><span class="v" id="q-best">—</span></div>
+          <div class="qi"><span class="l">WORST TODAY</span><span class="v" id="q-worst">—</span></div>
+          <div class="qi"><span class="l">NEXT EVENT</span><span class="v am" id="q-next">—</span></div>
+        </div>
         <button id="k-auto-trade" class="k-auto-trade unavailable admin-only-content" type="button" title="WEEX auto-trade kill switch">
           <span class="dot"></span><span id="k-auto-trade-label">AUTO-TRADE: —</span>
         </button>
@@ -825,6 +840,7 @@ document.querySelectorAll('.tab').forEach(function(t){
 var COIN_COLORS = { BTC:'#f7931a', ETH:'#627eea', SOL:'#9945ff', BNB:'#f3ba2f', LINK:'#2a5ada', AAVE:'#b6509e', GOLD:'#d4af37', XAUT:'#d4af37', DOGE:'#c2a633', ADA:'#0033ad', SUI:'#6fbcf0', XRP:'#23292f' };
 function coinColor(c){ var s = String(c||'').replace('USDT','').replace('1000',''); return COIN_COLORS[s] || '#444'; }
 function coinSymbol(c){ var s = String(c||'').replace('USDT','').replace('1000',''); var m = { BTC:'₿', ETH:'Ξ', GOLD:'AU', XAUT:'AU' }; return m[s] || s.charAt(0); }
+function shortCoinQ(c){ return String(c||'').replace('USDT','').replace('1000',''); }
 
 // ── Watchlist panels (Kingdom) ────────────
 function loadWatchlist(){
@@ -1622,6 +1638,41 @@ function loadKingdom(){
     });
     var allP = d.allPairs || [];
     el('k-pair-count').textContent = allP.length + ' / 6 max';
+
+    // Quick-strip: expectancy / streak / best / worst / next-event
+    var expVal = (d.today && d.today.expectancy != null) ? d.today.expectancy
+               : (d.allTime && d.allTime.expectancy != null) ? d.allTime.expectancy : null;
+    var expEl = el('q-exp');
+    if(expVal != null && isFinite(expVal)){
+      expEl.textContent = (expVal>=0?'+':'') + expVal.toFixed(2) + 'R/trade';
+      expEl.className = 'v ' + (expVal>0?'pos':expVal<0?'neg':'');
+    } else { expEl.textContent = '—'; expEl.className = 'v'; }
+
+    var sEl = el('q-streak');
+    if(d.streak){
+      sEl.textContent = (d.streak.type==='W'?'+':'-') + d.streak.count + d.streak.type;
+      sEl.className = 'v ' + (d.streak.type==='W'?'pos':'neg');
+    } else { sEl.textContent = '—'; sEl.className = 'v'; }
+
+    var bEl = el('q-best');
+    if(d.bestToday && d.bestToday.pair){
+      bEl.textContent = (d.bestToday.r>=0?'+':'') + d.bestToday.r.toFixed(2) + 'R ' + shortCoinQ(d.bestToday.pair);
+      bEl.className = 'v pos';
+    } else { bEl.textContent = '—'; bEl.className = 'v'; }
+
+    var wEl = el('q-worst');
+    if(d.worstToday && d.worstToday.pair && d.worstToday.r < 0){
+      wEl.textContent = d.worstToday.r.toFixed(2) + 'R ' + shortCoinQ(d.worstToday.pair);
+      wEl.className = 'v neg';
+    } else { wEl.textContent = '—'; wEl.className = 'v'; }
+
+    var nEl = el('q-next');
+    if(d.nextEvent){
+      var m = d.nextEvent.inMinutes;
+      var when = m < 60 ? (m + 'm') : Math.floor(m/60) + 'h' + String(m%60).padStart(2,'0');
+      nEl.textContent = d.nextEvent.name + ' (' + d.nextEvent.zone + ') in ' + when;
+      nEl.className = 'v am';
+    } else { nEl.textContent = 'No high-impact in 4h'; nEl.className = 'v am'; }
   }).catch(function(e){
     el('k-today-num').textContent = '—'; console.warn('[kingdom]', e);
   });
