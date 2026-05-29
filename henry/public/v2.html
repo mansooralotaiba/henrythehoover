@@ -510,8 +510,8 @@
   <!-- ── Stats (admin only) ────────────────── -->
   <div class="panel" id="panel-stats">
     <div class="stats-hdr">
-      <h2>Stats <span class="admin-badge">♛ Admin</span></h2>
-      <p>Live analytics from Supabase signals + executor state. <span style="color:var(--mu);font-family:var(--mono);font-size:11px" id="stats-meta"></span></p>
+      <h2>Stats · Autoscan <span class="admin-badge">♛ Admin</span></h2>
+      <p>Analytics across autoscan-generated signals only — the bot's own track record. <span style="color:var(--mu);font-family:var(--mono);font-size:11px" id="stats-meta"></span></p>
     </div>
     <div class="stats-grid" id="stats-grid"><div class="loading">Loading stats…</div></div>
   </div>
@@ -520,8 +520,8 @@
   <div class="panel" id="panel-perf">
     <div class="perf-hdr">
       <div>
-        <h2>Your Track Record</h2>
-        <p class="perf-sub">Signals you've run — built from your own decisions over time. <span id="perf-id" class="mono"></span></p>
+        <h2>Your Track Record · Manual</h2>
+        <p class="perf-sub">Manual ANALYSE signals only — your own click-the-button decisions over time. <span id="perf-id" class="mono"></span></p>
       </div>
     </div>
     <div class="perf-overall" id="perf-overall"><div class="loading">Loading performance…</div></div>
@@ -1461,13 +1461,16 @@ function loadTerminal(){ if(_terminalLoaded) return; _terminalLoaded = true; loa
 
 // ── Kingdom ───────────────────────────────
 function loadKingdom(){
-  // Use the admin endpoint when admin, otherwise the user's own summary
+  // Non-admin (subscribers) see Henry's R-based track record. Admin sees
+  // their own real-money USD PnL from WEEX (/api/bot/state) — kingdom/summary
+  // is still used for the day's TP/SL/BE counts on the watchlist header.
   fetch('/api/kingdom/summary',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     if(!d) return;
     var today = d.today || {};
     var month = d.month || {};
     var allTime = d.allTime || {};
-    // Labels: public sees R, admin sees same R (Kingdom is R-based by design)
+    el('k-month-name').textContent = new Date().toLocaleString('en-US',{month:'long',year:'numeric'});
+    // Public R view (will be overridden below for admin)
     el('k-today-label').textContent = "Today's R";
     el('k-today-num').textContent = fmtR(today.totalR);
     el('k-today-num').className = 'num ' + (today.totalR>=0?'pos':'neg');
@@ -1476,12 +1479,11 @@ function loadKingdom(){
     el('k-be').textContent = today.be || 0;
     el('k-wr').textContent = fmtPct(today.winRate);
     el('k-total').textContent = today.closed || 0;
-    el('k-month-name').textContent = new Date().toLocaleString('en-US',{month:'long',year:'numeric'});
     el('k-month').textContent = fmtR(month.totalR);
     el('k-month').className = 'v ' + (month.totalR>=0?'pos':'neg');
     el('k-cum').textContent = fmtR(allTime.totalR);
     el('k-cum').className = 'v ' + (allTime.totalR>=0?'pos':'neg');
-    // Daily bars
+    // Daily R bars
     var bars = el('k-daily-bars'); bars.innerHTML = '';
     (d.dailyR||[]).forEach(function(day){
       var b = document.createElement('div');
@@ -1490,20 +1492,61 @@ function loadKingdom(){
       b.style.height = Math.max(2, h) + '%';
       bars.appendChild(b);
     });
-    // Pair count for watchlist header
     var allP = d.allPairs || [];
     el('k-pair-count').textContent = allP.length + ' / 6 max';
   }).catch(function(e){
     el('k-today-num').textContent = '—'; console.warn('[kingdom]', e);
   });
 
-  // WEEX wallet for admin
+  // Admin: overlay USD PnL + WEEX wallet from /api/bot/state
   if(state.isAdmin){
     fetch('/api/bot/state',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-      if(!d) return;
-      // pnl.equity / available aren't exposed on /api/bot/state directly — use /api/scan/all-pairs? skip for now
-      // Future: dedicated /api/weex/wallet endpoint
-    }).catch(function(){});
+      if(!d || !d.available) return;
+      var pnl = d.pnl || {};
+      var trades = d.trades || [];
+      var wallet = d.wallet || null;
+
+      // Headline: today USD live (realized + open uPnL)
+      var todayLive = (pnl.todayLive != null) ? pnl.todayLive : (pnl.today || 0);
+      el('k-today-label').textContent = "Today's PnL";
+      el('k-today-num').textContent = fmtUsd(todayLive);
+      el('k-today-num').className = 'num ' + (todayLive>=0?'pos':'neg');
+
+      // Today TP/SL/BE counts from executor trades closed today
+      var todayStr = new Date().toDateString();
+      var closedToday = trades.filter(function(t){
+        return t.state==='CLOSED' && t.updatedAt && new Date(t.updatedAt).toDateString()===todayStr;
+      });
+      var tpT = closedToday.filter(function(t){ return (t.closedPnl||0)>0; }).length;
+      var slT = closedToday.filter(function(t){ return (t.closedPnl||0)<0; }).length;
+      var beT = closedToday.filter(function(t){ return (t.closedPnl||0)===0; }).length;
+      var totalT = tpT + slT;
+      el('k-tp').textContent = tpT;
+      el('k-sl').textContent = slT;
+      el('k-be').textContent = beT;
+      el('k-wr').textContent = totalT ? (Math.round(tpT/totalT*100) + '%') : '—';
+      el('k-total').textContent = closedToday.length;
+
+      // Month / Cumulative — USD
+      el('k-month').textContent = fmtUsd(pnl.month);
+      el('k-month').className = 'v ' + ((pnl.month||0)>=0?'pos':'neg');
+      el('k-cum').textContent = fmtUsd(pnl.total);
+      el('k-cum').className = 'v ' + ((pnl.total||0)>=0?'pos':'neg');
+
+      // Daily USD bars
+      var bars = el('k-daily-bars'); bars.innerHTML = '';
+      (pnl.daily||[]).forEach(function(day){
+        var b = document.createElement('div');
+        b.className = 'bar ' + (day.pnl>=0?'pos':'neg');
+        var h = Math.min(100, Math.abs(day.pnl) * 1.4); // ~$70 fills the panel
+        b.style.height = Math.max(2, h) + '%';
+        bars.appendChild(b);
+      });
+
+      // WEEX wallet card
+      el('k-equity').textContent = wallet ? ('$' + (parseFloat(wallet.equity)||0).toFixed(2)) : '—';
+      el('k-available').textContent = wallet ? ('$' + (parseFloat(wallet.available)||0).toFixed(2)) : '—';
+    }).catch(function(e){ console.warn('[bot/state]', e); });
   }
 }
 loadKingdom();
@@ -1564,11 +1607,12 @@ var _statsLoaded = false;
 function loadStats(){
   if(!state.isAdmin) return;
   if(_statsLoaded) return; _statsLoaded = true;
-  fetch('/api/admin/stats',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
-    el('stats-meta').textContent = d.totalClosed+' closed trades · generated '+new Date(d.generatedAt).toUTCString().slice(17,22)+' UTC';
+  // Stats tab = AUTOSCAN trades only (trigger_type != null on the server)
+  fetch('/api/admin/stats?source=auto',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+    el('stats-meta').textContent = d.totalClosed+' autoscan closed trades · generated '+new Date(d.generatedAt).toUTCString().slice(17,22)+' UTC';
     var grid = el('stats-grid'); grid.innerHTML = '';
     // 1. Stacking categories
-    var c1 = card('Stacking Categories','268 closed', tableHtml([
+    var c1 = card('Stacking Categories', d.totalClosed + ' autoscan closed', tableHtml([
       ['Category','N','WR%','Total R','Avg R'],
       ...Object.entries(d.stackingCategories).map(function(kv){
         var k = kv[0], v = kv[1];
@@ -1635,7 +1679,8 @@ function loadStats(){
 var _perfLoaded = false;
 function loadPerformance(){
   if(_perfLoaded) return; _perfLoaded = true;
-  fetch('/api/performance/me',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+  // Performance tab = MANUAL ANALYSE trades only (trigger_type IS NULL on the server)
+  fetch('/api/performance/me?source=manual',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
     var ov = d.overall;
     var oC = el('perf-overall'); oC.innerHTML = '';
     oC.appendChild(card2('Net R', fmtR(ov.totalR), 'Last week '+fmtR(ov.lastWeekR), ov.totalR>=0?'pos':'neg'));
