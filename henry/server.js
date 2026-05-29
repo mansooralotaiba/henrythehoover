@@ -1982,6 +1982,71 @@ app.get('/api/news/macro-summary', requireAuth, async (_req, res) => {
   }
 });
 
+// ── /api/v2/analyse ── Manual AI analysis. Server-side context build (so v2
+// client stays thin) + Claude call. Returns parsed signal JSON. Subset of the
+// autoscan context — no per-pair scan state since this is one-off manual.
+app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
+  const { coin, tf = '15m', broker = 'weex', notes } = req.body || {};
+  if (!coin) return res.status(400).json({ error: 'missing coin' });
+  try {
+    const isMetalOrOilPair = /^(GOLD|XAU|XAG|XTI|XBR)/.test(coin);
+    const pairBroker = brokerForPair(coin, broker);
+    const baseCandles = await fetchCandlesServer(coin, tf, 100, pairBroker);
+    if (!baseCandles || baseCandles.length < 20) {
+      return res.status(503).json({ error: `Insufficient candle data for ${coin} on ${tf} (${pairBroker})` });
+    }
+    const btcBroker = (pairBroker === 'massive') ? 'binance' : pairBroker;
+    const [mtfH1, mtfH4, btcCandles, funding, oi, newsCtx, calCtx, dxyData] = await Promise.all([
+      fetchCandlesServer(coin, '1h', 50, pairBroker).catch(() => []),
+      fetchCandlesServer(coin, '4h', 30, pairBroker).catch(() => []),
+      (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
+      fetchFundingRateServer(coin).catch(() => null),
+      fetchOpenInterestServer(coin).catch(() => null),
+      fetchNewsContext().catch(() => ''),
+      fetchCalendarContext().catch(() => ''),
+      isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
+    ]);
+    const atr14 = computeATR(baseCandles, 14);
+    const adx = computeADX(baseCandles, 14);
+    const indicators = { atr14, adx };
+    const trigger = { type: 'MANUAL', desc: 'User-initiated analysis from v2 Terminal' };
+    let contextStr = buildServerContextString({
+      coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators,
+    });
+    if (newsCtx) contextStr += '\n\n' + newsCtx;
+    if (calCtx) contextStr += '\n\n' + calCtx;
+    if (dxyData) contextStr += buildDXYContextString(dxyData);
+    const lastClose = baseCandles[baseCandles.length - 1].c;
+    const systemPrompt = buildServerSystemPrompt(coin, tf, pairBroker, contextStr, lastClose);
+    const userMessage = `Analyse ${coin} on ${tf} (${pairBroker}) right now.` +
+      (notes ? `\n\nUser notes: ${notes}` : '') +
+      `\n\nLast close: ${lastClose}. Output the JSON signal only.`;
+    const text = await callAnthropicServer(systemPrompt, userMessage, 2000);
+    const signal = parseSignalJSONServer(text);
+    if (!signal) {
+      return res.status(500).json({ error: 'JSON parse failed', rawText: text ? text.slice(0, 500) : '' });
+    }
+    // Apply RR floor and BE validation same as autoscan
+    if (signal.direction !== 'NO TRADE' && signal.entry && signal.sl && signal.tp) {
+      const e = parseFloat(signal.entry), sl = parseFloat(signal.sl), tp = parseFloat(signal.tp);
+      const rr = signal.direction === 'LONG' ? (tp - e) / (e - sl) : (e - tp) / (sl - e);
+      if (isFinite(rr) && rr < 1.3) {
+        signal.direction = 'NO TRADE';
+        signal.reasoning = `Auto-downgraded: computed RR ${rr.toFixed(2)} below 1.3R minimum. ` + (signal.reasoning || '');
+      }
+    }
+    res.json({
+      signal,
+      generatedAt: new Date().toISOString(),
+      model: AUTOSCAN_AI_MODEL,
+      lastClose,
+    });
+  } catch (err) {
+    console.error('[v2/analyse]', err.message || err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── /api/v2/watchlist ── Per-pair state + mini candle series for Kingdom's
 // 6 chart panels in the v2 UI. Returns one entry per admin-watchlist pair
 // with: state (scanning/in-trade/waiting/cooldown), last price, % change,
