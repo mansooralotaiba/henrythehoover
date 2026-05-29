@@ -20,10 +20,16 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const SITE_URL = process.env.SITE_URL || `http://localhost:${PORT}`;
 const PROD = process.env.NODE_ENV === 'production';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').toLowerCase();
-// Anthropic model used everywhere (server-side AI + browser AI ANALYSE).
+// Default Anthropic model — used by browser-side ANALYSE (/api/claude proxy).
 // Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
 // Models from generation 4.6+ use the dateless format `claude-{name}-{major}-{minor}`.
 const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-6';
+// Auto-scan can use a different (typically more capable) model since the
+// server-side path makes autonomous decisions that fire real WEEX orders.
+// Manual ANALYSE stays on AI_MODEL to keep interactive latency low.
+// Override via HENRY_AUTOSCAN_AI_MODEL env var. Falls back to AI_MODEL if not
+// set so single-env-var setups still work unchanged.
+const AUTOSCAN_AI_MODEL = process.env.HENRY_AUTOSCAN_AI_MODEL || AI_MODEL;
 // BE trigger: how far in profit before SL moves to breakeven. Default 50% of
 // the way to TP (was 70%, lowered 2026-05-30 after analyze_ny_sweep.py showed
 // ~45-48% of all SL hits would have recovered to entry within 4h — tighter BE
@@ -603,6 +609,7 @@ app.get('/api/me', requireSession, (req, res) => {
     subscription_status: req.profile?.subscription_status || 'inactive',
     current_period_end:  req.profile?.current_period_end || null,
     ai_model:            AI_MODEL,
+    autoscan_ai_model:   AUTOSCAN_AI_MODEL,
     strategy_mode:       STRATEGY_MODE,
   });
 });
@@ -5075,8 +5082,11 @@ async function _anthropicFetchWithRetry(payload) {
 // Direct Anthropic API call (bypasses /api/claude proxy — no cookie auth needed server-side).
 async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
+  // Uses AUTOSCAN_AI_MODEL so autonomous decisions can run on a stronger model
+  // (e.g. Opus 4.8) while the browser ANALYSE button stays on Sonnet 4.6 for
+  // speed. Both fall back to AI_MODEL when the override env var isn't set.
   const d = await _anthropicFetchWithRetry({
-    model: AI_MODEL,
+    model: AUTOSCAN_AI_MODEL,
     max_tokens: maxTokens,
     system: systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
