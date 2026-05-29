@@ -33,6 +33,8 @@
   .tab .badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;font-size:9px;background:var(--re);color:#fff}
   .tab .admin-lock{display:inline-block;margin-left:6px;color:var(--go);font-size:10px}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+  .utc-clock{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.08em;color:var(--mu);background:var(--bg3);border:1px solid var(--border)}
+  .utc-clock::before{content:'UTC';font-size:9px;color:var(--di);letter-spacing:0.14em;margin-right:2px;font-weight:600}
   .auto-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:0.12em}
   .auto-pill.on{background:rgba(0,229,160,0.1);color:var(--gr);border:1px solid rgba(0,229,160,0.3)}
   .auto-pill.off{background:rgba(255,85,119,0.1);color:var(--re);border:1px solid rgba(255,85,119,0.3)}
@@ -112,10 +114,14 @@
   .k-resume.flash{color:var(--gr);border-color:var(--gr);background:rgba(0,229,160,0.1)}
   .wp-grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:8px;min-height:0}
   .wp-panel{background:var(--bg3);border:1.5px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:0;transition:border-color 0.3s,box-shadow 0.3s}
-  .wp-panel.scanning{border-color:rgba(0,229,160,0.3)}
-  .wp-panel.in-trade{border-color:rgba(0,212,255,0.6);box-shadow:0 0 20px rgba(0,212,255,0.2),inset 0 0 28px rgba(0,212,255,0.08)}
-  .wp-panel.waiting{border-color:rgba(255,170,48,0.5);box-shadow:inset 0 0 24px rgba(255,170,48,0.08)}
+  .wp-panel.scanning{border-color:rgba(0,229,160,0.25)}
+  .wp-panel.waiting-confirm{border-color:rgba(255,154,64,0.55);box-shadow:inset 0 0 28px rgba(255,154,64,0.1);animation:wpWaitingConfirm 2.8s ease-in-out infinite}
+  .wp-panel.waiting{border-color:rgba(255,170,48,0.45);box-shadow:inset 0 0 24px rgba(255,170,48,0.08)}
+  .wp-panel.in-trade{border-color:rgba(0,212,255,0.6);box-shadow:0 0 18px rgba(0,212,255,0.2),inset 0 0 28px rgba(0,212,255,0.08);animation:wpInTrade 2.2s ease-in-out infinite}
   .wp-panel.cooldown{opacity:0.55}
+  .wp-panel.paused{border-color:rgba(255,85,119,0.5);box-shadow:inset 0 0 22px rgba(255,85,119,0.08)}
+  @keyframes wpWaitingConfirm{0%,100%{box-shadow:inset 0 0 22px rgba(255,154,64,0.08),0 0 8px rgba(255,154,64,0.1)}50%{box-shadow:inset 0 0 36px rgba(255,154,64,0.18),0 0 16px rgba(255,154,64,0.25)}}
+  @keyframes wpInTrade{0%,100%{box-shadow:0 0 14px rgba(0,212,255,0.2),inset 0 0 24px rgba(0,212,255,0.05)}50%{box-shadow:0 0 30px rgba(0,212,255,0.45),inset 0 0 36px rgba(0,212,255,0.1)}}
   .wp-hdr-inner{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:8px}
   .wp-hdr-inner .pair{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--fg)}
   .wp-hdr-inner .price{font-family:var(--mono);font-size:12px;font-weight:600}
@@ -124,7 +130,10 @@
   .wp-tag.scanning{background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.3)}
   .wp-tag.in-trade{background:rgba(0,212,255,0.15);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
   .wp-tag.waiting{background:rgba(255,170,48,0.15);color:var(--am);border:1px solid rgba(255,170,48,0.4)}
+  .wp-tag.waiting-confirm{background:rgba(255,154,64,0.18);color:#ff9a40;border:1px solid rgba(255,154,64,0.5)}
   .wp-tag.cooldown{background:var(--bg3);color:var(--mu);border:1px solid var(--border)}
+  .wp-tag.paused{background:rgba(255,85,119,0.15);color:var(--re);border:1px solid rgba(255,85,119,0.4)}
+  .wp-tag.be-moved{background:rgba(255,170,48,0.2);color:var(--am);border:1px solid rgba(255,170,48,0.6);font-weight:700}
   .wp-body{flex:1;position:relative;min-height:0;overflow:hidden}
 
   /* DXY widget on Terminal */
@@ -453,6 +462,7 @@
     <div class="tab" data-tab="perf">Performance</div>
   </div>
   <div class="topbar-right">
+    <div class="utc-clock" id="utc-clock" title="Current UTC time">—</div>
     <div class="auto-pill" id="auto-pill">AUTO-TRADE …</div>
   </div>
 </div>
@@ -742,6 +752,16 @@ function refreshAutoTrade(){
 refreshAutoTrade();
 setInterval(refreshAutoTrade, 10_000);
 
+// ── UTC clock ─────────────────────────────
+function _utcTick(){
+  var d = new Date();
+  var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+  var el2 = el('utc-clock'); if(!el2) return;
+  el2.textContent = pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+}
+_utcTick();
+setInterval(_utcTick, 1000);
+
 // Toggle handler
 document.addEventListener('click', function(ev){
   var t = ev.target;
@@ -882,8 +902,14 @@ function _wpUpdatePanel(entry, p){
   entry.hdrEls.pname.textContent = String(p.coin).replace('USDT','').replace('1000','');
   entry.hdrEls.price.textContent = p.lastPrice != null ? formatPrice(p.lastPrice) : '—';
   var tag = entry.hdrEls.tag;
-  tag.className = 'wp-tag ' + p.state;
-  tag.textContent = p.state.toUpperCase().replace('-', ' ');
+  // BE MOVED overrides the in-trade tag when the server flipped SL → BE
+  if(p.beAlerted && p.state === 'in-trade'){
+    tag.className = 'wp-tag be-moved';
+    tag.textContent = 'BE MOVED';
+  } else {
+    tag.className = 'wp-tag ' + p.state;
+    tag.textContent = p.state.toUpperCase().replace('-', ' ');
+  }
   // Candles — synthesise time if server didn't include t (fallback)
   if(p.candles && p.candles.length){
     var data = p.candles.map(function(c){

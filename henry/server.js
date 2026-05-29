@@ -2133,6 +2133,10 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
           rr: ps.pendSignal.rr,
           confidence: ps.pendSignal.confidence,
         } : null,
+        // BE-moved is genuine new info — `state` only encodes scanning/waiting/
+        // in-trade/cooldown/paused but not whether SL was already shifted to BE.
+        // Needed for the "BE MOVED" badge that flips the in-trade state tag.
+        beAlerted: !!(ps && ps._beAlerted),
       };
     });
     res.json({ active: !!sub.active, pairs, broker, tf, generatedAt: new Date().toISOString() });
