@@ -2130,6 +2130,8 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
           rr: ps.pendSignal.rr,
           confidence: ps.pendSignal.confidence,
         } : null,
+        entryAlerted: !!(ps && ps._entryAlerted),
+        beAlerted: !!(ps && ps._beAlerted),
       };
     });
     res.json({ active: !!sub.active, pairs, broker, tf, generatedAt: new Date().toISOString() });

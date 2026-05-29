@@ -853,14 +853,22 @@ function loadWatchlist(){
       grid.appendChild(panel);
       // Defer canvas draw to next paint so the wp-body has measured dimensions
       var canvas = panel.querySelector('canvas');
-      requestAnimationFrame(function(){ drawMiniCandles(canvas, p.candles || []); });
+      var trade = p.signal ? {
+        entry: parseFloat(p.signal.entry),
+        sl: parseFloat(p.signal.sl),
+        tp: parseFloat(p.signal.tp),
+        direction: p.signal.direction,
+        entered: !!p.entryAlerted,
+        beAlerted: !!p.beAlerted,
+      } : null;
+      requestAnimationFrame(function(){ drawMiniCandles(canvas, p.candles || [], trade); });
     });
     // Repaint on window resize so panels reflow cleanly
     if(!_wpResizeBound){
       _wpResizeBound = true;
       window.addEventListener('resize', function(){
         document.querySelectorAll('#k-wp-grid .wp-panel canvas').forEach(function(c){
-          var d = c.__candles; if(d) drawMiniCandles(c, d);
+          if(c.__candles) drawMiniCandles(c, c.__candles, c.__trade || null);
         });
       });
     }
@@ -872,9 +880,12 @@ var _wpResizeBound = false;
 
 // Mini-candle renderer for Kingdom watchlist panels.
 // 12 candles drawn proportionally with proper wicks + bodies on a DPR-scaled canvas.
-function drawMiniCandles(canvas, candles){
+// Optional trade overlay draws ENTRY (dashed), SL (red), TP (green), and a BE
+// marker (amber) when beAlerted — matches the legacy Kingdom price-line look.
+function drawMiniCandles(canvas, candles, trade){
   if(!canvas) return;
   canvas.__candles = candles;
+  canvas.__trade = trade || null;
   var W = canvas.clientWidth, H = canvas.clientHeight;
   if(!W || !H || !candles.length) return;
   var dpr = window.devicePixelRatio || 1;
@@ -889,6 +900,15 @@ function drawMiniCandles(canvas, candles){
   var lows  = candles.map(function(c){ return c.l; });
   var pMax = Math.max.apply(null, highs);
   var pMin = Math.min.apply(null, lows);
+  // Include trade levels in the range so the lines are guaranteed visible
+  if(trade){
+    [trade.entry, trade.sl, trade.tp].forEach(function(v){
+      if(v != null && isFinite(v)){
+        if(v > pMax) pMax = v;
+        if(v < pMin) pMin = v;
+      }
+    });
+  }
   if(pMax === pMin){ pMax += 1; pMin -= 1; }
   var pad = (pMax - pMin) * 0.06;
   pMax += pad; pMin -= pad;
@@ -900,6 +920,7 @@ function drawMiniCandles(canvas, candles){
 
   function yOf(p){ return ((pMax - p) / pR) * H; }
 
+  // Candles first
   for(var i = 0; i < n; i++){
     var c = candles[i];
     var cx = slot * i + slot / 2;
@@ -913,7 +934,6 @@ function drawMiniCandles(canvas, candles){
     var bodyBot = Math.max(yOpen, yClose);
     var bodyH = Math.max(1, bodyBot - bodyTop);
 
-    // Wick
     ctx.strokeStyle = col;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -921,9 +941,40 @@ function drawMiniCandles(canvas, candles){
     ctx.lineTo(Math.round(cx) + 0.5, yLow);
     ctx.stroke();
 
-    // Body
     ctx.fillStyle = col;
     ctx.fillRect(Math.round(cx - bodyW / 2), Math.round(bodyTop), Math.round(bodyW), Math.round(bodyH));
+  }
+
+  // Trade overlay (Entry dashed grey, SL red, TP green, BE marker amber)
+  if(trade){
+    function hline(y, color, dash, label, labelColor){
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.setLineDash(dash || []);
+      ctx.beginPath();
+      ctx.moveTo(0, Math.round(y) + 0.5);
+      ctx.lineTo(W, Math.round(y) + 0.5);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if(label){
+        ctx.font = '9px JetBrains Mono, Consolas, monospace';
+        var tw = ctx.measureText(label).width;
+        var pad = 4, chipW = tw + pad * 2, chipH = 11;
+        var x = W - chipW - 2, yT = Math.max(0, Math.min(H - chipH, y - chipH / 2));
+        ctx.fillStyle = 'rgba(8,10,15,0.85)';
+        ctx.fillRect(x, yT, chipW, chipH);
+        ctx.fillStyle = labelColor || color;
+        ctx.textBaseline = 'top';
+        ctx.fillText(label, x + pad, yT + 1);
+      }
+      ctx.restore();
+    }
+    if(isFinite(trade.entry)) hline(yOf(trade.entry), '#9aa0a6', [4, 3], 'ENTRY', '#cfd2d8');
+    if(isFinite(trade.sl))    hline(yOf(trade.sl),    '#ff5577', [],     'SL',    '#ff5577');
+    if(isFinite(trade.tp))    hline(yOf(trade.tp),    '#00e5a0', [],     'TP',    '#00e5a0');
+    if(trade.beAlerted && isFinite(trade.entry))
+                              hline(yOf(trade.entry), '#ffaa30', [],     'BE',    '#ffaa30');
   }
 }
 function formatPrice(p){
