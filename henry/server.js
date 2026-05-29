@@ -1870,16 +1870,47 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
       };
     }).sort((a, b) => b.totalR - a.totalR);
 
-    // Best / worst trades
+    // Best / worst trades — top 10 each side
     const sorted = [...closed].sort((a, b) => effR(b) - effR(a));
-    const bestTrades = sorted.slice(0, 5).map(s => ({
+    const bestTrades = sorted.slice(0, 10).map(s => ({
       pair: s.pair, direction: s.direction, r: +effR(s).toFixed(2),
       when: s.outcome_at, trigger: s.trigger_type,
     }));
-    const worstTrades = sorted.slice(-5).reverse().map(s => ({
+    const worstTrades = sorted.slice(-10).reverse().map(s => ({
       pair: s.pair, direction: s.direction, r: +effR(s).toFixed(2),
       when: s.outcome_at, trigger: s.trigger_type,
     }));
+
+    // By session — splits trades by ASIA / LONDON / NY / etc.
+    const bySession = {};
+    for (const s of closed) {
+      const k = s.session_name || 'unknown';
+      if (!bySession[k]) bySession[k] = { n: 0, tp: 0, sl: 0, be: 0, totalR: 0 };
+      bySession[k].n++;
+      bySession[k].totalR += effR(s);
+      if (s.outcome === 'TP') bySession[k].tp++;
+      else if (s.outcome === 'SL') bySession[k].sl++;
+      else if (s.outcome === 'BE') bySession[k].be++;
+    }
+    const sessionBreakdown = Object.entries(bySession).map(([session, st]) => {
+      const cN = st.tp + st.sl + st.be;
+      return {
+        session, n: st.n,
+        winRate: cN ? +((st.tp + st.be * 0.5) / cN * 100).toFixed(1) : 0,
+        totalR: +st.totalR.toFixed(2),
+      };
+    }).sort((a, b) => b.totalR - a.totalR);
+
+    // By hour of day (UTC) — net R per hour 0..23 for the chart
+    const hourBuckets = new Array(24).fill(0).map(() => ({ n: 0, totalR: 0 }));
+    for (const s of closed) {
+      const t = s.outcome_at || s.created_at;
+      if (!t) continue;
+      const h = new Date(t).getUTCHours();
+      hourBuckets[h].n++;
+      hourBuckets[h].totalR += effR(s);
+    }
+    const hourBreakdown = hourBuckets.map((b, h) => ({ hour: h, n: b.n, totalR: +b.totalR.toFixed(2) }));
 
     // Cumulative R timeline (for chart)
     let cum = 0;
@@ -1902,6 +1933,8 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
       },
       pairBreakdown,
       triggerBreakdown,
+      sessionBreakdown,
+      hourBreakdown,
       bestTrades,
       worstTrades,
       cumulativeR,
