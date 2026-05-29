@@ -161,6 +161,23 @@
   .ws{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:6px 8px;text-align:center}
   .ws .l{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:2px}
   .ws .v{font-family:var(--mono);font-size:14px;font-weight:700;line-height:1}
+
+  /* Open Positions card — public view only (swaps with WEEX wallet for admin) */
+  .open-positions-card{display:none;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;flex-direction:column;overflow:hidden}
+  body.view-public .open-positions-card{display:flex}
+  .open-positions-card .op-hdr{display:flex;justify-content:space-between;align-items:center;font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:6px}
+  .open-positions-card .op-hdr .cy{color:var(--cy);font-weight:700;font-family:var(--mono)}
+  .open-positions-card .op-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;flex:1;min-height:0}
+  .op-side{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:6px 8px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .op-side .op-side-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-family:var(--mono);font-size:10px;letter-spacing:0.06em}
+  .op-side.long .op-side-hdr .lbl{color:var(--gr)}
+  .op-side.short .op-side-hdr .lbl{color:var(--re)}
+  .op-side .op-side-hdr .cnt{color:var(--mu);font-size:9px;letter-spacing:0.14em}
+  .op-side .op-row{display:flex;justify-content:space-between;font-size:10px;padding:1px 0;color:var(--mu);font-family:var(--mono);letter-spacing:0.04em}
+  .op-side .op-row .v{color:var(--fg);font-weight:700}
+  .op-side .op-row .v.pos{color:var(--gr)}
+  .op-side .op-row .v.neg{color:var(--re)}
+  .op-side .op-row.pairs .v{font-size:9px;text-align:right;max-width:60%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
   .watchlist-panels{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:0}
   .wp-hdr{display:flex;align-items:center;gap:10px;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px;flex-wrap:wrap}
   .wp-hdr .r{color:var(--cy);margin-left:auto}
@@ -730,6 +747,25 @@
           <div class="ws"><div class="l">Available</div><div class="v" id="k-available">—</div></div>
         </div>
         <div style="font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-top:4px">Wallet snapshot · refresh from terminal</div>
+      </div>
+      <div class="open-positions-card">
+        <div class="op-hdr"><span>Open Positions</span><span class="cy" id="op-total">0 POS</span></div>
+        <div class="op-grid">
+          <div class="op-side long">
+            <div class="op-side-hdr"><span class="lbl">▲ LONG</span><span class="cnt" id="op-long-cnt">0 POS</span></div>
+            <div class="op-row"><span>R at risk</span><span class="v neg" id="op-long-risk">+0.00R</span></div>
+            <div class="op-row"><span>Planned R</span><span class="v pos" id="op-long-planned">+0.00R</span></div>
+            <div class="op-row"><span>Avg conf</span><span class="v" id="op-long-conf">—</span></div>
+            <div class="op-row pairs"><span>Pairs</span><span class="v" id="op-long-pairs">—</span></div>
+          </div>
+          <div class="op-side short">
+            <div class="op-side-hdr"><span class="lbl">▼ SHORT</span><span class="cnt" id="op-short-cnt">0 POS</span></div>
+            <div class="op-row"><span>R at risk</span><span class="v neg" id="op-short-risk">+0.00R</span></div>
+            <div class="op-row"><span>Planned R</span><span class="v pos" id="op-short-planned">+0.00R</span></div>
+            <div class="op-row"><span>Avg conf</span><span class="v" id="op-short-conf">—</span></div>
+            <div class="op-row pairs"><span>Pairs</span><span class="v" id="op-short-pairs">—</span></div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="watchlist-panels">
@@ -2391,6 +2427,29 @@ function loadKingdom(){
     });
     var allP = d.allPairs || [];
     el('k-pair-count').textContent = allP.length + ' / 6 max';
+
+    // Open Positions card — populated from openPositions aggregates.
+    // Public view shows this in the wallet-card slot (admin sees wallet instead).
+    var op = d.openPositions || {};
+    var lo = op.long  || { count: 0, rAtRisk: 0, plannedR: 0, avgConf: 0, pairs: [] };
+    var sh = op.short || { count: 0, rAtRisk: 0, plannedR: 0, avgConf: 0, pairs: [] };
+    var fmtRsigned = function(v){ var n = parseFloat(v) || 0; return (n>=0?'+':'') + n.toFixed(2) + 'R'; };
+    var setOp = function(id, val, cls){
+      var e = el(id); if(!e) return;
+      e.textContent = val;
+      if(cls){ e.className = 'v ' + cls; }
+    };
+    el('op-total').textContent = (op.totalCount || 0) + ' POS';
+    el('op-long-cnt').textContent  = (lo.count || 0) + ' POS';
+    el('op-short-cnt').textContent = (sh.count || 0) + ' POS';
+    setOp('op-long-risk',    fmtRsigned(lo.rAtRisk),  (lo.rAtRisk  || 0) < 0 ? 'neg' : '');
+    setOp('op-long-planned', fmtRsigned(lo.plannedR), (lo.plannedR || 0) >= 0 ? 'pos' : 'neg');
+    setOp('op-long-conf',    lo.count ? (lo.avgConf + '%') : '—', '');
+    setOp('op-long-pairs',   lo.pairs && lo.pairs.length ? lo.pairs.join(' · ') : '—', '');
+    setOp('op-short-risk',    fmtRsigned(sh.rAtRisk),  (sh.rAtRisk  || 0) < 0 ? 'neg' : '');
+    setOp('op-short-planned', fmtRsigned(sh.plannedR), (sh.plannedR || 0) >= 0 ? 'pos' : 'neg');
+    setOp('op-short-conf',    sh.count ? (sh.avgConf + '%') : '—', '');
+    setOp('op-short-pairs',   sh.pairs && sh.pairs.length ? sh.pairs.join(' · ') : '—', '');
 
     // Quick-strip: expectancy / streak / best / worst / next-event
     var expVal = (d.today && d.today.expectancy != null) ? d.today.expectancy
