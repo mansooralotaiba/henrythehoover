@@ -1577,14 +1577,21 @@ app.get('/api/admin/correlation-report', requireAdmin, async (_req, res) => {
 // Mirror of analyze_stacked.py + rank_pairs.py + analyze_ny_sweep.py + the
 // trigger/veto/executor sections. Cached 30s so the dashboard can poll
 // without slamming Supabase.
-const _statsCache = { ts: 0, payload: null };
+// Cache keyed by source (auto | manual | all) so the same dashboard can
+// hold both filtered views without trashing one with the other.
+const _statsCache = new Map();
 const STATS_CACHE_MS = 30_000;
 
-app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
   try {
     const now = Date.now();
-    if (_statsCache.payload && now - _statsCache.ts < STATS_CACHE_MS) {
-      return res.json(_statsCache.payload);
+    const source = (() => {
+      const raw = String(req.query.source || 'all').toLowerCase();
+      return (raw === 'auto' || raw === 'manual') ? raw : 'all';
+    })();
+    const cached = _statsCache.get(source);
+    if (cached && now - cached.ts < STATS_CACHE_MS) {
+      return res.json(cached.payload);
     }
 
     const adminId = await getAdminUserId();
@@ -1597,7 +1604,14 @@ app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
       .order('created_at', { ascending: true });
     if (error) return res.status(500).json({ error: error.message });
 
-    const closed = (rows || []).filter(r => ['TP', 'SL', 'BE', 'EXPIRED'].includes(r.outcome));
+    // Source filter — autoscan signals carry a non-null trigger_type;
+    // manual ANALYSE calls store NULL (see insertSignal: trigger?.type || null).
+    const filtered = (rows || []).filter(r => {
+      if (source === 'auto') return !!r.trigger_type;
+      if (source === 'manual') return !r.trigger_type;
+      return true;
+    });
+    const closed = filtered.filter(r => ['TP', 'SL', 'BE', 'EXPIRED'].includes(r.outcome));
     const SUPER_CRYPTO = new Set(['btc', 'largeCap', 'defi', 'meme', 'layer1']);
 
     function effR(r) {
@@ -1747,6 +1761,7 @@ app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
     };
 
     const payload = {
+      source, // 'auto' | 'manual' | 'all'
       stackingCategories,
       pairRankings,
       nyRecovery,
@@ -1756,7 +1771,7 @@ app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
       totalClosed: closed.length,
       generatedAt: new Date().toISOString(),
     };
-    _statsCache = { ts: now, payload };
+    _statsCache.set(source, { ts: now, payload });
     res.json(payload);
   } catch (err) {
     console.error('[stats]', err.message || err);
@@ -1766,9 +1781,16 @@ app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
 
 // ── /api/performance/me ── Per-user track record. Same shape for everyone;
 // data scoped by req.user.id. Powers the Performance tab.
+// `?source=manual` (default for v2) restricts to manual ANALYSE signals
+// (trigger_type IS NULL); `?source=auto` to autoscan; `?source=all` keeps
+// the legacy behavior for the old /performance.html page.
 app.get('/api/performance/me', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
+    const source = (() => {
+      const raw = String(req.query.source || 'all').toLowerCase();
+      return (raw === 'auto' || raw === 'manual') ? raw : 'all';
+    })();
     const { data: rows, error } = await supaAdmin
       .from('signals')
       .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, confidence, broker')
@@ -1776,7 +1798,12 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
       .order('created_at', { ascending: true });
     if (error) return res.status(500).json({ error: error.message });
 
-    const all = rows || [];
+    const allUnfiltered = rows || [];
+    const all = allUnfiltered.filter(r => {
+      if (source === 'auto') return !!r.trigger_type;
+      if (source === 'manual') return !r.trigger_type;
+      return true;
+    });
     const closed = all.filter(r => ['TP', 'SL', 'BE', 'EXPIRED'].includes(r.outcome));
 
     function effR(r) {
@@ -1865,6 +1892,7 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
 
     res.json({
       user: { id: userId, email: req.user.email },
+      source, // 'auto' | 'manual' | 'all'
       overall: {
         totalSignals: all.length,
         closedN: closed.length,
