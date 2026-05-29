@@ -282,6 +282,38 @@
   .au-cell .au-close-x{position:absolute;top:6px;right:6px;width:16px;height:16px;border:1px solid var(--border);border-radius:3px;color:var(--mu);font-size:11px;line-height:14px;text-align:center;cursor:pointer;background:rgba(255,255,255,0.02)}
   .au-cell .au-close-x:hover{color:var(--re);border-color:rgba(255,85,119,0.4)}
 
+  /* Live veto report card */
+  #veto-report .veto-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+  #veto-report .veto-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--re);border-radius:4px}
+  #veto-report .veto-reason{font-family:var(--mono);font-size:11px;color:var(--re);font-weight:700;letter-spacing:0.04em}
+  #veto-report .veto-pairs{font-family:var(--mono);font-size:10px;color:var(--mu);text-align:right}
+  #veto-report .veto-count{font-family:var(--mono);font-size:13px;color:var(--fg);font-weight:700;padding:2px 8px;background:rgba(255,85,119,0.12);border-radius:3px;min-width:24px;text-align:center}
+  #veto-report .veto-note{font-size:10px;color:var(--di);font-family:var(--mono);letter-spacing:0.04em;font-style:italic}
+
+  /* Diagnostic chips row + per-pair stats footer */
+  .au-cell .au-chips{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+  .au-cell .au-chip{font-size:8.5px;letter-spacing:0.05em;padding:1px 5px;border-radius:2px;border:1px solid var(--border);background:var(--bg2);color:var(--mu);font-family:var(--mono);font-weight:600;line-height:1.4}
+  .au-cell .au-chip.regime.up{color:var(--gr);border-color:rgba(0,229,160,0.35);background:rgba(0,229,160,0.06)}
+  .au-cell .au-chip.regime.down{color:var(--re);border-color:rgba(255,85,119,0.35);background:rgba(255,85,119,0.06)}
+  .au-cell .au-chip.regime.flat{color:var(--mu);border-color:var(--border-strong)}
+  .au-cell .au-chip.ind.strong{color:var(--cy);border-color:rgba(0,212,255,0.35)}
+  .au-cell .au-chip.ind.bull{color:var(--gr);border-color:rgba(0,229,160,0.35)}
+  .au-cell .au-chip.ind.bear{color:var(--re);border-color:rgba(255,85,119,0.35)}
+
+  /* Veto + pause reason lines */
+  .au-cell .au-veto-line{color:var(--re);font-size:10px;background:rgba(255,85,119,0.08);border-left:2px solid var(--re);padding:3px 6px;border-radius:2px;cursor:pointer;margin-top:4px;display:flex;align-items:center;gap:4px}
+  .au-cell .au-veto-line:hover{background:rgba(255,85,119,0.16)}
+  .au-cell .au-veto-line .ico{font-weight:700}
+  .au-cell .au-pause-line{color:var(--re);font-size:10px;font-style:italic;display:flex;align-items:center;gap:4px;margin-top:3px}
+
+  /* Per-pair stats footer */
+  .au-cell .au-cell-footer{display:flex;align-items:center;gap:5px;margin-top:6px;padding-top:5px;border-top:1px dashed var(--border);font-family:var(--mono);font-size:9px;color:var(--mu);letter-spacing:0.04em}
+  .au-cell .au-cell-footer .lbl{color:var(--di);font-weight:700;letter-spacing:0.1em}
+  .au-cell .au-cell-footer .val{color:var(--fg);font-weight:700}
+  .au-cell .au-cell-footer .val.pos{color:var(--gr)}
+  .au-cell .au-cell-footer .val.neg{color:var(--re)}
+  .au-cell .au-cell-footer .dot{color:var(--di)}
+
   /* Terminal controls + chart */
   .term-controls{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
   .term-controls label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
@@ -2022,6 +2054,84 @@ function auRenderMonitor(data){
       cell.appendChild(trig);
     }
 
+    // Regime arrow + indicator chips row
+    var chipsRow = document.createElement('div'); chipsRow.className = 'au-chips';
+    var hasChips = false;
+    if(p.regime && p.regime.regime){
+      var rg = String(p.regime.regime).toUpperCase();
+      var arrow = rg.indexOf('UP') !== -1 ? '↑' : rg.indexOf('DOWN') !== -1 ? '↓' : '↔';
+      var rgClass = rg.indexOf('UP') !== -1 ? 'up' : rg.indexOf('DOWN') !== -1 ? 'down' : 'flat';
+      var rChip = document.createElement('span');
+      rChip.className = 'au-chip regime ' + rgClass;
+      rChip.textContent = arrow + ' ' + rg.replace('REGIME ', '');
+      if(p.regime.confidence != null) rChip.title = 'Regime confidence ' + Math.round(p.regime.confidence) + '%';
+      chipsRow.appendChild(rChip); hasChips = true;
+    }
+    var ind = p.lastIndicators;
+    if(ind){
+      if(ind.adx != null){
+        var c = document.createElement('span');
+        c.className = 'au-chip ind' + (ind.adx >= 25 ? ' strong' : '');
+        c.textContent = 'ADX ' + ind.adx.toFixed(1);
+        c.title = 'ADX ≥25 = trending';
+        chipsRow.appendChild(c); hasChips = true;
+      }
+      if(ind.atr14 != null){
+        var c2 = document.createElement('span');
+        c2.className = 'au-chip ind';
+        c2.textContent = 'ATR ' + ind.atr14;
+        c2.title = '14-period ATR';
+        chipsRow.appendChild(c2); hasChips = true;
+      }
+      if(ind.volRatio != null){
+        var c3 = document.createElement('span');
+        c3.className = 'au-chip ind' + (ind.volRatio >= 1.5 ? ' strong' : '');
+        c3.textContent = 'Vol ' + ind.volRatio.toFixed(2) + 'x';
+        c3.title = 'Volume vs 20-bar avg';
+        chipsRow.appendChild(c3); hasChips = true;
+      }
+      if(ind.divergence){
+        var dv = String(ind.divergence).toUpperCase();
+        var c4 = document.createElement('span');
+        c4.className = 'au-chip ind ' + (dv.indexOf('BULL') !== -1 ? 'bull' : 'bear');
+        c4.textContent = 'Div ' + dv.slice(0, 4);
+        c4.title = 'RSI divergence: ' + dv;
+        chipsRow.appendChild(c4); hasChips = true;
+      }
+    }
+    if(hasChips) cell.appendChild(chipsRow);
+
+    // Veto reason line (red) — click to jump to Stats Veto Report
+    if(p.lastVetoReason){
+      var vt = document.createElement('div'); vt.className = 'au-cell-line au-veto-line';
+      vt.innerHTML = '<span class="ico">⊘</span> Veto: ' + escapeHtml(p.lastVetoReason);
+      vt.title = 'Click to view the full veto breakdown in Stats';
+      vt.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        var tab = document.querySelector('.tab[data-tab="stats"]');
+        if(tab){ tab.click(); setTimeout(function(){ var n = el('veto-report'); if(n) n.scrollIntoView({behavior:'smooth', block:'start'}); }, 50); }
+      });
+      cell.appendChild(vt);
+    }
+
+    // Pause reason line (red, when paused by circuit breaker)
+    if(p.pauseRemaining > 0 && p.pauseReason){
+      var prs = document.createElement('div'); prs.className = 'au-cell-line au-pause-line';
+      prs.innerHTML = '<span class="ico">⏸</span> ' + escapeHtml(p.pauseReason);
+      cell.appendChild(prs);
+    }
+
+    // Stats footer — WR + total R from this pair's history
+    if(p.stats && (p.stats.total || 0) > 0){
+      var sf = document.createElement('div'); sf.className = 'au-cell-footer';
+      var rTot = p.stats.totalR != null ? (p.stats.totalR >= 0 ? '+' : '') + p.stats.totalR.toFixed(2) + 'R' : '—';
+      var rClass = (p.stats.totalR || 0) >= 0 ? 'pos' : 'neg';
+      sf.innerHTML = '<span class="lbl">WR</span><span class="val">' + (p.stats.winRate != null ? p.stats.winRate + '%' : '—')
+                  + '</span><span class="dot">·</span><span class="lbl">R</span><span class="val ' + rClass + '">' + rTot
+                  + '</span><span class="dot">·</span><span class="lbl">n</span><span class="val">' + p.stats.total + '</span>';
+      cell.appendChild(sf);
+    }
+
     // Force-close × (only when pair has a signal)
     if(p.hasSignal){
       var x = document.createElement('span'); x.className = 'au-close-x'; x.textContent = '×';
@@ -2486,16 +2596,69 @@ function loadStats(){
     );
     grid.appendChild(c5);
 
-    // 6. Veto report (placeholder)
-    var c6 = card('Veto Report · Last 7d','from veto log',
-      '<p style="font-size:12px;color:var(--mu);line-height:1.5">'+escapeHtml(d.vetoReport.note||'')+'</p>'
+    // 6. Veto report — live aggregation of lastVetoReason across all current
+    //    pair states. Real-time view (not historical) since the server doesn't
+    //    log vetoes to disk.
+    var c6 = card('Veto Report · Live',
+      'pairs blocked from generating a signal right now',
+      '<div id="veto-report"><div class="loading">Loading…</div></div>'
     );
+    c6.id = 'veto-report-card';
     grid.appendChild(c6);
+    refreshLiveVetoReport();
   }).catch(function(e){
     el('stats-grid').innerHTML = '<div class="error-banner">'+escapeHtml(e.message)+'</div>';
     _statsLoaded = false;
   });
 }
+
+// Aggregates the lastVetoReason field of every pair in the current scan
+// session into a grouped breakdown. Re-runs every 10s while the Stats tab
+// is open so the report stays in sync with the live scan state.
+function refreshLiveVetoReport(){
+  var box = el('veto-report');
+  if(!box) return;
+  fetch('/api/scan/all-pairs', { credentials: 'same-origin' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(!d || !d.pairs){
+        box.innerHTML = '<div style="font-size:12px;color:var(--di);font-family:var(--mono)">Scan idle — no live state to aggregate.</div>';
+        return;
+      }
+      var groups = {};
+      d.pairs.forEach(function(p){
+        if(!p.lastVetoReason) return;
+        var k = p.lastVetoReason;
+        if(!groups[k]) groups[k] = { count: 0, pairs: [] };
+        groups[k].count++;
+        groups[k].pairs.push(String(p.coin).replace('USDT','').replace('1000',''));
+      });
+      var rows = Object.entries(groups).sort(function(a, b){ return b[1].count - a[1].count; });
+      if(!rows.length){
+        box.innerHTML = '<div style="font-size:12px;color:var(--mu);font-family:var(--mono)">✓ No active vetoes — every watchlist pair is eligible to scan.</div>';
+        return;
+      }
+      var html = '<div class="veto-list">';
+      rows.forEach(function(kv){
+        var reason = kv[0], info = kv[1];
+        html += '<div class="veto-row">'
+              + '<span class="veto-reason">' + escapeHtml(reason) + '</span>'
+              + '<span class="veto-pairs">' + info.pairs.map(escapeHtml).join(' · ') + '</span>'
+              + '<span class="veto-count">' + info.count + '</span>'
+              + '</div>';
+      });
+      html += '</div>';
+      html += '<div class="veto-note">Live snapshot · refreshes every 10s. Empty when the scanner is idle or every pair is currently eligible.</div>';
+      box.innerHTML = html;
+    })
+    .catch(function(){
+      box.innerHTML = '<div class="error-banner">Failed to load live veto state.</div>';
+    });
+}
+// Auto-refresh when the Stats tab is the visible panel
+setInterval(function(){
+  if(el('panel-stats') && el('panel-stats').classList.contains('active')) refreshLiveVetoReport();
+}, 10_000);
 
 // ── Performance ───────────────────────────
 var _perfLoaded = false;
