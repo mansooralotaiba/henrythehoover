@@ -858,8 +858,9 @@ function loadWatchlist(){
         sl: parseFloat(p.signal.sl),
         tp: parseFloat(p.signal.tp),
         direction: p.signal.direction,
-        entered: !!p.entryAlerted,
-        beAlerted: !!p.beAlerted,
+        // state === 'in-trade' implies _entryAlerted on the server — use the
+        // existing field instead of asking the endpoint for new ones.
+        entered: p.state === 'in-trade',
       } : null;
       requestAnimationFrame(function(){ drawMiniCandles(canvas, p.candles || [], trade); });
     });
@@ -973,8 +974,6 @@ function drawMiniCandles(canvas, candles, trade){
     if(isFinite(trade.entry)) hline(yOf(trade.entry), '#9aa0a6', [4, 3], 'ENTRY', '#cfd2d8');
     if(isFinite(trade.sl))    hline(yOf(trade.sl),    '#ff5577', [],     'SL',    '#ff5577');
     if(isFinite(trade.tp))    hline(yOf(trade.tp),    '#00e5a0', [],     'TP',    '#00e5a0');
-    if(trade.beAlerted && isFinite(trade.entry))
-                              hline(yOf(trade.entry), '#ffaa30', [],     'BE',    '#ffaa30');
   }
 }
 function formatPrice(p){
