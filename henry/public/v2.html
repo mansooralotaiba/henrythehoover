@@ -92,8 +92,21 @@
   .ws .l{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:2px}
   .ws .v{font-family:var(--mono);font-size:14px;font-weight:700;line-height:1}
   .watchlist-panels{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:0}
-  .wp-hdr{display:flex;justify-content:space-between;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px}
-  .wp-hdr .r{color:var(--cy)}
+  .wp-hdr{display:flex;align-items:center;gap:10px;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px}
+  .wp-hdr .r{color:var(--cy);margin-left:auto}
+  /* AUTO-TRADE toggle + RESUME SCAN button in Watchlist Panels header */
+  .k-auto-trade{display:none;align-items:center;gap:7px;padding:4px 10px;border:1px solid var(--border-strong);border-radius:4px;background:var(--bg3);cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;transition:all 0.2s}
+  .k-auto-trade.visible{display:inline-flex}
+  .k-auto-trade .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .k-auto-trade.on{color:var(--gr);border-color:rgba(0,229,160,0.5);box-shadow:inset 0 0 12px rgba(0,229,160,0.08)}
+  .k-auto-trade.on .dot{box-shadow:0 0 8px currentColor;animation:autopulse 1.6s ease-in-out infinite}
+  .k-auto-trade.off{color:var(--re);border-color:rgba(255,85,119,0.4)}
+  .k-auto-trade.unavailable{color:var(--di);border-color:var(--border);cursor:not-allowed;opacity:0.5}
+  @keyframes autopulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  .k-resume{display:none;align-items:center;gap:6px;padding:4px 11px;border:1px solid var(--border-strong);border-radius:4px;background:var(--bg3);cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;color:var(--am);transition:all 0.2s}
+  .k-resume.visible{display:inline-flex}
+  .k-resume:hover{border-color:var(--am);background:rgba(255,170,48,0.08)}
+  .k-resume.flash{color:var(--gr);border-color:var(--gr);background:rgba(0,229,160,0.1)}
   .wp-grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:8px;min-height:0}
   .wp-panel{background:var(--bg3);border:1.5px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:0;transition:border-color 0.3s,box-shadow 0.3s}
   .wp-panel.scanning{border-color:rgba(0,229,160,0.3)}
@@ -463,7 +476,16 @@
       </div>
     </div>
     <div class="watchlist-panels">
-      <div class="wp-hdr"><span>Watchlist Panels</span><span class="r" id="k-pair-count">— / 6 max</span></div>
+      <div class="wp-hdr">
+        <span>Watchlist Panels</span>
+        <button id="k-auto-trade" class="k-auto-trade unavailable admin-only-content" type="button" title="WEEX auto-trade kill switch">
+          <span class="dot"></span><span id="k-auto-trade-label">AUTO-TRADE: —</span>
+        </button>
+        <button id="k-resume" class="k-resume admin-only-content" type="button" title="Clear per-pair pauses + reset circuit-breaker outcome counter">
+          <span id="k-resume-label">↻ RESUME SCAN</span>
+        </button>
+        <span class="r" id="k-pair-count">— / 6 max</span>
+      </div>
       <div class="wp-grid" id="k-wp-grid">
         <div class="wp-panel" style="text-align:center;justify-content:center;color:var(--di);font-family:var(--mono);font-size:11px">Loading watchlist…</div>
       </div>
@@ -543,24 +565,118 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){return r.json();})
   state.email = d.email;
   if(!state.isAdmin) document.body.classList.add('view-public');
   el('perf-id').textContent = d.email || '';
-  // Now that we know the role, wire admin-only controls (autoscan)
+  // Now that we know the role, wire admin-only controls
   if(typeof setupAutoscan === 'function') setupAutoscan();
+  if(typeof refreshResumeBtn === 'function') refreshResumeBtn();
 }).catch(function(){
   // not logged in — punt to login
   window.location.href = '/login';
 });
 
-// ── Auto-trade pill state ──────────────────
+// ── Auto-trade pill + Kingdom toggle ──────
+var _autoTradeAvailable = false;
+function renderAutoTradeBtn(d){
+  var btn = el('k-auto-trade');
+  var lbl = el('k-auto-trade-label');
+  if(!btn || !lbl) return;
+  if(!state.isAdmin) return; // hidden via .admin-only-content for non-admin
+  if(!d || !d.available){
+    btn.className = 'k-auto-trade unavailable visible admin-only-content';
+    lbl.textContent = 'AUTO-TRADE: UNAVAILABLE';
+    btn.title = 'WEEX env vars not configured on the server';
+    _autoTradeAvailable = false;
+    return;
+  }
+  _autoTradeAvailable = true;
+  var on = !!d.enabled;
+  btn.className = 'k-auto-trade visible admin-only-content ' + (on ? 'on' : 'off');
+  var suffix = d.dryRun ? ' (DRY-RUN)' : '';
+  lbl.textContent = 'AUTO-TRADE: ' + (on ? 'ON' : 'OFF') + suffix;
+  btn.title = 'Risk $' + d.riskUsd + ' per trade at ' + d.leverage + 'x leverage. Click to toggle.';
+}
 function refreshAutoTrade(){
   fetch('/api/bot/state',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();return r.json();}).then(function(d){
     var p = el('auto-pill');
-    if(!d.available){ p.style.display='none'; return; }
-    p.className = 'auto-pill ' + (d.enabled?'on':'off');
-    p.textContent = d.enabled?'AUTO-TRADE ON':'AUTO-TRADE OFF';
-  }).catch(function(){ el('auto-pill').style.display='none'; });
+    if(!d.available){ p.style.display='none'; }
+    else {
+      p.className = 'auto-pill ' + (d.enabled?'on':'off');
+      p.textContent = d.enabled?'AUTO-TRADE ON':'AUTO-TRADE OFF';
+    }
+    renderAutoTradeBtn(d);
+  }).catch(function(){
+    el('auto-pill').style.display='none';
+    renderAutoTradeBtn(null);
+  });
 }
 refreshAutoTrade();
 setInterval(refreshAutoTrade, 10_000);
+
+// Toggle handler
+document.addEventListener('click', function(ev){
+  var t = ev.target;
+  // Click target may be the icon span — walk up to the button
+  while(t && t !== document.body && (!t.id || t.id !== 'k-auto-trade')) t = t.parentNode;
+  if(!t || t.id !== 'k-auto-trade') return;
+  if(!_autoTradeAvailable) return;
+  var nextEnabled = !t.classList.contains('on');
+  if(nextEnabled && !confirm('Enable WEEX auto-trade?\n\nEvery confirmed signal will fire a real order on your WEEX account.')) return;
+  fetch('/api/bot/state', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled: nextEnabled })
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(){ refreshAutoTrade(); })
+    .catch(function(){ alert('Toggle failed — check console'); });
+});
+
+// ── Resume-scan button ────────────────────
+// Detects paused pairs via /api/scan/all-pairs and shows the button only
+// when at least one pair is paused (mirrors legacy kingdom.html behavior).
+function refreshResumeBtn(){
+  if(!state.isAdmin) return;
+  fetch('/api/scan/all-pairs', { credentials:'same-origin' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      var btn = el('k-resume');
+      if(!btn) return;
+      var pairs = (d && d.pairs) || [];
+      var anyPaused = pairs.some(function(p){ return p.pauseRemaining > 0; });
+      // Always show on admin so the user can pre-emptively clear circuit-breaker outcomes
+      // even when no pair is paused — matches legacy behavior.
+      btn.classList.add('visible');
+      btn.classList.toggle('has-paused', anyPaused);
+    })
+    .catch(function(){
+      var btn = el('k-resume'); if(btn) btn.classList.add('visible');
+    });
+}
+document.addEventListener('click', function(ev){
+  var t = ev.target;
+  while(t && t !== document.body && (!t.id || t.id !== 'k-resume')) t = t.parentNode;
+  if(!t || t.id !== 'k-resume') return;
+  if(!confirm('Clear all auto-scan pauses?\n\nResets per-pair pauses + the global circuit-breaker outcome counter. The scanner will immediately re-eligible all paused pairs.')) return;
+  var lbl = el('k-resume-label');
+  var original = lbl.textContent;
+  lbl.textContent = '…';
+  fetch('/api/admin/clear-pauses', { method:'POST', credentials:'same-origin' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var msg = (d.pairsCleared || 0) + ' pair(s) cleared';
+      if(d.recentOutcomes) msg += ' · ' + d.recentOutcomes + ' outcomes wiped';
+      lbl.textContent = '✓ ' + msg;
+      t.classList.add('flash');
+      setTimeout(function(){ lbl.textContent = original; t.classList.remove('flash'); }, 3000);
+      // Refresh autoscan monitor immediately if it's polling
+      if(typeof auRefreshMonitor === 'function') auRefreshMonitor();
+    })
+    .catch(function(){
+      lbl.textContent = '✗ failed';
+      setTimeout(function(){ lbl.textContent = original; }, 2500);
+    });
+});
+// Poll for paused-pair state every 15s (cheaper than the 5s scan poll)
+setInterval(refreshResumeBtn, 15_000);
 
 // ── Tab switching ─────────────────────────
 document.querySelectorAll('.tab').forEach(function(t){
