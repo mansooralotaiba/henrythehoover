@@ -2179,6 +2179,45 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
   }
 });
 
+// ── /api/v2/events ── SSE event stream of scan-state transitions ───────────
+// Pushes signal/entry/be/tp/sl/expired events to the browser the instant the
+// scan loop flips a pair-state flag, instead of waiting up to 5s for the
+// next /api/scan/all-pairs poll. Replaces the legacy /api/events SSE.
+//
+// Multiple tabs OK: each open EventSource gets its own res registered in
+// _scanEventBus[userId]. Sends a heartbeat every 25s so corporate proxies
+// don't time the connection out.
+const _scanEventBus = new Map(); // userId → Set<res>
+
+function emitScanEvent(userId, payload){
+  const bag = _scanEventBus.get(userId);
+  if (!bag || !bag.size) return;
+  const line = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const res of bag) {
+    try { res.write(line); } catch { /* dead connection — sweeper removes */ }
+  }
+}
+
+app.get('/api/v2/events', requireAuth, (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // disable proxy buffering (Railway/Nginx)
+  });
+  res.flushHeaders?.();
+  res.write(': connected\n\n');
+  let bag = _scanEventBus.get(req.user.id);
+  if (!bag) { bag = new Set(); _scanEventBus.set(req.user.id, bag); }
+  bag.add(res);
+  const heartbeat = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 25_000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    bag.delete(res);
+    if (!bag.size) _scanEventBus.delete(req.user.id);
+  });
+});
+
 // ── Futures proxies ─────────────────────────────────────────────────────────
 const proxyOpts = (target, prefix) => ({
   target,
@@ -6466,6 +6505,36 @@ async function processPair(userId, sub, coin) {
   ps.lastTickAt = Date.now();
   ps.tickCount = (ps.tickCount || 0) + 1;
 
+  // Snapshot state at top of tick. We diff against this at the bottom and
+  // push any transitions to subscribed SSE clients so the browser gets
+  // entry/BE/TP/SL alerts the instant the scan loop flips them.
+  const _pre = {
+    hasSignal:     !!ps.pendSignal,
+    entryAlerted:  !!ps._entryAlerted,
+    beAlerted:     !!ps._beAlerted,
+    tpAlerted:     !!ps._tpAlerted,
+    expiryAlerted: !!ps._expiryAlerted,
+  };
+  const _emitDiffs = () => {
+    try {
+      if (!_pre.hasSignal && ps.pendSignal) {
+        emitScanEvent(userId, { type: 'signal', coin, signal: ps.pendSignal, signalId: ps.signalId, ts: Date.now() });
+      }
+      if (!_pre.entryAlerted && ps._entryAlerted) {
+        emitScanEvent(userId, { type: 'entry', coin, signal: ps.pendSignal, signalId: ps.signalId, ts: Date.now() });
+      }
+      if (!_pre.beAlerted && ps._beAlerted) {
+        emitScanEvent(userId, { type: 'be', coin, signal: ps.pendSignal, signalId: ps.signalId, ts: Date.now() });
+      }
+      if (!_pre.tpAlerted && ps._tpAlerted) {
+        emitScanEvent(userId, { type: 'tp', coin, signal: ps.pendSignal, signalId: ps.signalId, ts: Date.now() });
+      }
+      if (!_pre.expiryAlerted && ps._expiryAlerted && !ps._tpAlerted) {
+        emitScanEvent(userId, { type: 'expired', coin, signal: ps.pendSignal, signalId: ps.signalId, ts: Date.now() });
+      }
+    } catch (e) { console.warn('[sse emit]', coin, e.message); }
+  };
+
   // 1) If pair has an active signal → monitor it (entry/BE/TP/SL/expiry)
   //    Trade monitor still runs even if circuit breaker is on — once you're IN
   //    a trade, you need exit alerts regardless.
@@ -6473,6 +6542,7 @@ async function processPair(userId, sub, coin) {
     try {
       await runServerTradeMonitorForPair(userId, sub, coin, ps, broker);
     } catch (e) { console.error('[monitor]', coin, e.message); }
+    _emitDiffs();
     return;
   }
 
@@ -6639,6 +6709,8 @@ async function processPair(userId, sub, coin) {
   } finally {
     // Always release the in-flight lock, even on exceptions or early returns.
     ps._scanInFlight = false;
+    // Push any state transitions to SSE subscribers (signal/entry/be/tp/expired)
+    _emitDiffs();
   }
 }
 

@@ -902,13 +902,16 @@ function urlBase64ToUint8Array(base64String){
 }
 
 // ── Toast + sound alerts ────────────────────
-// Detects state transitions from the existing /api/scan/all-pairs poll done
-// by the autoscan grid and fires a top-right toast + a short two-tone beep
-// when an interesting event happens (new signal, entry hit, BE move, TP, SL).
-// No new endpoint, no new poll — piggybacks on auRefreshMonitor.
+// Primary path is SSE (/api/v2/events) — instant push from the scan loop the
+// moment a transition fires. Polling fallback (checkAlertTransitions on
+// auRefreshMonitor) stays armed for when the EventSource is unavailable or
+// drops. When _sseAlive is true, polling just updates _alertPrevState without
+// firing toasts — that way reconnects don't replay stale events.
 var _alertPrevState = {};   // coin → { state, beAlerted, entryAlerted }
 var _alertSoundEnabled = (localStorage.getItem('v2_alert_sound') !== '0');
 var _alertCtx = null;
+var _sseAlive = false;
+var _sseSrc = null;
 
 function _alertBeep(freq1, freq2){
   if(!_alertSoundEnabled) return;
@@ -955,36 +958,85 @@ function _toast(title, body, kind){
 
 // Called from auRenderMonitor after it receives the latest pairs payload.
 // Detects transitions vs the prior snapshot and fires toasts + beeps.
+// When SSE is alive we still keep _alertPrevState fresh but skip the
+// toast/beep/burst to avoid double-firing — SSE already handled them.
 function checkAlertTransitions(pairs){
   pairs.forEach(function(p){
     var prev = _alertPrevState[p.coin] || {};
     var curr = { state: p.lastStatus || p.status, beAlerted: !!p.beAlerted, entryAlerted: !!p.entryAlerted, hasSignal: !!p.hasSignal };
     var coin = String(p.coin).replace('USDT','').replace('1000','');
-    // New pending signal appeared
-    if(!prev.hasSignal && curr.hasSignal && !curr.entryAlerted){
-      _toast('⚡ NEW SIGNAL', coin + ' ' + (p.signal && p.signal.direction || ''), 'signal');
-      _alertBeep(1100, 880);
-    }
-    // Entry hit (waiting → in-trade)
-    if(prev.hasSignal && !prev.entryAlerted && curr.entryAlerted){
-      _toast('▶ ENTRY HIT', coin + ' ' + (p.signal && p.signal.direction || '') + ' active', 'entry');
-      _alertBeep(880, 1100);
-      // Triple-ring burst on the Kingdom panel; second burst slightly delayed
-      if(typeof spawnBurstOnPanel === 'function'){
-        var dir = (p.signal && p.signal.direction) || '';
-        var col = dir === 'LONG' ? '#00e5a0' : dir === 'SHORT' ? '#ff5577' : '#00d4ff';
-        spawnBurstOnPanel(p.coin, col);
-        setTimeout(function(){ spawnBurstOnPanel(p.coin, col); }, 400);
+    if(!_sseAlive){
+      if(!prev.hasSignal && curr.hasSignal && !curr.entryAlerted){
+        _toast('⚡ NEW SIGNAL', coin + ' ' + (p.signal && p.signal.direction || ''), 'signal');
+        _alertBeep(1100, 880);
       }
-    }
-    // BE move
-    if(!prev.beAlerted && curr.beAlerted){
-      _toast('⚑ MOVE SL → BE', coin + ' SL flipped to breakeven', 'be');
-      _alertBeep(880, 880);
+      if(prev.hasSignal && !prev.entryAlerted && curr.entryAlerted){
+        _toast('▶ ENTRY HIT', coin + ' ' + (p.signal && p.signal.direction || '') + ' active', 'entry');
+        _alertBeep(880, 1100);
+        if(typeof spawnBurstOnPanel === 'function'){
+          var dir = (p.signal && p.signal.direction) || '';
+          var col = dir === 'LONG' ? '#00e5a0' : dir === 'SHORT' ? '#ff5577' : '#00d4ff';
+          spawnBurstOnPanel(p.coin, col);
+          setTimeout(function(){ spawnBurstOnPanel(p.coin, col); }, 400);
+        }
+      }
+      if(!prev.beAlerted && curr.beAlerted){
+        _toast('⚑ MOVE SL → BE', coin + ' SL flipped to breakeven', 'be');
+        _alertBeep(880, 880);
+      }
     }
     _alertPrevState[p.coin] = curr;
   });
 }
+
+// SSE event handlers — fire toast/beep/burst the moment the scan loop pushes
+// a transition. Auto-reconnect on close so brief network blips self-heal.
+function _onSseEvent(ev){
+  var coin = String(ev.coin || '').replace('USDT','').replace('1000','');
+  var dir = (ev.signal && ev.signal.direction) || '';
+  if(ev.type === 'signal'){
+    _toast('⚡ NEW SIGNAL', coin + ' ' + dir, 'signal');
+    _alertBeep(1100, 880);
+  } else if(ev.type === 'entry'){
+    _toast('▶ ENTRY HIT', coin + ' ' + dir + ' active', 'entry');
+    _alertBeep(880, 1100);
+    if(typeof spawnBurstOnPanel === 'function'){
+      var col = dir === 'LONG' ? '#00e5a0' : dir === 'SHORT' ? '#ff5577' : '#00d4ff';
+      spawnBurstOnPanel(ev.coin, col);
+      setTimeout(function(){ spawnBurstOnPanel(ev.coin, col); }, 400);
+    }
+  } else if(ev.type === 'be'){
+    _toast('⚑ MOVE SL → BE', coin + ' SL flipped to breakeven', 'be');
+    _alertBeep(880, 880);
+  } else if(ev.type === 'tp'){
+    _toast('✓ TP HIT', coin + ' ' + dir + ' closed for profit', 'entry');
+    _alertBeep(1100, 1320);
+  } else if(ev.type === 'expired'){
+    _toast('⌛ EXPIRED', coin + ' signal never filled', 'info');
+    _alertBeep(660, 660);
+  }
+}
+
+function connectSse(){
+  if(!('EventSource' in window)) return;
+  try{
+    if(_sseSrc){ try{ _sseSrc.close(); }catch(e){} _sseSrc = null; }
+    _sseSrc = new EventSource('/api/v2/events', { withCredentials: true });
+    _sseSrc.onopen = function(){ _sseAlive = true; };
+    _sseSrc.onmessage = function(e){
+      try{ var ev = JSON.parse(e.data); _onSseEvent(ev); }catch(_){}
+    };
+    _sseSrc.onerror = function(){
+      _sseAlive = false;
+      try{ _sseSrc.close(); }catch(e){}
+      _sseSrc = null;
+      // Reconnect after 5s; browser will back off if it keeps failing
+      setTimeout(connectSse, 5000);
+    };
+  }catch(e){ _sseAlive = false; }
+}
+// Kick off SSE on page load
+connectSse();
 
 // ── Auto-trade pill + Kingdom toggle ──────
 var _autoTradeAvailable = false;
