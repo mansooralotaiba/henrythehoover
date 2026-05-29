@@ -146,6 +146,49 @@
   .hm-footer{margin-top:8px;font-size:10px;color:var(--mu);font-family:var(--mono);display:flex;justify-content:space-between;letter-spacing:0.06em}
   .hm-footer .cp{color:var(--cy);font-weight:700}
 
+  /* Autoscan controls (admin) */
+  .autoscan-card{background:linear-gradient(180deg,rgba(0,212,255,0.04),rgba(0,212,255,0.01));border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+  .autoscan-card.on{border-color:rgba(0,229,160,0.35);background:linear-gradient(180deg,rgba(0,229,160,0.06),rgba(0,229,160,0.01))}
+  .au-hdr{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .au-toggle{padding:8px 16px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.14em;border-radius:6px;cursor:pointer;border:1px solid var(--border-strong);background:var(--bg3);color:var(--mu);text-transform:uppercase;transition:all 0.15s}
+  .au-toggle:hover{color:var(--fg)}
+  .au-toggle.on{background:linear-gradient(135deg,var(--gr),#00b380);color:#001a10;border-color:var(--gr);box-shadow:0 0 14px rgba(0,229,160,0.35)}
+  .au-toggle.off{background:var(--bg3);color:var(--mu)}
+  .au-row{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--mu)}
+  .au-row label{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--mu)}
+  .au-row select,.au-row button{background:var(--bg3);border:1px solid var(--border-strong);color:var(--fg);padding:5px 8px;border-radius:4px;font-family:var(--mono);font-size:11px;cursor:pointer;outline:none}
+  .au-row select:hover,.au-row button:hover{border-color:var(--cy)}
+  .au-summary{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mu)}
+  .au-summary .v{color:var(--cy);font-weight:700}
+  .au-summary.on .v{color:var(--gr)}
+
+  .au-label{font-size:10px;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+  .au-label .hint{color:var(--di);font-size:9px;letter-spacing:0.06em;text-transform:none}
+  .au-watch-grid{display:flex;flex-wrap:wrap;gap:5px}
+  .au-watch{padding:4px 9px;background:var(--bg3);border:1px solid var(--border);color:var(--mu);font-family:var(--mono);font-size:10px;border-radius:14px;cursor:pointer;transition:all 0.15s;letter-spacing:0.04em}
+  .au-watch:hover{border-color:var(--cy);color:var(--fg)}
+  .au-watch.picked{background:rgba(0,212,255,0.12);border-color:rgba(0,212,255,0.45);color:var(--cy);font-weight:700}
+
+  .au-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px}
+  .au-cell{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;cursor:pointer;font-family:var(--mono);font-size:10px;line-height:1.5;transition:all 0.15s;position:relative}
+  .au-cell:hover{border-color:var(--cy)}
+  .au-cell .au-cell-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:4px}
+  .au-cell .au-cell-name{font-weight:700;color:var(--fg);font-size:11px;letter-spacing:0.04em}
+  .au-cell .au-cell-badge{font-size:9px;padding:2px 6px;border-radius:3px;letter-spacing:0.06em;border:1px solid var(--border)}
+  .au-cell .au-cell-badge.scanning{color:var(--cy);background:rgba(0,212,255,0.06);border-color:rgba(0,212,255,0.25)}
+  .au-cell .au-cell-badge.waiting{color:var(--am);background:rgba(255,170,48,0.08);border-color:rgba(255,170,48,0.3)}
+  .au-cell .au-cell-badge.in-trade{color:var(--gr);background:rgba(0,229,160,0.08);border-color:rgba(0,229,160,0.3)}
+  .au-cell .au-cell-badge.cooldown{color:var(--mu);background:rgba(255,255,255,0.03)}
+  .au-cell .au-cell-badge.paused{color:var(--re);background:rgba(255,85,119,0.08);border-color:rgba(255,85,119,0.3)}
+  .au-cell .au-cell-badge.veto{color:var(--re);background:rgba(255,85,119,0.08);border-color:rgba(255,85,119,0.3)}
+  .au-cell.in-trade{border-color:rgba(0,229,160,0.4);box-shadow:0 0 12px rgba(0,229,160,0.15)}
+  .au-cell.waiting{border-color:rgba(255,170,48,0.35)}
+  .au-cell .au-cell-line{color:var(--mu);font-size:10px}
+  .au-cell .au-cell-line.dir-long{color:var(--gr);font-weight:700}
+  .au-cell .au-cell-line.dir-short{color:var(--re);font-weight:700}
+  .au-cell .au-close-x{position:absolute;top:6px;right:6px;width:16px;height:16px;border:1px solid var(--border);border-radius:3px;color:var(--mu);font-size:11px;line-height:14px;text-align:center;cursor:pointer;background:rgba(255,255,255,0.02)}
+  .au-cell .au-close-x:hover{color:var(--re);border-color:rgba(255,85,119,0.4)}
+
   /* Terminal controls + chart */
   .term-controls{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
   .term-controls label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
@@ -309,6 +352,44 @@
       <button class="analyse-btn" id="t-analyse" onclick="runAnalyse()">⚡ Analyse</button>
     </div>
 
+    <div class="autoscan-card admin-only-content" id="au-card">
+      <div class="au-hdr">
+        <button class="au-toggle off" id="au-toggle">⚡ AUTO SCAN OFF</button>
+        <div class="au-row">
+          <label>Cooldown</label>
+          <select id="au-cooldown">
+            <option value="60000">1 min</option>
+            <option value="180000" selected>3 min</option>
+            <option value="300000">5 min</option>
+            <option value="600000">10 min</option>
+            <option value="900000">15 min</option>
+          </select>
+        </div>
+        <div class="au-row">
+          <label>Discord status</label>
+          <select id="au-status-int">
+            <option value="0">OFF</option>
+            <option value="15" selected>Every 15min</option>
+            <option value="30">Every 30min</option>
+            <option value="60">Every 1h</option>
+          </select>
+          <button id="au-post-now" title="Post Discord status now">POST NOW</button>
+        </div>
+        <span class="au-summary" id="au-summary">No watchlist — current pair only</span>
+      </div>
+      <div>
+        <div class="au-label">
+          Watchlist
+          <span class="hint">click to toggle · empty = focused pair only</span>
+        </div>
+        <div class="au-watch-grid" id="au-watch-grid"></div>
+      </div>
+      <div id="au-monitor" style="display:none">
+        <div class="au-label">Live pair status<span class="hint">polls every 5s · click to focus</span></div>
+        <div class="au-grid" id="au-grid"></div>
+      </div>
+    </div>
+
     <div class="term-main">
       <div class="chart-card">
         <h3 id="t-chart-title">BTCUSDT · 15m · WEEX</h3>
@@ -462,6 +543,8 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){return r.json();})
   state.email = d.email;
   if(!state.isAdmin) document.body.classList.add('view-public');
   el('perf-id').textContent = d.email || '';
+  // Now that we know the role, wire admin-only controls (autoscan)
+  if(typeof setupAutoscan === 'function') setupAutoscan();
 }).catch(function(){
   // not logged in — punt to login
   window.location.href = '/login';
@@ -910,6 +993,291 @@ function setupTermControls(){
   window.addEventListener('resize', function(){ if(t_chart && el('panel-terminal').classList.contains('active')) renderChart(); });
 }
 setupTermControls();
+
+// ── Autoscan controls (admin) ─────────────────────────────────────────
+// Mirrors the legacy /terminal "AUTO" panel: start/stop server-side scan,
+// pick watchlist, set cooldown + Discord status cadence. Polls
+// /api/scan/all-pairs every 5s while the scan is active.
+var AU_PAIRS = [
+  'BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','AVAXUSDT',
+  'AAVEUSDT','1000PEPEUSDT','LINKUSDT','SUIUSDT','ADAUSDT','BNBUSDT',
+  'GOLD','XAGUSDT','XTIUSDT'
+];
+var _au_active = false;
+var _au_watchlist = [];
+var _au_cooldownMs = 180000;
+var _au_pollTimer = null;
+
+function auLoadStateFromStorage(){
+  try{
+    var wl = JSON.parse(localStorage.getItem('v2_au_watchlist') || '[]');
+    if(Array.isArray(wl)) _au_watchlist = wl;
+  }catch(e){}
+  try{
+    var cd = parseInt(localStorage.getItem('v2_au_cooldownMs') || '180000', 10);
+    if(cd>0) _au_cooldownMs = cd;
+  }catch(e){}
+}
+function auSaveStateToStorage(){
+  try{ localStorage.setItem('v2_au_watchlist', JSON.stringify(_au_watchlist)); }catch(e){}
+  try{ localStorage.setItem('v2_au_cooldownMs', String(_au_cooldownMs)); }catch(e){}
+}
+
+function auRenderWatchPicks(){
+  var grid = el('au-watch-grid');
+  if(!grid) return;
+  grid.innerHTML = '';
+  AU_PAIRS.forEach(function(p){
+    var b = document.createElement('div');
+    b.className = 'au-watch' + (_au_watchlist.indexOf(p) !== -1 ? ' picked' : '');
+    b.textContent = String(p).replace('USDT','').replace('1000','');
+    b.dataset.pair = p;
+    b.addEventListener('click', function(){
+      var i = _au_watchlist.indexOf(p);
+      if(i === -1) _au_watchlist.push(p);
+      else _au_watchlist.splice(i, 1);
+      auSaveStateToStorage();
+      auRenderWatchPicks();
+      auUpdateSummary();
+      if(_au_active) auPushWatchlist();
+    });
+    grid.appendChild(b);
+  });
+}
+
+function auUpdateSummary(){
+  var s = el('au-summary');
+  if(!s) return;
+  if(_au_watchlist.length){
+    s.classList.toggle('on', _au_active);
+    s.innerHTML = (_au_active?'Scanning ':'Watching ') + '<span class="v">' + _au_watchlist.length + '</span> pair' + (_au_watchlist.length===1?'':'s') + ' · ' + Math.round(_au_cooldownMs/1000) + 's cooldown';
+  } else {
+    s.classList.remove('on');
+    s.textContent = 'No watchlist — focused pair only';
+  }
+}
+
+function auToggle(){
+  if(!state.isAdmin) return;
+  if(_au_active){ auStop(); return; }
+  auStart();
+}
+
+function auStart(){
+  fetch('/api/scan/start', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      coin: t_pair, tf: t_tf, broker: t_broker,
+      cooldownMs: _au_cooldownMs,
+      watchlist: _au_watchlist,
+    })
+  }).then(function(r){
+    if(!r.ok) throw new Error('scan/start ' + r.status);
+    _au_active = true;
+    auApplyActiveUI();
+    auStartPolling();
+  }).catch(function(e){
+    console.warn('[autoscan] start failed', e.message);
+  });
+}
+
+function auStop(){
+  fetch('/api/scan/stop', { method:'POST', credentials:'same-origin' })
+    .finally(function(){
+      _au_active = false;
+      auApplyActiveUI();
+      auStopPolling();
+    });
+}
+
+function auPushWatchlist(){
+  fetch('/api/scan/update-watchlist', {
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ watchlist: _au_watchlist })
+  }).catch(function(){});
+}
+
+function auApplyActiveUI(){
+  var btn = el('au-toggle');
+  var card = el('au-card');
+  var monitor = el('au-monitor');
+  if(btn){
+    btn.className = 'au-toggle ' + (_au_active ? 'on' : 'off');
+    btn.textContent = _au_active ? '⚡ AUTO SCAN ON' : '⚡ AUTO SCAN OFF';
+  }
+  if(card) card.classList.toggle('on', _au_active);
+  if(monitor) monitor.style.display = _au_active ? 'block' : 'none';
+  auUpdateSummary();
+}
+
+function auStartPolling(){
+  if(_au_pollTimer) clearInterval(_au_pollTimer);
+  auRefreshMonitor();
+  _au_pollTimer = setInterval(auRefreshMonitor, 5000);
+}
+function auStopPolling(){
+  if(_au_pollTimer){ clearInterval(_au_pollTimer); _au_pollTimer = null; }
+  var g = el('au-grid'); if(g) g.innerHTML = '';
+}
+
+function auRefreshMonitor(){
+  fetch('/api/scan/all-pairs', { credentials:'same-origin' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){ if(d) auRenderMonitor(d); })
+    .catch(function(){});
+}
+
+function auRenderMonitor(data){
+  var grid = el('au-grid');
+  if(!grid) return;
+  var pairs = data.pairs || [];
+  if(!pairs.length){
+    grid.innerHTML = '<div style="color:var(--di);font-size:11px;padding:8px;font-family:var(--mono)">No pairs in scan state yet…</div>';
+    return;
+  }
+  grid.innerHTML = '';
+  pairs.forEach(function(p){
+    var cell = document.createElement('div');
+    cell.className = 'au-cell';
+    if(p.hasSignal && p.entryAlerted) cell.classList.add('in-trade');
+    else if(p.hasSignal) cell.classList.add('waiting');
+
+    // Click → focus this pair in the Terminal selectors
+    cell.title = 'Click to focus ' + p.coin;
+    cell.addEventListener('click', function(){
+      var sel = el('t-pair');
+      var has = false;
+      Array.prototype.forEach.call(sel.options, function(o){ if(o.value === p.coin) has = true; });
+      if(!has){
+        var opt = document.createElement('option');
+        opt.value = p.coin; opt.textContent = p.coin;
+        sel.appendChild(opt);
+      }
+      sel.value = p.coin;
+      t_pair = p.coin;
+      renderChart(); loadHeatmap();
+    });
+
+    // Header: pair + status badge + force-close X
+    var lbl = String(p.coin).replace('USDT','').replace('1000','');
+    var hdr = document.createElement('div'); hdr.className = 'au-cell-hdr';
+    var name = document.createElement('span'); name.className = 'au-cell-name'; name.textContent = lbl;
+    var badge = document.createElement('span'); badge.className = 'au-cell-badge';
+    var isVeto = p.status && String(p.status).indexOf('veto:') === 0;
+    if(p.hasSignal && p.entryAlerted){ badge.classList.add('in-trade'); badge.textContent = 'IN TRADE'; }
+    else if(p.hasSignal){ badge.classList.add('waiting'); badge.textContent = p.awaitingConfirmation ? 'AWAITING LTF' : 'WAITING'; }
+    else if(p.pauseRemaining > 0){ badge.classList.add('paused'); badge.textContent = 'PAUSED ' + Math.ceil(p.pauseRemaining/60000) + 'm'; }
+    else if(isVeto){ badge.classList.add('veto'); badge.textContent = 'VETO ' + String(p.status).slice(5).toUpperCase(); }
+    else if(p.cooldownRemaining > 0){ badge.classList.add('cooldown'); badge.textContent = 'COOL ' + Math.ceil(p.cooldownRemaining/1000) + 's'; }
+    else { badge.classList.add('scanning'); badge.textContent = 'SCANNING'; }
+    hdr.appendChild(name);
+    hdr.appendChild(badge);
+    cell.appendChild(hdr);
+
+    // Price
+    if(p.lastPrice != null){
+      var pr = document.createElement('div'); pr.className = 'au-cell-line';
+      pr.textContent = '$' + formatPrice(p.lastPrice);
+      cell.appendChild(pr);
+    }
+
+    // Signal levels
+    if(p.hasSignal && p.signal){
+      var d = document.createElement('div');
+      d.className = 'au-cell-line dir-' + (p.signal.direction === 'LONG' ? 'long' : 'short');
+      d.textContent = p.signal.direction + ' @ ' + p.signal.entry;
+      cell.appendChild(d);
+      var st = document.createElement('div'); st.className = 'au-cell-line';
+      st.textContent = 'SL ' + p.signal.sl + ' · TP ' + p.signal.tp + ' · ' + (p.signal.rr || '—') + 'R';
+      cell.appendChild(st);
+      if(p.beAlerted){
+        var be = document.createElement('div'); be.className = 'au-cell-line'; be.style.color = 'var(--am)';
+        be.textContent = '⚑ Move SL → BE';
+        cell.appendChild(be);
+      }
+    } else if(p.lastTrigger){
+      var trig = document.createElement('div'); trig.className = 'au-cell-line';
+      trig.style.fontStyle = 'italic';
+      trig.textContent = 'Last: ' + p.lastTrigger;
+      cell.appendChild(trig);
+    }
+
+    // Force-close × (only when pair has a signal)
+    if(p.hasSignal){
+      var x = document.createElement('span'); x.className = 'au-close-x'; x.textContent = '×';
+      x.title = 'Force-close ' + p.coin + ' on the server';
+      x.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        if(!confirm('Force-close ' + p.coin + '? This clears the pending signal on the server only.')) return;
+        fetch('/api/scan/clear', {
+          method:'POST', credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ coin: p.coin })
+        }).then(auRefreshMonitor).catch(function(){});
+      });
+      cell.appendChild(x);
+    }
+
+    grid.appendChild(cell);
+  });
+}
+
+function auChangeDiscordStatus(val){
+  if(!state.isAdmin) return;
+  var mins = parseInt(val, 10) || 0;
+  if(mins > 0){
+    fetch('/api/status/start', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ intervalMins: mins })
+    }).catch(function(){});
+  } else {
+    fetch('/api/status/stop', { method:'POST', credentials:'same-origin' }).catch(function(){});
+  }
+}
+function auPostStatusNow(){
+  if(!state.isAdmin) return;
+  fetch('/api/status/now', { method:'POST', credentials:'same-origin' }).catch(function(){});
+}
+
+function setupAutoscan(){
+  if(!state.isAdmin){ var card = el('au-card'); if(card) card.style.display='none'; return; }
+  auLoadStateFromStorage();
+  auRenderWatchPicks();
+  // Hydrate cooldown selector from storage
+  var sel = el('au-cooldown'); if(sel) sel.value = String(_au_cooldownMs);
+  // Hook up controls
+  var t = el('au-toggle'); if(t) t.addEventListener('click', auToggle);
+  if(sel) sel.addEventListener('change', function(){
+    _au_cooldownMs = parseInt(sel.value, 10) || 180000;
+    auSaveStateToStorage();
+    auUpdateSummary();
+    if(_au_active) auStart(); // restart with new cooldown (preserves pair state on server)
+  });
+  var si = el('au-status-int'); if(si) si.addEventListener('change', function(){ auChangeDiscordStatus(si.value); });
+  var pn = el('au-post-now'); if(pn) pn.addEventListener('click', auPostStatusNow);
+  // Hydrate active-state from server (in case scan was already running)
+  fetch('/api/scan/debug', { credentials:'same-origin' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(!d || !d.active) { auApplyActiveUI(); return; }
+      _au_active = true;
+      if(Array.isArray(d.watchlist) && d.watchlist.length){
+        _au_watchlist = d.watchlist.slice();
+        auSaveStateToStorage();
+        auRenderWatchPicks();
+      }
+      if(d.cooldownMs){ _au_cooldownMs = d.cooldownMs; if(sel) sel.value = String(_au_cooldownMs); }
+      auApplyActiveUI();
+      auStartPolling();
+    })
+    .catch(function(){ auApplyActiveUI(); });
+  auUpdateSummary();
+}
+// setupAutoscan() is invoked from the /api/me handler so state.isAdmin
+// is populated by the time it runs. No setTimeout needed.
 
 // ANALYSE flow
 function runAnalyse(){
