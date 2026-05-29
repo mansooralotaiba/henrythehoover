@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Henry · v2</title>
+<style>
+  :root {
+    --bg:#0a0b0f; --bg2:#13151c; --bg3:#1b1f2a;
+    --border:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.12);
+    --fg:#e8eaf0; --mu:#8b94a3; --di:#5a5f7a;
+    --cy:#00d4ff; --gr:#00e5a0; --re:#ff5577; --am:#ffaa30; --go:#f7c948;
+    --mono:'JetBrains Mono','SF Mono',Consolas,monospace;
+    --sans:'Inter','Segoe UI',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;overflow:hidden}
+
+  /* ── Top bar ───────────────────────────── */
+  .topbar{display:flex;align-items:center;gap:24px;height:54px;padding:0 20px;border-bottom:1px solid var(--border);background:rgba(13,15,22,0.95);backdrop-filter:blur(12px);position:relative;z-index:50}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:0.04em;font-size:15px}
+  .brand .crown{color:var(--go);font-size:18px}
+  .brand .name{color:var(--cy)}
+  .brand .sub{color:var(--mu);font-size:11px;letter-spacing:0.15em;text-transform:uppercase;padding-left:6px;border-left:1px solid var(--border-strong);margin-left:6px}
+  .live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--gr);letter-spacing:0.1em;text-transform:uppercase}
+  .live::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--gr);box-shadow:0 0 6px currentColor;animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  .tabs{display:flex;gap:4px;margin-left:8px}
+  .tab{padding:8px 16px;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.14em;color:var(--mu);cursor:pointer;border-radius:6px;transition:all 0.15s;text-transform:uppercase}
+  .tab:hover{color:var(--fg);background:var(--bg2)}
+  .tab.active{color:var(--cy);background:rgba(0,212,255,0.08)}
+  .tab .badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;font-size:9px;background:var(--re);color:#fff}
+  .tab .admin-lock{display:inline-block;margin-left:6px;color:var(--go);font-size:10px}
+  .topbar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+  .auto-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:0.12em}
+  .auto-pill.on{background:rgba(0,229,160,0.1);color:var(--gr);border:1px solid rgba(0,229,160,0.3)}
+  .auto-pill.off{background:rgba(255,85,119,0.1);color:var(--re);border:1px solid rgba(255,85,119,0.3)}
+  .auto-pill.on::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--gr);box-shadow:0 0 6px currentColor;animation:pulse 1.4s infinite}
+  .auto-pill.off::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--re)}
+
+  /* Banner: this is v2 (preview) */
+  .v2-banner{padding:6px 20px;background:rgba(255,170,48,0.08);border-bottom:1px solid rgba(255,170,48,0.2);font-size:11px;color:var(--am);letter-spacing:0.05em;display:flex;align-items:center;gap:8px}
+  .v2-banner a{color:var(--cy);text-decoration:none;font-weight:600}
+  .v2-banner a:hover{text-decoration:underline}
+
+  /* Body and panels */
+  .main{height:calc(100vh - 80px);overflow:hidden;position:relative}
+  .panel{display:none;height:100%;padding:16px 20px;overflow-y:auto}
+  .panel.active{display:flex;flex-direction:column;gap:14px}
+  body.view-public .admin-only-content{display:none !important}
+  body.view-public .tab[data-tab="stats"]{display:none !important}
+  body.view-public .auto-pill{display:none !important}
+
+  /* Cards / typography helpers */
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px}
+  .card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+  .card h3 .dot{width:6px;height:6px;border-radius:50%;background:var(--cy)}
+  .pos{color:var(--gr)} .neg{color:var(--re)} .am{color:var(--am)}
+  .mono{font-family:var(--mono)}
+  .loading{display:flex;align-items:center;justify-content:center;color:var(--di);font-size:12px;padding:40px;font-family:var(--mono)}
+  .error-banner{padding:10px 14px;background:rgba(255,85,119,0.1);border:1px solid rgba(255,85,119,0.3);border-radius:6px;color:var(--re);font-size:12px;font-family:var(--mono);margin-bottom:10px}
+
+  /* ── Terminal placeholder ────────────── */
+  .terminal-stub{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--mu)}
+  .terminal-stub .icon{font-size:60px;margin-bottom:14px;opacity:0.4}
+  .terminal-stub h2{font-size:22px;color:var(--fg);margin-bottom:8px}
+  .terminal-stub p{font-size:14px;margin-bottom:6px;max-width:540px;line-height:1.5}
+  .terminal-stub a{display:inline-block;margin-top:14px;padding:11px 22px;background:linear-gradient(135deg,var(--cy),#00a8ff);color:#000;border:none;border-radius:6px;font-weight:700;font-size:12px;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;text-decoration:none}
+
+  /* ── Kingdom ────────────────────────────── */
+  .kingdom-grid{display:grid;grid-template-columns:280px 1fr 320px;gap:12px;margin-bottom:12px;height:140px}
+  .big-pnl{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .big-pnl .label{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:4px}
+  .big-pnl .num{font-family:var(--mono);font-size:26px;font-weight:700;line-height:1}
+  .big-pnl .stats{display:flex;flex-direction:column;gap:3px;font-size:11px}
+  .big-pnl .stats .r{display:flex;justify-content:space-between;padding:2px 0;color:var(--mu)}
+  .big-pnl .stats .v{font-family:var(--mono);font-weight:700;color:var(--fg);font-size:11px}
+  .k-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:flex;flex-direction:column;overflow:hidden}
+  .month-hdr{display:flex;justify-content:space-between;font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:4px}
+  .month-bignums{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px}
+  .bn{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:6px 8px;text-align:center}
+  .bn .l{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:2px}
+  .bn .v{font-family:var(--mono);font-size:16px;font-weight:700;line-height:1}
+  .bar-chart{flex:1;background:var(--bg3);border-radius:5px;padding:4px;display:flex;align-items:flex-end;gap:2px}
+  .bar{flex:1;border-radius:1px 1px 0 0;min-height:2px}
+  .bar.pos{background:var(--gr)} .bar.neg{background:var(--re)}
+  .wallet-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column}
+  .wallet-card h3{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:6px}
+  .wallet-stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px}
+  .ws{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:6px 8px;text-align:center}
+  .ws .l{font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:2px}
+  .ws .v{font-family:var(--mono);font-size:14px;font-weight:700;line-height:1}
+  .watchlist-panels{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:0}
+  .wp-hdr{display:flex;justify-content:space-between;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px}
+  .wp-hdr .r{color:var(--cy)}
+  .wp-grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:8px;min-height:0}
+  .wp-panel{background:var(--bg3);border:1.5px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:0;text-align:center;justify-content:center;color:var(--di);font-family:var(--mono);font-size:11px}
+
+  /* ── News tab ────────────────────────────── */
+  .news{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;height:100%}
+  .news-feed, .news-calendar{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;overflow-y:auto}
+  .news h3{font-size:11px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:14px}
+  .news-item{padding:12px;background:var(--bg3);border-radius:6px;margin-bottom:8px;border-left:3px solid var(--border-strong)}
+  .news-item.high{border-left-color:var(--re)} .news-item.med{border-left-color:var(--am)}
+  .news-item .ttl{font-size:13px;font-weight:600;margin-bottom:4px}
+  .news-item .meta{display:flex;gap:10px;font-size:11px;color:var(--mu);font-family:var(--mono);flex-wrap:wrap}
+  .news-item .meta .src{color:var(--cy)}
+  .ai-summary{padding:14px;background:linear-gradient(135deg,rgba(0,212,255,0.08),rgba(0,229,160,0.04));border:1px solid rgba(0,212,255,0.2);border-radius:8px;margin-bottom:14px}
+  .ai-summary .hdr{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:var(--cy);letter-spacing:0.14em;text-transform:uppercase;font-weight:700}
+  .ai-summary p{font-size:13px;line-height:1.55;color:var(--fg)}
+  .ai-summary .gen{font-size:10px;color:var(--mu);margin-top:8px;font-family:var(--mono)}
+  .cal-event{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+  .cal-event:last-child{border:none}
+  .cal-event .when{font-family:var(--mono);font-size:11px;color:var(--mu);min-width:90px}
+  .cal-event .imp{width:6px;height:6px;border-radius:50%}
+  .cal-event .imp.high{background:var(--re);box-shadow:0 0 6px currentColor}
+  .cal-event .imp.med{background:var(--am)}
+  .cal-event .zone{font-family:var(--mono);font-size:10px;background:var(--bg3);padding:2px 7px;border-radius:3px;color:var(--mu);letter-spacing:0.08em}
+  .cal-event .name{flex:1;font-size:13px}
+
+  /* ── Stats & Performance shared table styles ── */
+  .stats-grid, .perf-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .stat-card, .perf-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;min-width:0}
+  .stat-card-hdr, .perf-card-hdr{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+  .stat-card-hdr h3, .perf-card-hdr h3{font-size:13px;font-weight:600}
+  .stat-card-hdr .src, .perf-card-hdr .src{font-size:10px;color:var(--mu);font-family:var(--mono)}
+  .stat-table{width:100%;border-collapse:collapse;font-size:12px}
+  .stat-table th{text-align:left;padding:6px 4px;font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;font-weight:600;border-bottom:1px solid var(--border)}
+  .stat-table th:not(:first-child){text-align:right}
+  .stat-table td{padding:7px 4px;border-bottom:1px solid var(--border);font-family:var(--mono)}
+  .stat-table td:first-child{font-family:var(--sans);font-weight:500}
+  .stat-table td:not(:first-child){text-align:right}
+  .stat-table tr.hi td{color:var(--gr);font-weight:600}
+  .stat-table tr:last-child td{border:none}
+  .stat-rows{display:flex;flex-direction:column}
+  .stat-rows .sr{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;color:var(--mu)}
+  .stat-rows .sr:last-child{border:none}
+  .stat-rows .sr .v{font-family:var(--mono);font-weight:700;color:var(--fg)}
+
+  /* ── Performance hero ──────────────────────── */
+  .perf-hdr{margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px}
+  .perf-hdr h2{font-size:20px;font-weight:700;margin-bottom:4px}
+  .perf-sub{font-size:13px;color:var(--mu)}
+  .perf-overall{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:12px;margin-bottom:14px}
+  .ov-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px}
+  .ov-card .l{font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:6px}
+  .ov-card .v{font-family:var(--mono);font-size:28px;font-weight:700;line-height:1}
+  .ov-card .sub{font-size:11px;color:var(--mu);margin-top:4px;font-family:var(--mono)}
+
+  .stats-hdr{margin-bottom:14px}
+  .stats-hdr h2{font-size:18px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:10px}
+  .stats-hdr .admin-badge{font-size:10px;letter-spacing:0.16em;padding:3px 9px;background:rgba(247,201,72,0.15);color:var(--go);border:1px solid rgba(247,201,72,0.4);border-radius:4px;font-weight:700;text-transform:uppercase}
+  .stats-hdr p{font-size:13px;color:var(--mu)}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="crown">♛</span>
+    <span class="name">HENRY</span>
+    <span class="sub">V2 · PREVIEW</span>
+    <span class="live" style="margin-left:14px">LIVE</span>
+  </div>
+  <div class="tabs">
+    <div class="tab" data-tab="terminal">Terminal</div>
+    <div class="tab active" data-tab="kingdom">Kingdom</div>
+    <div class="tab" data-tab="news">News</div>
+    <div class="tab admin-only-content" data-tab="stats">Stats <span class="admin-lock">⚑</span></div>
+    <div class="tab" data-tab="perf">Performance</div>
+  </div>
+  <div class="topbar-right">
+    <div class="auto-pill" id="auto-pill">AUTO-TRADE …</div>
+  </div>
+</div>
+
+<div class="v2-banner">
+  ⚑ V2 preview · Stats / Performance / News / Kingdom are wired to real data. Terminal still in legacy. <a href="/terminal">→ open legacy /terminal</a>
+</div>
+
+<div class="main">
+
+  <!-- ── Terminal stub ─────────────────────── -->
+  <div class="panel" id="panel-terminal">
+    <div class="terminal-stub">
+      <div class="icon">⚡</div>
+      <h2>Terminal — coming in next phase</h2>
+      <p>The interactive trading terminal (chart, AI ANALYSE button, heatmap, autoscan controls) is being ported next session.</p>
+      <p>For now use the legacy page — fully functional, no changes.</p>
+      <a href="/terminal">Open legacy /terminal</a>
+    </div>
+  </div>
+
+  <!-- ── Kingdom ───────────────────────────── -->
+  <div class="panel active" id="panel-kingdom">
+    <div class="kingdom-grid">
+      <div class="big-pnl">
+        <div>
+          <div class="label" id="k-today-label">Today's PnL</div>
+          <div class="num" id="k-today-num">—</div>
+        </div>
+        <div class="stats">
+          <div class="r"><span>TP</span><span class="v" id="k-tp">—</span></div>
+          <div class="r"><span>SL</span><span class="v" id="k-sl">—</span></div>
+          <div class="r"><span>BE</span><span class="v" id="k-be">—</span></div>
+          <div class="r"><span>Win Rate</span><span class="v" id="k-wr">—</span></div>
+          <div class="r"><span>Total</span><span class="v" id="k-total">—</span></div>
+        </div>
+      </div>
+      <div class="k-card">
+        <div class="month-hdr"><span>This Month · <span id="k-month-name">—</span></span><span>Cumulative</span></div>
+        <div class="month-bignums">
+          <div class="bn"><div class="l">This Month</div><div class="v" id="k-month">—</div></div>
+          <div class="bn"><div class="l">Cumulative</div><div class="v" id="k-cum">—</div></div>
+        </div>
+        <div class="bar-chart" id="k-daily-bars"></div>
+      </div>
+      <div class="wallet-card admin-only-content">
+        <h3>WEEX Wallet</h3>
+        <div class="wallet-stats">
+          <div class="ws"><div class="l">Equity</div><div class="v" id="k-equity">—</div></div>
+          <div class="ws"><div class="l">Available</div><div class="v" id="k-available">—</div></div>
+        </div>
+        <div style="font-size:9px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-top:4px">Wallet snapshot · refresh from terminal</div>
+      </div>
+    </div>
+    <div class="watchlist-panels">
+      <div class="wp-hdr"><span>Watchlist Panels</span><span class="r" id="k-pair-count">— / 6 max</span></div>
+      <div class="wp-grid" id="k-wp-grid">
+        <div class="wp-panel">Chart panels port in next phase<br>(use legacy /kingdom for now)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── News ──────────────────────────────── -->
+  <div class="panel" id="panel-news">
+    <div class="news">
+      <div class="news-feed">
+        <h3>Market News · Today</h3>
+        <div class="ai-summary" id="ai-summary"><div class="loading">Loading macro take…</div></div>
+        <div id="news-items"><div class="loading">Loading news…</div></div>
+      </div>
+      <div class="news-calendar">
+        <h3>Economic Calendar</h3>
+        <div id="calendar-items"><div class="loading">Loading calendar…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Stats (admin only) ────────────────── -->
+  <div class="panel" id="panel-stats">
+    <div class="stats-hdr">
+      <h2>Stats <span class="admin-badge">♛ Admin</span></h2>
+      <p>Live analytics from Supabase signals + executor state. <span style="color:var(--mu);font-family:var(--mono);font-size:11px" id="stats-meta"></span></p>
+    </div>
+    <div class="stats-grid" id="stats-grid"><div class="loading">Loading stats…</div></div>
+  </div>
+
+  <!-- ── Performance ───────────────────────── -->
+  <div class="panel" id="panel-perf">
+    <div class="perf-hdr">
+      <div>
+        <h2>Your Track Record</h2>
+        <p class="perf-sub">Signals you've run — built from your own decisions over time. <span id="perf-id" class="mono"></span></p>
+      </div>
+    </div>
+    <div class="perf-overall" id="perf-overall"><div class="loading">Loading performance…</div></div>
+    <div class="perf-grid" id="perf-grid"></div>
+  </div>
+
+</div>
+
+<script>
+// ───────────────────────────────────────────────────────────────────────────
+// V2 SHELL — fetches from Phase 1 endpoints, populates the DOM, role-gates UI
+// ───────────────────────────────────────────────────────────────────────────
+
+var state = { isAdmin: false, userId: null, email: null };
+
+function fmtUsd(n){ if(n==null||!isFinite(n))return '—'; var s=n>=0?'+':''; return s+'$'+Math.abs(n).toFixed(2); }
+function fmtR(n){ if(n==null||!isFinite(n))return '—'; var s=n>=0?'+':''; return s+n.toFixed(2)+'R'; }
+function fmtPct(n){ if(n==null||!isFinite(n))return '—'; return n.toFixed(1)+'%'; }
+function el(id){ return document.getElementById(id); }
+
+// ── Role detection ─────────────────────────
+fetch('/api/me',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+  state.isAdmin = !!d.is_admin;
+  state.userId = d.email; // approximation; server scopes by req.user.id
+  state.email = d.email;
+  if(!state.isAdmin) document.body.classList.add('view-public');
+  el('perf-id').textContent = d.email || '';
+}).catch(function(){
+  // not logged in — punt to login
+  window.location.href = '/login';
+});
+
+// ── Auto-trade pill state ──────────────────
+function refreshAutoTrade(){
+  fetch('/api/bot/state',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();return r.json();}).then(function(d){
+    var p = el('auto-pill');
+    if(!d.available){ p.style.display='none'; return; }
+    p.className = 'auto-pill ' + (d.enabled?'on':'off');
+    p.textContent = d.enabled?'AUTO-TRADE ON':'AUTO-TRADE OFF';
+  }).catch(function(){ el('auto-pill').style.display='none'; });
+}
+refreshAutoTrade();
+setInterval(refreshAutoTrade, 10_000);
+
+// ── Tab switching ─────────────────────────
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});
+    document.querySelectorAll('.panel').forEach(function(x){x.classList.remove('active')});
+    t.classList.add('active');
+    el('panel-' + t.dataset.tab).classList.add('active');
+    // Lazy-load that tab's data
+    if(t.dataset.tab==='news')        loadNews();
+    if(t.dataset.tab==='stats')       loadStats();
+    if(t.dataset.tab==='perf')        loadPerformance();
+  });
+});
+
+// ── Kingdom ───────────────────────────────
+function loadKingdom(){
+  // Use the admin endpoint when admin, otherwise the user's own summary
+  fetch('/api/kingdom/summary',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    if(!d) return;
+    var today = d.today || {};
+    var month = d.month || {};
+    var allTime = d.allTime || {};
+    // Labels: public sees R, admin sees same R (Kingdom is R-based by design)
+    el('k-today-label').textContent = "Today's R";
+    el('k-today-num').textContent = fmtR(today.totalR);
+    el('k-today-num').className = 'num ' + (today.totalR>=0?'pos':'neg');
+    el('k-tp').textContent = today.tp || 0;
+    el('k-sl').textContent = today.sl || 0;
+    el('k-be').textContent = today.be || 0;
+    el('k-wr').textContent = fmtPct(today.winRate);
+    el('k-total').textContent = today.closed || 0;
+    el('k-month-name').textContent = new Date().toLocaleString('en-US',{month:'long',year:'numeric'});
+    el('k-month').textContent = fmtR(month.totalR);
+    el('k-month').className = 'v ' + (month.totalR>=0?'pos':'neg');
+    el('k-cum').textContent = fmtR(allTime.totalR);
+    el('k-cum').className = 'v ' + (allTime.totalR>=0?'pos':'neg');
+    // Daily bars
+    var bars = el('k-daily-bars'); bars.innerHTML = '';
+    (d.dailyR||[]).forEach(function(day){
+      var b = document.createElement('div');
+      b.className = 'bar ' + (day.r>=0?'pos':'neg');
+      var h = Math.min(100, Math.abs(day.r) * 8);
+      b.style.height = Math.max(2, h) + '%';
+      bars.appendChild(b);
+    });
+    // Pair count for watchlist header
+    var allP = d.allPairs || [];
+    el('k-pair-count').textContent = allP.length + ' / 6 max';
+  }).catch(function(e){
+    el('k-today-num').textContent = '—'; console.warn('[kingdom]', e);
+  });
+
+  // WEEX wallet for admin
+  if(state.isAdmin){
+    fetch('/api/bot/state',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+      if(!d) return;
+      // pnl.equity / available aren't exposed on /api/bot/state directly — use /api/scan/all-pairs? skip for now
+      // Future: dedicated /api/weex/wallet endpoint
+    }).catch(function(){});
+  }
+}
+loadKingdom();
+setInterval(loadKingdom, 15_000);
+
+// ── News ─────────────────────────────────
+var _newsLoaded = false;
+function loadNews(){
+  if(_newsLoaded) return; _newsLoaded = true;
+  // AI macro summary
+  fetch('/api/news/macro-summary',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var box = el('ai-summary');
+    if(d && d.summary){
+      box.innerHTML = "<div class=\"hdr\">⚡ Henry's Daily Macro Take</div><p>"+escapeHtml(d.summary)+"</p>"
+        +'<div class="gen">Generated '+new Date(d.generatedAt).toUTCString().slice(5,22)+' UTC · cached '+d.cachedFor+' · source: '+d.source+'</div>';
+    } else { box.innerHTML = '<div class="error-banner">Macro summary unavailable.</div>'; }
+  }).catch(function(e){ el('ai-summary').innerHTML = '<div class="error-banner">'+e.message+'</div>'; });
+
+  // News + calendar feed
+  fetch('/api/news/feed',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var nbox = el('news-items'); nbox.innerHTML = '';
+    if(d && d.news && d.news.length){
+      d.news.forEach(function(n){
+        var cls = (n.impact||'').toLowerCase();
+        var div = document.createElement('div');
+        div.className = 'news-item ' + (cls==='high'?'high':cls==='medium'||cls==='med'?'med':'');
+        var when = n.time ? new Date(n.time).toUTCString().slice(5,22) : '';
+        div.innerHTML = '<div class="ttl">'+escapeHtml(n.title)+'</div>'
+          +'<div class="meta"><span class="src">'+escapeHtml(n.source||'')+'</span><span>'+when+'</span>'
+          +(n.impact?'<span>'+escapeHtml(n.impact).toUpperCase()+'</span>':'')+'</div>';
+        nbox.appendChild(div);
+      });
+    } else { nbox.innerHTML = '<div class="loading">No news items right now.</div>'; }
+
+    var cbox = el('calendar-items'); cbox.innerHTML = '';
+    if(d && d.calendar && d.calendar.length){
+      d.calendar.forEach(function(e){
+        var d2 = document.createElement('div');
+        d2.className = 'cal-event';
+        var when = new Date(e.time);
+        var whenStr = when.toUTCString().slice(5,22).replace(' GMT','');
+        d2.innerHTML = '<div class="when">'+whenStr+' UTC</div>'
+          +'<div class="imp '+(e.impact==='high'?'high':'med')+'"></div>'
+          +'<div class="zone">'+escapeHtml(e.zone||'')+'</div>'
+          +'<div class="name">'+escapeHtml(e.name||'')+'</div>';
+        cbox.appendChild(d2);
+      });
+    } else { cbox.innerHTML = '<div class="loading">No upcoming events.</div>'; }
+  }).catch(function(e){ el('news-items').innerHTML = '<div class="error-banner">'+e.message+'</div>'; });
+}
+
+// ── Stats (admin only) ────────────────────
+var _statsLoaded = false;
+function loadStats(){
+  if(!state.isAdmin) return;
+  if(_statsLoaded) return; _statsLoaded = true;
+  fetch('/api/admin/stats',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+    el('stats-meta').textContent = d.totalClosed+' closed trades · generated '+new Date(d.generatedAt).toUTCString().slice(17,22)+' UTC';
+    var grid = el('stats-grid'); grid.innerHTML = '';
+    // 1. Stacking categories
+    var c1 = card('Stacking Categories','268 closed', tableHtml([
+      ['Category','N','WR%','Total R','Avg R'],
+      ...Object.entries(d.stackingCategories).map(function(kv){
+        var k = kv[0], v = kv[1];
+        return [k, v.n, fmtPct(v.winRate), rcell(v.totalR), rcell(v.avgR)+'']
+      })
+    ]));
+    grid.appendChild(c1);
+
+    // 2. Pair rankings
+    var c2 = card('Pair Rankings · Last 30d','rank by total R', tableHtml([
+      ['Pair','N','WR%','Total R','Recent-10'],
+      ...d.pairRankings.slice(0,8).map(function(p){
+        return [p.pair, p.n, fmtPct(p.winRate), rcell(p.totalR), rcell(p.lastTenR)]
+      })
+    ]));
+    grid.appendChild(c2);
+
+    // 3. NY recovery
+    var c3 = card('NY-Sweep Recovery','SL fires in 13:00-15:30 UTC',
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">'
+      +'<div style="padding:12px;background:var(--bg3);border-radius:6px;text-align:center"><div style="font-size:10px;color:var(--mu);letter-spacing:0.12em;text-transform:uppercase">NY Window</div><div style="font-family:var(--mono);font-size:22px;font-weight:700;color:var(--cy);margin-top:5px">'+d.nyRecovery.nyWindow.n+'</div><div style="font-size:10px;color:var(--mu);margin-top:2px">SL hits</div></div>'
+      +'<div style="padding:12px;background:var(--bg3);border-radius:6px;text-align:center"><div style="font-size:10px;color:var(--mu);letter-spacing:0.12em;text-transform:uppercase">Other Hours</div><div style="font-family:var(--mono);font-size:22px;font-weight:700;color:var(--cy);margin-top:5px">'+d.nyRecovery.otherWindow.n+'</div><div style="font-size:10px;color:var(--mu);margin-top:2px">SL hits</div></div></div>'
+      +'<p style="font-size:12px;color:var(--mu);line-height:1.5">'+escapeHtml(d.nyRecovery.note)+'</p>'
+    );
+    grid.appendChild(c3);
+
+    // 4. Trigger performance
+    var c4 = card('Trigger Performance','by trigger_type', tableHtml([
+      ['Trigger','N','WR%','Total R'],
+      ...d.triggerPerformance.slice(0,8).map(function(t){
+        return [t.trigger, t.n, fmtPct(t.winRate), rcell(t.totalR)]
+      })
+    ]));
+    grid.appendChild(c4);
+
+    // 5. Live executor state
+    var es = d.executorState;
+    var c5 = card('Live Executor State','in-memory snapshot',
+      '<div class="stat-rows">'
+      +'<div class="sr"><span>Active trades</span><span class="v" style="color:var(--cy)">'+es.activeTrades+'</span></div>'
+      +'<div class="sr"><span>Pending limits</span><span class="v">'+es.pendingLimits+'</span></div>'
+      +'<div class="sr"><span>Auto-trade enabled</span><span class="v" style="color:'+(es.autoTradeEnabled?'var(--gr)':'var(--re)')+'">'+(es.autoTradeEnabled?'YES':'NO')+'</span></div>'
+      +'<div class="sr"><span>Dry-run</span><span class="v">'+(es.dryRun?'YES':'NO')+'</span></div>'
+      +'<div class="sr"><span>Risk per trade</span><span class="v">$'+es.riskUsd+'</span></div>'
+      +'<div class="sr"><span>Leverage</span><span class="v">'+es.leverage+'x</span></div>'
+      +'<div class="sr"><span>Autoscan model</span><span class="v" style="color:var(--am)">'+escapeHtml(es.autoscanModel)+'</span></div>'
+      +'<div class="sr"><span>Manual model</span><span class="v">'+escapeHtml(es.manualModel)+'</span></div>'
+      +'</div>'
+    );
+    grid.appendChild(c5);
+
+    // 6. Veto report (placeholder)
+    var c6 = card('Veto Report · Last 7d','from veto log',
+      '<p style="font-size:12px;color:var(--mu);line-height:1.5">'+escapeHtml(d.vetoReport.note||'')+'</p>'
+    );
+    grid.appendChild(c6);
+  }).catch(function(e){
+    el('stats-grid').innerHTML = '<div class="error-banner">'+escapeHtml(e.message)+'</div>';
+    _statsLoaded = false;
+  });
+}
+
+// ── Performance ───────────────────────────
+var _perfLoaded = false;
+function loadPerformance(){
+  if(_perfLoaded) return; _perfLoaded = true;
+  fetch('/api/performance/me',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+    var ov = d.overall;
+    var oC = el('perf-overall'); oC.innerHTML = '';
+    oC.appendChild(card2('Net R', fmtR(ov.totalR), 'Last week '+fmtR(ov.lastWeekR), ov.totalR>=0?'pos':'neg'));
+    oC.appendChild(card2('Win Rate', fmtPct(ov.winRate), ov.tp+' TP · '+ov.sl+' SL · '+ov.be+' BE', 'cy'));
+    oC.appendChild(card2('Expectancy', (ov.expectancy>=0?'+':'')+ov.expectancy+'R/trade', 'per signal avg', ov.expectancy>=0?'pos':'neg'));
+    oC.appendChild(card2('Closed', ov.closedN, 'of '+ov.totalSignals+' total', ''));
+
+    var g = el('perf-grid'); g.innerHTML = '';
+    g.appendChild(card('By Pair','your trades', tableHtml([
+      ['Pair','N','WR%','Total R'],
+      ...d.pairBreakdown.slice(0,8).map(function(p){ return [p.pair, p.n, fmtPct(p.winRate), rcell(p.totalR)] })
+    ])));
+    g.appendChild(card('By Trigger','your trades', tableHtml([
+      ['Trigger','N','WR%','Total R'],
+      ...d.triggerBreakdown.slice(0,8).map(function(t){ return [t.trigger, t.n, fmtPct(t.winRate), rcell(t.totalR)] })
+    ])));
+    g.appendChild(card('Best 5 Trades','your top R', tableHtml([
+      ['Pair','Dir','R','When'],
+      ...d.bestTrades.map(function(t){ return [t.pair, t.direction, rcell(t.r), shortDate(t.when)] })
+    ])));
+    g.appendChild(card('Worst 5 Trades','your bottom R', tableHtml([
+      ['Pair','Dir','R','When'],
+      ...d.worstTrades.map(function(t){ return [t.pair, t.direction, rcell(t.r), shortDate(t.when)] })
+    ])));
+  }).catch(function(e){
+    el('perf-overall').innerHTML = '<div class="error-banner">'+escapeHtml(e.message)+'</div>';
+    _perfLoaded = false;
+  });
+}
+
+// ── Helpers ──────────────────────────────
+function card(title, src, html){
+  var c = document.createElement('div'); c.className = 'stat-card';
+  c.innerHTML = '<div class="stat-card-hdr"><h3>'+escapeHtml(title)+'</h3><span class="src">'+escapeHtml(src)+'</span></div>' + html;
+  return c;
+}
+function card2(label, value, sub, cls){
+  var c = document.createElement('div'); c.className = 'ov-card';
+  c.innerHTML = '<div class="l">'+escapeHtml(label)+'</div><div class="v '+cls+'">'+value+'</div><div class="sub">'+escapeHtml(sub)+'</div>';
+  return c;
+}
+function tableHtml(rows){
+  if(!rows.length) return '';
+  var head = rows[0], body = rows.slice(1);
+  var h = '<table class="stat-table"><thead><tr>'+head.map(function(c){return '<th>'+escapeHtml(c)+'</th>'}).join('')+'</tr></thead><tbody>';
+  body.forEach(function(r){ h += '<tr>'+r.map(function(c){return '<td>'+(c==null?'—':String(c))+'</td>'}).join('')+'</tr>'; });
+  return h + '</tbody></table>';
+}
+function rcell(r){
+  var n = parseFloat(r); if(!isFinite(n)) return '—';
+  var s = n>=0?'+':'';
+  var c = n>=0?'var(--gr)':'var(--re)';
+  return '<span style="color:'+c+'">'+s+n.toFixed(2)+'R</span>';
+}
+function shortDate(s){ if(!s) return '—'; try{ var d = new Date(s); return d.toISOString().slice(5,16).replace('T',' '); } catch(e){ return s; } }
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ var m={}; m['&']='&amp;'; m['<']='&lt;'; m['>']='&gt;'; m['"']='&quot;'; m["'"]='&#39;'; return m[c]; }); }
+</script>
+
+</body>
+</html>
