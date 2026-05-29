@@ -125,12 +125,8 @@
   .wp-tag.in-trade{background:rgba(0,212,255,0.15);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
   .wp-tag.waiting{background:rgba(255,170,48,0.15);color:var(--am);border:1px solid rgba(255,170,48,0.4)}
   .wp-tag.cooldown{background:var(--bg3);color:var(--mu);border:1px solid var(--border)}
-  .wp-body{flex:1;display:flex;align-items:flex-end;gap:3px;padding:8px 4px;min-height:0;overflow:hidden}
-  .wp-candle{flex:1;position:relative;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%}
-  .wp-candle .wick{width:1px;background:currentColor;opacity:0.7;flex-shrink:0}
-  .wp-candle .body{width:100%;background:currentColor;border-radius:1px;min-height:2px}
-  .wp-candle.up{color:var(--gr)}
-  .wp-candle.down{color:var(--re)}
+  .wp-body{flex:1;position:relative;padding:4px 4px 4px 4px;min-height:0;overflow:hidden}
+  .wp-body canvas{position:absolute;inset:4px;width:calc(100% - 8px);height:calc(100% - 8px);display:block}
 
   /* DXY widget on Terminal */
   .dxy-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px}
@@ -848,41 +844,87 @@ function loadWatchlist(){
       var tag = p.state.toUpperCase().replace('-', ' ');
       var pairName = String(p.coin).replace('USDT','').replace('1000','');
       var priceStr = p.lastPrice != null ? formatPrice(p.lastPrice) : '—';
-      // Build candle bars (mini chart)
-      var candleHtml = '';
-      if(p.candles && p.candles.length){
-        var highs = p.candles.map(function(c){return c.h;});
-        var lows = p.candles.map(function(c){return c.l;});
-        var pMax = Math.max.apply(null, highs);
-        var pMin = Math.min.apply(null, lows);
-        var pR = (pMax - pMin) || 1;
-        candleHtml = p.candles.map(function(c){
-          var up = c.c >= c.o;
-          var bodyTop = Math.max(c.o, c.c);
-          var bodyBot = Math.min(c.o, c.c);
-          var totalH = ((pMax - c.l) / pR) * 100; // distance from top to bottom wick
-          var wickTopH = ((pMax - c.h) / pR) * 100; // distance from top to upper wick
-          var wickTopLen = ((c.h - bodyTop) / pR) * 100; // upper wick height
-          var bodyH = Math.max(2, ((bodyTop - bodyBot) / pR) * 100); // body height
-          var wickBotLen = ((bodyBot - c.l) / pR) * 100; // lower wick height
-          return '<div class="wp-candle ' + (up?'up':'down') + '">'
-            + '<div class="wick" style="height:' + wickTopLen.toFixed(1) + '%"></div>'
-            + '<div class="body" style="height:' + bodyH.toFixed(1) + '%"></div>'
-            + '<div class="wick" style="height:' + wickBotLen.toFixed(1) + '%"></div>'
-            + '</div>';
-        }).join('');
-      }
       panel.innerHTML =
         '<div class="wp-hdr-inner">'
         + '<div class="pair"><span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:' + coinColor(p.coin) + ';color:#fff;font-weight:900;font-size:11px;margin-right:6px">' + coinSymbol(p.coin) + '</span>' + pairName + '</div>'
         + '<div class="r"><span class="price">' + priceStr + '</span><span class="wp-tag ' + p.state + '">' + tag + '</span></div>'
         + '</div>'
-        + '<div class="wp-body">' + candleHtml + '</div>';
+        + '<div class="wp-body"><canvas></canvas></div>';
       grid.appendChild(panel);
+      // Defer canvas draw to next paint so the wp-body has measured dimensions
+      var canvas = panel.querySelector('canvas');
+      requestAnimationFrame(function(){ drawMiniCandles(canvas, p.candles || []); });
     });
+    // Repaint on window resize so panels reflow cleanly
+    if(!_wpResizeBound){
+      _wpResizeBound = true;
+      window.addEventListener('resize', function(){
+        document.querySelectorAll('#k-wp-grid .wp-panel canvas').forEach(function(c){
+          var d = c.__candles; if(d) drawMiniCandles(c, d);
+        });
+      });
+    }
   }).catch(function(e){
     el('k-wp-grid').innerHTML = '<div class="error-banner">' + e.message + '</div>';
   });
+}
+var _wpResizeBound = false;
+
+// Mini-candle renderer for Kingdom watchlist panels.
+// 12 candles drawn proportionally with proper wicks + bodies on a DPR-scaled canvas.
+function drawMiniCandles(canvas, candles){
+  if(!canvas) return;
+  canvas.__candles = candles;
+  var W = canvas.clientWidth, H = canvas.clientHeight;
+  if(!W || !H || !candles.length) return;
+  var dpr = window.devicePixelRatio || 1;
+  canvas.width  = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  var ctx = canvas.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  var highs = candles.map(function(c){ return c.h; });
+  var lows  = candles.map(function(c){ return c.l; });
+  var pMax = Math.max.apply(null, highs);
+  var pMin = Math.min.apply(null, lows);
+  if(pMax === pMin){ pMax += 1; pMin -= 1; }
+  var pad = (pMax - pMin) * 0.06;
+  pMax += pad; pMin -= pad;
+  var pR = pMax - pMin;
+
+  var n = candles.length;
+  var slot = W / n;
+  var bodyW = Math.max(2, slot * 0.65);
+
+  function yOf(p){ return ((pMax - p) / pR) * H; }
+
+  for(var i = 0; i < n; i++){
+    var c = candles[i];
+    var cx = slot * i + slot / 2;
+    var up = c.c >= c.o;
+    var col = up ? '#00e5a0' : '#ff5577';
+    var yHigh = yOf(c.h);
+    var yLow  = yOf(c.l);
+    var yOpen = yOf(c.o);
+    var yClose = yOf(c.c);
+    var bodyTop = Math.min(yOpen, yClose);
+    var bodyBot = Math.max(yOpen, yClose);
+    var bodyH = Math.max(1, bodyBot - bodyTop);
+
+    // Wick
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(cx) + 0.5, yHigh);
+    ctx.lineTo(Math.round(cx) + 0.5, yLow);
+    ctx.stroke();
+
+    // Body
+    ctx.fillStyle = col;
+    ctx.fillRect(Math.round(cx - bodyW / 2), Math.round(bodyTop), Math.round(bodyW), Math.round(bodyH));
+  }
 }
 function formatPrice(p){
   if(p >= 1000) return p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
