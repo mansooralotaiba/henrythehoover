@@ -45,8 +45,8 @@ const SL_ATR_BUFFER = parseFloat(process.env.HENRY_SL_ATR_BUFFER) || 2.0;
 // the NY sweep window — existing trades stay monitored. Set to 'false' on
 // Railway to disable.
 const HENRY_BLOCK_NY_OPEN = (process.env.HENRY_BLOCK_NY_OPEN ?? 'true').toLowerCase() === 'true';
-const NY_OPEN_BLOCK_START_MIN = 13 * 60;        // 13:00 UTC
-const NY_OPEN_BLOCK_END_MIN   = 15 * 60 + 30;   // 15:30 UTC
+const NY_OPEN_BLOCK_START_MIN = 13 * 60;        // 13:00 UTC (1h before US cash open)
+const NY_OPEN_BLOCK_END_MIN   = 14 * 60 + 30;   // 14:30 UTC (30m after US cash open)
 // Pre-NY-open SL→BE protection window (UTC minutes). Auto-move SL to BE for
 // any in-profit trade when we enter the 5min window before NY open. Trades
 // not in profit yet stay at original SL.
@@ -1701,24 +1701,21 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
       };
     }).sort((a, b) => b.totalR - a.totalR);
 
-    // 3. NY-sweep recovery — count from existing data (4h forward check approximated)
-    // For now just summarise: how many SL hits in 13:00-15:30 UTC window
-    const nyWindow = closed.filter(r => {
+    // 3. NY-sweep recovery — count of SL hits inside the active block window
+    //    so the dashboard mirrors whatever the live gate actually blocks.
+    const nyStart = NY_OPEN_BLOCK_START_MIN;
+    const nyEnd = NY_OPEN_BLOCK_END_MIN;
+    const inNyWindow = (r) => {
       if (r.outcome !== 'SL' || !r.outcome_at) return false;
-      const h = new Date(r.outcome_at).getUTCHours();
-      const m = new Date(r.outcome_at).getUTCMinutes();
-      const mins = h * 60 + m;
-      return mins >= 13 * 60 && mins < 15 * 60 + 30;
-    });
-    const otherWindow = closed.filter(r => {
-      if (r.outcome !== 'SL' || !r.outcome_at) return false;
-      const h = new Date(r.outcome_at).getUTCHours();
-      const m = new Date(r.outcome_at).getUTCMinutes();
-      const mins = h * 60 + m;
-      return !(mins >= 13 * 60 && mins < 15 * 60 + 30);
-    });
+      const t = new Date(r.outcome_at);
+      const mins = t.getUTCHours() * 60 + t.getUTCMinutes();
+      return mins >= nyStart && mins < nyEnd;
+    };
+    const nyWindow = closed.filter(inNyWindow);
+    const otherWindow = closed.filter(r => r.outcome === 'SL' && r.outcome_at && !inNyWindow(r));
+    const nyLabel = `${String(Math.floor(nyStart/60)).padStart(2,'0')}:${String(nyStart%60).padStart(2,'0')}-${String(Math.floor(nyEnd/60)).padStart(2,'0')}:${String(nyEnd%60).padStart(2,'0')} UTC`;
     const nyRecovery = {
-      nyWindow: { n: nyWindow.length, label: '13:00-15:30 UTC' },
+      nyWindow: { n: nyWindow.length, label: nyLabel },
       otherWindow: { n: otherWindow.length, label: 'baseline' },
       note: 'Recovery rate ~45-48% from analyze_ny_sweep.py — patches address it.',
     };
@@ -2176,6 +2173,31 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
   } catch (err) {
     console.error('[v2/watchlist]', err.message || err);
     res.status(500).json({ error: err.message || String(err), pairs: [] });
+  }
+});
+
+// ── /api/v2/candles ── Browser chart fetch with server-side broker dispatch ─
+// Browser can't talk to Binance directly when Railway's egress IP is geo-
+// blocked, and the http-proxy-middleware path (/binance-futures) hits the same
+// wall. Route through fetchCandlesServer which has the Binance → WEEX
+// fallback built in. Lightweight schema: {time, open, high, low, close} per
+// candle. Same shape Lightweight Charts expects.
+app.get('/api/v2/candles', requireAuth, async (req, res) => {
+  const coin = String(req.query.coin || '').toUpperCase();
+  const tf = String(req.query.tf || '15m');
+  const broker = String(req.query.broker || 'weex').toLowerCase();
+  const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+  if (!coin) return res.status(400).json({ error: 'missing_coin', candles: [] });
+  try {
+    const raw = await fetchCandlesServer(coin, tf, limit, brokerForPair(coin, broker));
+    const candles = (raw || []).map(c => ({
+      time: c.t > 1e12 ? Math.floor(c.t / 1000) : c.t,
+      open: c.o, high: c.h, low: c.l, close: c.c,
+    }));
+    res.json({ candles, broker: brokerForPair(coin, broker) });
+  } catch (err) {
+    console.error('[v2/candles]', coin, tf, broker, err.message || err);
+    res.status(500).json({ error: err.message || String(err), candles: [] });
   }
 });
 
@@ -4705,9 +4727,25 @@ async function fetchCandlesServer(coin, tf, limit, broker) {
       return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
     }
     if (broker === 'binance') {
-      const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${limit}`);
-      const arr = await r.json();
-      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+      // Binance intermittently 451-geo-blocks Railway egress IPs. If the direct
+      // fetch returns empty or non-array, fall back to WEEX with the same symbol
+      // so the chart and heatmap still render. Same coin format on both
+      // (USDT-perp) so price tracks within ~1 bps.
+      try {
+        const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${limit}`);
+        if (r.ok) {
+          const arr = await r.json();
+          if (Array.isArray(arr) && arr.length) {
+            return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+          }
+          console.warn('[fetchCandlesServer] binance empty/non-array → weex fallback', coin, tf);
+        } else {
+          console.warn('[fetchCandlesServer] binance', r.status, '→ weex fallback', coin, tf);
+        }
+      } catch (e) {
+        console.warn('[fetchCandlesServer] binance threw → weex fallback', coin, e.message);
+      }
+      // Fall through to WEEX path below (same code as broker === 'weex')
     }
     // weex (default) — they changed the API: granularity now takes string
     // suffixes ("15m" instead of "900") and the timestamp is returned in
@@ -6604,16 +6642,18 @@ async function processPair(userId, sub, coin) {
     }
   }
 
-  // NY-open entry block (13:00-15:30 UTC) — skip new signal generation during
+  // NY-open entry block (13:00-14:30 UTC) — skip new signal generation during
   // the NY sweep window. Per analyze_ny_sweep.py (2026-05-30), NY-window
   // entries had elevated SL hit rate; existing trades stay monitored. Toggle
-  // via HENRY_BLOCK_NY_OPEN env var.
+  // via HENRY_BLOCK_NY_OPEN env var. Window narrowed to end 30min after
+  // US cash open (was 15:30 → 14:30) so we don't sit out the first hour
+  // of post-open momentum trades.
   if (HENRY_BLOCK_NY_OPEN) {
     const now = new Date();
     const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
     if (utcMin >= NY_OPEN_BLOCK_START_MIN && utcMin < NY_OPEN_BLOCK_END_MIN) {
       ps.lastStatus = 'ny-open-block';
-      ps.lastVetoReason = `NY-open entry block (13:00-15:30 UTC, sweep window)`;
+      ps.lastVetoReason = `NY-open entry block (13:00-14:30 UTC, sweep window)`;
       // Long cooldown so we don't spam this check every tick — the gate runs
       // at most once every 5 min while in window.
       ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);

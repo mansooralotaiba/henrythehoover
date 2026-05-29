@@ -1720,15 +1720,15 @@ function fetchHlCandles(){
   }).catch(function(){ return []; });
 }
 
-// Binance: existing /binance-futures proxy
+// Binance: route through /api/v2/candles so the server can handle the
+// Binance geo-block by falling back to WEEX under the hood. The legacy
+// /binance-futures proxy returned empty in those windows.
 function fetchBinanceCandles(){
-  var url = '/binance-futures/fapi/v1/klines?symbol=' + tBinanceSymMap(t_pair) + '&interval=' + t_tf + '&limit=200';
-  return fetch(url,{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(data){
-    if(!Array.isArray(data)) return [];
-    return data.map(function(c){
-      var t = parseInt(c[0]);
-      return { time: (t > 1e12 ? Math.floor(t/1000) : t), open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]) };
-    });
+  var url = '/api/v2/candles?coin=' + encodeURIComponent(tBinanceSymMap(t_pair))
+          + '&tf=' + encodeURIComponent(t_tf)
+          + '&broker=binance&limit=200';
+  return fetch(url,{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
+    return Array.isArray(d.candles) ? d.candles : [];
   }).catch(function(){ return []; });
 }
 
