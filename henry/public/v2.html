@@ -135,18 +135,16 @@
   .dxy-bias.neutral .tag{background:rgba(255,170,48,0.18);color:var(--am)}
 
   /* Heatmap card on Terminal */
-  .heatmap-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px}
-  .heatmap-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px}
-  .heatmap-list{max-height:300px;overflow-y:auto}
-  .hm-level{display:flex;align-items:center;gap:10px;padding:5px 8px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px}
-  .hm-level:last-child{border:none}
-  .hm-level .price{flex:1;font-weight:700;color:var(--fg)}
-  .hm-level .label{font-size:9px;padding:1px 5px;border-radius:3px;letter-spacing:0.1em}
-  .hm-level .label.SH{background:rgba(255,85,119,0.15);color:var(--re)}
-  .hm-level .label.SL{background:rgba(0,229,160,0.15);color:var(--gr)}
-  .hm-level .label.EQH{background:rgba(255,85,119,0.25);color:var(--re);font-weight:700}
-  .hm-level .label.EQL{background:rgba(0,229,160,0.25);color:var(--gr);font-weight:700}
-  .hm-level .label.R{background:rgba(255,184,48,0.15);color:var(--am)}
+  .heatmap-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;min-height:0}
+  .heatmap-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .heatmap-card h3 .hm-legend{display:flex;gap:8px;margin-left:auto;font-size:9px;letter-spacing:0.08em}
+  .heatmap-card h3 .hm-legend .lg{display:inline-flex;align-items:center;gap:4px;color:var(--mu);font-weight:600}
+  .heatmap-card h3 .hm-legend .sw{width:10px;height:3px;border-radius:1px;display:inline-block}
+  .heatmap-card h3 .hm-legend .sw.eq{height:8px;border-radius:2px}
+  .hm-wrap{position:relative;width:100%;height:340px;background:#08090d;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .hm-wrap canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .hm-footer{margin-top:8px;font-size:10px;color:var(--mu);font-family:var(--mono);display:flex;justify-content:space-between;letter-spacing:0.06em}
+  .hm-footer .cp{color:var(--cy);font-weight:700}
 
   /* Terminal controls + chart */
   .term-controls{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
@@ -329,8 +327,22 @@
           </div>
         </div>
         <div class="heatmap-card">
-          <h3 id="hm-title">Liquidity Heatmap · BTC 15m</h3>
-          <div class="heatmap-list" id="heatmap-list"><div class="loading">Loading…</div></div>
+          <h3>
+            <span class="dot"></span>
+            <span id="hm-title">Liquidity Heatmap · BTC 15m</span>
+            <span class="hm-legend">
+              <span class="lg"><span class="sw eq" style="background:linear-gradient(90deg,rgba(255,85,119,0.05),rgba(255,85,119,0.85),rgba(255,85,119,0.05))"></span>EQH</span>
+              <span class="lg"><span class="sw eq" style="background:linear-gradient(90deg,rgba(0,229,160,0.05),rgba(0,229,160,0.85),rgba(0,229,160,0.05))"></span>EQL</span>
+              <span class="lg"><span class="sw" style="background:var(--re)"></span>SH</span>
+              <span class="lg"><span class="sw" style="background:var(--gr)"></span>SL</span>
+              <span class="lg"><span class="sw" style="background:var(--am)"></span>R</span>
+            </span>
+          </h3>
+          <div class="hm-wrap"><canvas id="hm-canvas"></canvas></div>
+          <div class="hm-footer">
+            <span>Liquidity levels · last 100 bars</span>
+            <span class="cp" id="hm-cp">—</span>
+          </div>
         </div>
       </div>
     </div>
@@ -576,32 +588,219 @@ function loadDxy(){
 }
 
 // ── Heatmap (Terminal) — follows current pair/tf/broker ─────────────
+var _hmData = null;
 function loadHeatmap(){
   var titleEl = el('hm-title');
   if(titleEl) titleEl.textContent = 'Liquidity Heatmap · ' + String(t_pair).replace('USDT','') + ' ' + t_tf;
   fetch('/api/heatmap?coin=' + encodeURIComponent(t_pair) + '&tf=' + encodeURIComponent(t_tf) + '&broker=' + encodeURIComponent(t_broker),{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
-    var box = el('heatmap-list');
-    if(!d.levels || !d.levels.length){ box.innerHTML = '<div class="loading">No levels available</div>'; return; }
-    box.innerHTML = '';
-    // Show above-price levels (descending) then below-price levels (descending)
-    var above = d.levels.filter(function(l){return l.price > d.cp;}).sort(function(a,b){return a.price-b.price;});
-    var below = d.levels.filter(function(l){return l.price <= d.cp;}).sort(function(a,b){return b.price-a.price;});
-    above.reverse().forEach(function(l){ box.appendChild(hmRow(l)); });
-    // Current price marker
-    var cpRow = document.createElement('div');
-    cpRow.className = 'hm-level';
-    cpRow.style.background = 'rgba(0,212,255,0.08)';
-    cpRow.innerHTML = '<div class="price" style="color:var(--cy)">' + formatPrice(d.cp) + ' ← current</div>';
-    box.appendChild(cpRow);
-    below.forEach(function(l){ box.appendChild(hmRow(l)); });
-  }).catch(function(){ el('heatmap-list').innerHTML = '<div class="error-banner">Heatmap unavailable</div>'; });
+    _hmData = d;
+    var cpEl = el('hm-cp');
+    if(cpEl) cpEl.textContent = (d.cp != null) ? ('$' + formatPrice(d.cp)) : '—';
+    renderHeatmapCanvas();
+  }).catch(function(){
+    _hmData = null;
+    var canvas = el('hm-canvas');
+    if(canvas){ var ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); }
+    var cpEl = el('hm-cp'); if(cpEl) cpEl.textContent = '—';
+  });
 }
-function hmRow(l){
-  var row = document.createElement('div');
-  row.className = 'hm-level';
-  row.innerHTML = '<div class="price">' + formatPrice(l.price) + '</div><span class="label ' + l.label + '">' + l.label + '</span>';
-  return row;
+
+function renderHeatmapCanvas(){
+  var canvas = el('hm-canvas');
+  if(!canvas) return;
+  var wrap = canvas.parentElement;
+  if(!wrap) return;
+  var W = wrap.clientWidth, H = wrap.clientHeight;
+  if(!W || !H) return;
+  var dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  var ctx = canvas.getContext('2d');
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(dpr, dpr);
+  // backdrop
+  ctx.fillStyle = '#08090d';
+  ctx.fillRect(0,0,W,H);
+  if(!_hmData || !_hmData.levels || !_hmData.levels.length || _hmData.cp == null){
+    ctx.fillStyle = '#5a5f7a';
+    ctx.font = '11px JetBrains Mono, Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No levels available', W/2, H/2);
+    return;
+  }
+  var d = _hmData;
+  var cp = d.cp;
+  // Compute a price domain that covers all levels with a little padding
+  var prices = d.levels.map(function(l){return l.price;}).concat([cp]);
+  if(d.pMin != null) prices.push(d.pMin);
+  if(d.pMax != null) prices.push(d.pMax);
+  var pMin = Math.min.apply(null, prices);
+  var pMax = Math.max.apply(null, prices);
+  var pad = (pMax - pMin) * 0.04 || cp * 0.001;
+  pMin -= pad; pMax += pad;
+  var pR = (pMax - pMin) || 1;
+
+  var leftAxis = 64;   // price labels area
+  var rightAxis = 36;  // level label chips
+  var plotL = leftAxis, plotR = W - rightAxis, plotT = 8, plotB = H - 8;
+  var plotW = plotR - plotL, plotH = plotB - plotT;
+
+  function yOf(p){ return plotT + ((pMax - p) / pR) * plotH; }
+
+  // Faint horizontal grid + left axis price labels (5 ticks)
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#5a5f7a';
+  ctx.font = '10px JetBrains Mono, Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  var ticks = 5;
+  for(var i=0;i<=ticks;i++){
+    var p = pMax - (pR * i / ticks);
+    var y = yOf(p);
+    ctx.beginPath();
+    ctx.moveTo(plotL, y);
+    ctx.lineTo(plotR, y);
+    ctx.stroke();
+    ctx.fillText(formatPrice(p), leftAxis - 6, y);
+  }
+
+  // Sort levels: round numbers first (background), then SH/SL, then EQH/EQL on top
+  var ordered = d.levels.slice().sort(function(a,b){
+    var rank = function(l){
+      if(l.label === 'R') return 0;
+      if(l.label === 'SH' || l.label === 'SL') return 1;
+      return 2; // EQH/EQL on top
+    };
+    return rank(a) - rank(b);
+  });
+
+  // Draw each level
+  for(var k=0;k<ordered.length;k++){
+    var l = ordered[k];
+    var y = yOf(l.price);
+    if(y < plotT - 2 || y > plotB + 2) continue;
+    var isEq = (l.label === 'EQH' || l.label === 'EQL');
+    var isRound = (l.label === 'R');
+    var baseColor = (l.label === 'SH' || l.label === 'EQH') ? '255,85,119'
+                  : (l.label === 'SL' || l.label === 'EQL') ? '0,229,160'
+                  : '255,170,48';
+
+    if(isEq){
+      // Glow halo band — thick gradient centered on the line
+      var halo = 14;
+      var grad = ctx.createLinearGradient(plotL, y - halo, plotL, y + halo);
+      grad.addColorStop(0,    'rgba(' + baseColor + ',0)');
+      grad.addColorStop(0.5,  'rgba(' + baseColor + ',0.55)');
+      grad.addColorStop(1,    'rgba(' + baseColor + ',0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(plotL, y - halo, plotW, halo * 2);
+      // Bright core line
+      ctx.strokeStyle = 'rgba(' + baseColor + ',1)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(plotL, y);
+      ctx.lineTo(plotR, y);
+      ctx.stroke();
+    } else if(isRound){
+      // Round number — dashed amber
+      ctx.strokeStyle = 'rgba(' + baseColor + ',0.45)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(plotL, y);
+      ctx.lineTo(plotR, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      // SH / SL — solid thin colored line with subtle halo
+      var halo2 = 4;
+      var grad2 = ctx.createLinearGradient(plotL, y - halo2, plotL, y + halo2);
+      grad2.addColorStop(0,    'rgba(' + baseColor + ',0)');
+      grad2.addColorStop(0.5,  'rgba(' + baseColor + ',0.22)');
+      grad2.addColorStop(1,    'rgba(' + baseColor + ',0)');
+      ctx.fillStyle = grad2;
+      ctx.fillRect(plotL, y - halo2, plotW, halo2 * 2);
+      ctx.strokeStyle = 'rgba(' + baseColor + ',0.95)';
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(plotL, y);
+      ctx.lineTo(plotR, y);
+      ctx.stroke();
+    }
+
+    // Right-side label chip
+    var chipText = l.label;
+    ctx.font = '9px JetBrains Mono, Consolas, monospace';
+    var tw = ctx.measureText(chipText).width;
+    var chipW = tw + 8, chipH = 13;
+    var chipX = plotR + 4, chipY = y - chipH/2;
+    ctx.fillStyle = 'rgba(' + baseColor + ',' + (isEq ? '0.32' : '0.18') + ')';
+    roundRect(ctx, chipX, chipY, chipW, chipH, 3, true, false);
+    ctx.fillStyle = 'rgb(' + baseColor + ')';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(chipText, chipX + 4, y + 0.5);
+  }
+
+  // Current price line — cyan dashed with badge
+  var cy = yOf(cp);
+  if(cy >= plotT && cy <= plotB){
+    ctx.strokeStyle = 'rgba(0,212,255,0.85)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(plotL, cy);
+    ctx.lineTo(plotR, cy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Badge on left axis
+    var bText = formatPrice(cp);
+    ctx.font = 'bold 10px JetBrains Mono, Consolas, monospace';
+    var btw = ctx.measureText(bText).width;
+    var bW = btw + 10, bH = 16;
+    var bX = leftAxis - bW - 2, bY = cy - bH/2;
+    ctx.fillStyle = '#00d4ff';
+    roundRect(ctx, bX, bY, bW, bH, 3, true, false);
+    ctx.fillStyle = '#000';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(bText, bX + 5, cy + 0.5);
+    // Triangle pointer into chart
+    ctx.fillStyle = '#00d4ff';
+    ctx.beginPath();
+    ctx.moveTo(leftAxis - 2, cy);
+    ctx.lineTo(leftAxis + 4, cy - 4);
+    ctx.lineTo(leftAxis + 4, cy + 4);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
+
+function roundRect(ctx, x, y, w, h, r, fill, stroke){
+  if(typeof r === 'undefined') r = 4;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+  if(fill) ctx.fill();
+  if(stroke) ctx.stroke();
+}
+
+window.addEventListener('resize', function(){
+  if(_hmData) renderHeatmapCanvas();
+});
 
 // ── Terminal chart + ANALYSE ───────────────
 var t_broker = 'weex', t_pair = 'BTCUSDT', t_tf = '15m';
