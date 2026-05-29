@@ -1567,6 +1567,421 @@ app.get('/api/admin/correlation-report', requireAdmin, async (_req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// PHASE 1 REDESIGN ENDPOINTS
+// Four additive endpoints serving the new tab-based UI mockup. Existing UI
+// untouched — these run alongside until the v2 cutover.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── /api/admin/stats ── All 6 stat cards from the mockup, computed live.
+// Mirror of analyze_stacked.py + rank_pairs.py + analyze_ny_sweep.py + the
+// trigger/veto/executor sections. Cached 30s so the dashboard can poll
+// without slamming Supabase.
+const _statsCache = { ts: 0, payload: null };
+const STATS_CACHE_MS = 30_000;
+
+app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (_statsCache.payload && now - _statsCache.ts < STATS_CACHE_MS) {
+      return res.json(_statsCache.payload);
+    }
+
+    const adminId = await getAdminUserId();
+    if (!adminId) return res.status(503).json({ error: 'admin user not resolved' });
+
+    const { data: rows, error } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, confidence')
+      .eq('user_id', adminId)
+      .order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const closed = (rows || []).filter(r => ['TP', 'SL', 'BE', 'EXPIRED'].includes(r.outcome));
+    const SUPER_CRYPTO = new Set(['btc', 'largeCap', 'defi', 'meme', 'layer1']);
+
+    function effR(r) {
+      if (r.outcome === 'EXPIRED') return 0;
+      const rr = parseFloat(r.outcome_rr);
+      if (isFinite(rr)) return rr;
+      if (r.outcome === 'SL') return -1;
+      if (r.outcome === 'BE') return 0;
+      return 0;
+    }
+    function intervalsOverlap(a, b) {
+      const aS = new Date(a.created_at).getTime();
+      const aE = a.outcome_at ? new Date(a.outcome_at).getTime() : Date.now();
+      const bS = new Date(b.created_at).getTime();
+      const bE = b.outcome_at ? new Date(b.outcome_at).getTime() : Date.now();
+      return Math.max(aS, bS) < Math.min(aE, bE);
+    }
+
+    // 1. Stacking categories
+    const buckets = {
+      solo: [], cross_cluster_opp_dir: [], cross_cluster_same_dir: [],
+      same_cluster_opp_dir: [], same_cluster_same_dir: [],
+    };
+    const rank = { same_cluster_same_dir: 4, same_cluster_opp_dir: 3, cross_cluster_same_dir: 2, cross_cluster_opp_dir: 1, solo: 0 };
+    for (const s of closed) {
+      const sCluster = getClusterFor(s.pair);
+      let worst = 'solo';
+      for (const o of closed) {
+        if (o.id === s.id) continue;
+        if (!intervalsOverlap(s, o)) continue;
+        const oCluster = getClusterFor(o.pair);
+        if (!SUPER_CRYPTO.has(sCluster) || !SUPER_CRYPTO.has(oCluster)) continue;
+        const sameCluster = sCluster === oCluster;
+        const sameDir = s.direction === o.direction;
+        let cat;
+        if (sameCluster && sameDir) cat = 'same_cluster_same_dir';
+        else if (sameCluster && !sameDir) cat = 'same_cluster_opp_dir';
+        else if (!sameCluster && sameDir) cat = 'cross_cluster_same_dir';
+        else cat = 'cross_cluster_opp_dir';
+        if (rank[cat] > rank[worst]) worst = cat;
+      }
+      buckets[worst].push(s);
+    }
+    const stackingCategories = {};
+    for (const [cat, sigs] of Object.entries(buckets)) {
+      const n = sigs.length;
+      const totalR = sigs.reduce((a, b) => a + effR(b), 0);
+      const tp = sigs.filter(s => s.outcome === 'TP').length;
+      const sl = sigs.filter(s => s.outcome === 'SL').length;
+      const be = sigs.filter(s => s.outcome === 'BE').length;
+      const closedN = tp + sl + be;
+      stackingCategories[cat] = {
+        n, tp, sl, be,
+        winRate: closedN ? +((tp + be * 0.5) / closedN * 100).toFixed(1) : 0,
+        totalR: +totalR.toFixed(2),
+        avgR: n ? +(totalR / n).toFixed(3) : 0,
+      };
+    }
+
+    // 2. Pair rankings (last 30 days)
+    const cutoff30d = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recent = closed.filter(r => new Date(r.created_at).getTime() >= cutoff30d);
+    const byPair = {};
+    for (const s of recent) {
+      const p = s.pair;
+      if (!byPair[p]) byPair[p] = { n: 0, tp: 0, sl: 0, be: 0, totalR: 0, lastTen: [] };
+      byPair[p].n++;
+      byPair[p].totalR += effR(s);
+      if (s.outcome === 'TP') byPair[p].tp++;
+      else if (s.outcome === 'SL') byPair[p].sl++;
+      else if (s.outcome === 'BE') byPair[p].be++;
+    }
+    // Last-10 R per pair
+    for (const pair of Object.keys(byPair)) {
+      const last10 = recent.filter(r => r.pair === pair)
+        .sort((a, b) => new Date(b.outcome_at || b.created_at) - new Date(a.outcome_at || a.created_at))
+        .slice(0, 10);
+      byPair[pair].lastTenR = +last10.reduce((a, b) => a + effR(b), 0).toFixed(2);
+    }
+    const pairRankings = Object.entries(byPair).map(([pair, st]) => {
+      const closedN = st.tp + st.sl + st.be;
+      return {
+        pair, n: st.n,
+        winRate: closedN ? +((st.tp + st.be * 0.5) / closedN * 100).toFixed(1) : 0,
+        totalR: +st.totalR.toFixed(2),
+        lastTenR: st.lastTenR,
+      };
+    }).sort((a, b) => b.totalR - a.totalR);
+
+    // 3. NY-sweep recovery — count from existing data (4h forward check approximated)
+    // For now just summarise: how many SL hits in 13:00-15:30 UTC window
+    const nyWindow = closed.filter(r => {
+      if (r.outcome !== 'SL' || !r.outcome_at) return false;
+      const h = new Date(r.outcome_at).getUTCHours();
+      const m = new Date(r.outcome_at).getUTCMinutes();
+      const mins = h * 60 + m;
+      return mins >= 13 * 60 && mins < 15 * 60 + 30;
+    });
+    const otherWindow = closed.filter(r => {
+      if (r.outcome !== 'SL' || !r.outcome_at) return false;
+      const h = new Date(r.outcome_at).getUTCHours();
+      const m = new Date(r.outcome_at).getUTCMinutes();
+      const mins = h * 60 + m;
+      return !(mins >= 13 * 60 && mins < 15 * 60 + 30);
+    });
+    const nyRecovery = {
+      nyWindow: { n: nyWindow.length, label: '13:00-15:30 UTC' },
+      otherWindow: { n: otherWindow.length, label: 'baseline' },
+      note: 'Recovery rate ~45-48% from analyze_ny_sweep.py — patches address it.',
+    };
+
+    // 4. Trigger performance
+    const byTrigger = {};
+    for (const s of closed) {
+      const t = s.trigger_type || 'unknown';
+      if (!byTrigger[t]) byTrigger[t] = { n: 0, tp: 0, sl: 0, be: 0, totalR: 0 };
+      byTrigger[t].n++;
+      byTrigger[t].totalR += effR(s);
+      if (s.outcome === 'TP') byTrigger[t].tp++;
+      else if (s.outcome === 'SL') byTrigger[t].sl++;
+      else if (s.outcome === 'BE') byTrigger[t].be++;
+    }
+    const triggerPerformance = Object.entries(byTrigger).map(([trigger, st]) => {
+      const closedN = st.tp + st.sl + st.be;
+      return {
+        trigger, n: st.n,
+        winRate: closedN ? +((st.tp + st.be * 0.5) / closedN * 100).toFixed(1) : 0,
+        totalR: +st.totalR.toFixed(2),
+      };
+    }).sort((a, b) => b.totalR - a.totalR);
+
+    // 5. Live executor state
+    const executorState = {
+      activeTrades: weexExecutor ? weexExecutor.snapshot().filter(t => t.state === 'ACTIVE').length : 0,
+      pendingLimits: weexExecutor ? weexExecutor.snapshot().filter(t => t.state === 'PENDING').length : 0,
+      autoTradeEnabled,
+      dryRun: HENRY_DRY_RUN,
+      riskUsd: HENRY_RISK_USD,
+      leverage: HENRY_LEVERAGE,
+      autoscanModel: AUTOSCAN_AI_MODEL,
+      manualModel: AI_MODEL,
+    };
+
+    // 6. Veto report — last 7 days (placeholder until we wire a veto-log table)
+    const vetoReport = {
+      note: 'Veto counts will populate once /api/admin/veto-log is wired (next phase).',
+    };
+
+    const payload = {
+      stackingCategories,
+      pairRankings,
+      nyRecovery,
+      triggerPerformance,
+      executorState,
+      vetoReport,
+      totalClosed: closed.length,
+      generatedAt: new Date().toISOString(),
+    };
+    _statsCache = { ts: now, payload };
+    res.json(payload);
+  } catch (err) {
+    console.error('[stats]', err.message || err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ── /api/performance/me ── Per-user track record. Same shape for everyone;
+// data scoped by req.user.id. Powers the Performance tab.
+app.get('/api/performance/me', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { data: rows, error } = await supaAdmin
+      .from('signals')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, confidence, broker')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const all = rows || [];
+    const closed = all.filter(r => ['TP', 'SL', 'BE', 'EXPIRED'].includes(r.outcome));
+
+    function effR(r) {
+      if (r.outcome === 'EXPIRED') return 0;
+      const rr = parseFloat(r.outcome_rr);
+      if (isFinite(rr)) return rr;
+      if (r.outcome === 'SL') return -1;
+      if (r.outcome === 'BE') return 0;
+      return 0;
+    }
+
+    // Overall stats
+    const tp = closed.filter(r => r.outcome === 'TP').length;
+    const sl = closed.filter(r => r.outcome === 'SL').length;
+    const be = closed.filter(r => r.outcome === 'BE').length;
+    const expired = closed.filter(r => r.outcome === 'EXPIRED').length;
+    const closedN = tp + sl + be;
+    const totalR = closed.reduce((a, b) => a + effR(b), 0);
+    const winRate = closedN ? +((tp + be * 0.5) / closedN * 100).toFixed(1) : 0;
+    const expectancy = closed.length ? +(totalR / closed.length).toFixed(3) : 0;
+
+    // Last week trend
+    const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const lastWeek = closed.filter(r => new Date(r.outcome_at || r.created_at).getTime() >= oneWeekAgo);
+    const lastWeekR = +lastWeek.reduce((a, b) => a + effR(b), 0).toFixed(2);
+
+    // By pair
+    const byPair = {};
+    for (const s of closed) {
+      const p = s.pair;
+      if (!byPair[p]) byPair[p] = { n: 0, tp: 0, sl: 0, be: 0, totalR: 0 };
+      byPair[p].n++;
+      byPair[p].totalR += effR(s);
+      if (s.outcome === 'TP') byPair[p].tp++;
+      else if (s.outcome === 'SL') byPair[p].sl++;
+      else if (s.outcome === 'BE') byPair[p].be++;
+    }
+    const pairBreakdown = Object.entries(byPair).map(([pair, st]) => {
+      const cN = st.tp + st.sl + st.be;
+      return {
+        pair, n: st.n,
+        winRate: cN ? +((st.tp + st.be * 0.5) / cN * 100).toFixed(1) : 0,
+        totalR: +st.totalR.toFixed(2),
+      };
+    }).sort((a, b) => b.totalR - a.totalR);
+
+    // By trigger
+    const byTrig = {};
+    for (const s of closed) {
+      const t = s.trigger_type || 'unknown';
+      if (!byTrig[t]) byTrig[t] = { n: 0, tp: 0, sl: 0, be: 0, totalR: 0 };
+      byTrig[t].n++;
+      byTrig[t].totalR += effR(s);
+      if (s.outcome === 'TP') byTrig[t].tp++;
+      else if (s.outcome === 'SL') byTrig[t].sl++;
+      else if (s.outcome === 'BE') byTrig[t].be++;
+    }
+    const triggerBreakdown = Object.entries(byTrig).map(([trigger, st]) => {
+      const cN = st.tp + st.sl + st.be;
+      return {
+        trigger, n: st.n,
+        winRate: cN ? +((st.tp + st.be * 0.5) / cN * 100).toFixed(1) : 0,
+        totalR: +st.totalR.toFixed(2),
+      };
+    }).sort((a, b) => b.totalR - a.totalR);
+
+    // Best / worst trades
+    const sorted = [...closed].sort((a, b) => effR(b) - effR(a));
+    const bestTrades = sorted.slice(0, 5).map(s => ({
+      pair: s.pair, direction: s.direction, r: +effR(s).toFixed(2),
+      when: s.outcome_at, trigger: s.trigger_type,
+    }));
+    const worstTrades = sorted.slice(-5).reverse().map(s => ({
+      pair: s.pair, direction: s.direction, r: +effR(s).toFixed(2),
+      when: s.outcome_at, trigger: s.trigger_type,
+    }));
+
+    // Cumulative R timeline (for chart)
+    let cum = 0;
+    const cumulativeR = closed
+      .sort((a, b) => new Date(a.outcome_at || a.created_at) - new Date(b.outcome_at || b.created_at))
+      .map(s => {
+        cum += effR(s);
+        return { when: s.outcome_at || s.created_at, r: +cum.toFixed(2) };
+      });
+
+    res.json({
+      user: { id: userId, email: req.user.email },
+      overall: {
+        totalSignals: all.length,
+        closedN: closed.length,
+        tp, sl, be, expired,
+        winRate, totalR: +totalR.toFixed(2), expectancy,
+        lastWeekR,
+      },
+      pairBreakdown,
+      triggerBreakdown,
+      bestTrades,
+      worstTrades,
+      cumulativeR,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[performance/me]', err.message || err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ── /api/news/feed ── RSS news items + calendar events. Wraps existing
+// fetchNewsContext (which already has RSS plumbing and a 5-min cache) and
+// fetchCalendarContext. Returns structured JSON for the redesigned News tab.
+app.get('/api/news/feed', requireAuth, async (_req, res) => {
+  try {
+    // Warm both caches in parallel; ignore their text output, we read the
+    // raw _newsCache and _calendarCache below.
+    await Promise.all([fetchNewsContext().catch(() => ''), fetchCalendarContext().catch(() => '')]);
+    const newsItems = (_newsCache.items || []).slice(0, 20).map(n => ({
+      title: n.title || n.text || '',
+      source: n.source || 'feed',
+      time: n.dt || n.time || null,
+      impact: n.impact || null,
+      url: n.url || null,
+    }));
+    const calendarEvents = (_calendarCache.items || []).filter(e => {
+      const d = e.dt - Date.now();
+      return d > -3600000 && d < 36 * 60 * 60 * 1000; // past 1h to next 36h
+    }).map(e => ({
+      time: e.dt,
+      zone: e.zone || '',
+      name: e.name || '',
+      impact: e.imp || 'low',
+      forecast: e.forecast || null,
+      previous: e.prev || null,
+      actual: e.actual || null,
+    }));
+    res.json({
+      news: newsItems,
+      calendar: calendarEvents,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[news/feed]', err.message || err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ── /api/news/macro-summary ── Daily AI macro narrative. Cached 6h so we make
+// ~4 Anthropic calls per day max. Falls back to a static safe message if
+// Anthropic fails. Used by the "Henry's Daily Macro Take" card on the News
+// tab.
+let _macroSummaryCache = { ts: 0, payload: null };
+const MACRO_SUMMARY_CACHE_MS = 6 * 60 * 60 * 1000;
+
+app.get('/api/news/macro-summary', requireAuth, async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (_macroSummaryCache.payload && now - _macroSummaryCache.ts < MACRO_SUMMARY_CACHE_MS) {
+      return res.json(_macroSummaryCache.payload);
+    }
+
+    // Fetch fresh context inputs
+    const [dxyData, newsCtx, calCtx] = await Promise.all([
+      fetchDXYContextServer().catch(() => null),
+      fetchNewsContext().catch(() => ''),
+      fetchCalendarContext().catch(() => ''),
+    ]);
+
+    const ctxLines = [];
+    if (dxyData) {
+      ctxLines.push(`DXY: ${dxyData.dxy?.toFixed(2)} (${dxyData.dxyChange >= 0 ? '+' : ''}${dxyData.dxyChange?.toFixed(2)}% today)`);
+      if (dxyData.xau) ctxLines.push(`Gold: $${dxyData.xau.toFixed(2)} (${dxyData.xauChange >= 0 ? '+' : ''}${dxyData.xauChange?.toFixed(2)}% today)`);
+    }
+    if (newsCtx) ctxLines.push(newsCtx.slice(0, 1200));
+    if (calCtx) ctxLines.push(calCtx.slice(0, 800));
+
+    const systemPrompt =
+      'You are Henry, an institutional macro analyst writing a brief daily market take for retail traders. ' +
+      'Read the provided DXY/gold prints, news items, and calendar, and output a single short paragraph (60-90 words) capturing: ' +
+      '(1) the dollar / gold setup, (2) one key event in the next 12 hours, (3) one tactical bias for crypto. ' +
+      'Tone: confident, plain English, no emojis, no markdown. Reference real numbers from the inputs. ' +
+      'End with a single sentence on what would invalidate the bias.';
+    const userMessage = 'Today\'s inputs:\n\n' + ctxLines.join('\n\n') + '\n\nWrite the daily take now.';
+
+    let summary;
+    try {
+      summary = await callAnthropicServer(systemPrompt, userMessage, 350);
+    } catch (err) {
+      console.warn('[macro-summary] Anthropic call failed:', err.message);
+      summary = null;
+    }
+
+    const payload = {
+      summary: summary || 'Daily macro take temporarily unavailable. Check DXY and the calendar for major releases — patient setups beat over-trading on quiet sessions.',
+      generatedAt: new Date(now).toISOString(),
+      cachedFor: '6h',
+      source: summary ? 'anthropic' : 'fallback',
+    };
+    _macroSummaryCache = { ts: now, payload };
+    res.json(payload);
+  } catch (err) {
+    console.error('[macro-summary]', err.message || err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Futures proxies ─────────────────────────────────────────────────────────
 const proxyOpts = (target, prefix) => ({
   target,
