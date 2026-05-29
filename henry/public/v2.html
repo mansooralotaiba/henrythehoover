@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Henry · v2</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root {
     --bg:#0a0b0f; --bg2:#13151c; --bg3:#1b1f2a;
@@ -147,6 +148,61 @@
   .hm-level .label.EQL{background:rgba(0,229,160,0.25);color:var(--gr);font-weight:700}
   .hm-level .label.R{background:rgba(255,184,48,0.15);color:var(--am)}
 
+  /* Terminal controls + chart */
+  .term-controls{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
+  .term-controls label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
+  .term-controls select{background:var(--bg3);border:1px solid var(--border-strong);color:var(--fg);padding:6px 10px;border-radius:5px;font-family:var(--mono);font-size:13px;outline:none}
+  .term-controls select:hover{border-color:var(--cy)}
+  .term-controls .tf-row{display:flex;gap:4px}
+  .term-controls .tf-btn{padding:5px 10px;background:var(--bg3);border:1px solid var(--border);color:var(--mu);font-family:var(--mono);font-size:11px;border-radius:4px;cursor:pointer;font-weight:600}
+  .term-controls .tf-btn.on{background:var(--cy);color:#000;border-color:var(--cy)}
+  .term-controls .price-display{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--fg);padding:0 12px;margin-left:auto}
+  .term-controls .analyse-btn{padding:8px 18px;background:linear-gradient(135deg,var(--cy),#00a8ff);color:#000;border:none;border-radius:6px;font-weight:700;font-size:12px;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;box-shadow:0 4px 14px rgba(0,212,255,0.25)}
+  .term-controls .analyse-btn:hover{transform:translateY(-1px)}
+  .term-controls .analyse-btn:disabled{opacity:0.5;cursor:wait}
+
+  .term-main{display:grid;grid-template-columns:1fr 360px;gap:12px;flex:1;min-height:0}
+  .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;min-height:0}
+  .chart-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px}
+  .chart-body{flex:1;background:var(--bg3);border-radius:5px;min-height:400px;position:relative}
+  .term-right{display:flex;flex-direction:column;gap:12px;overflow-y:auto;min-height:0}
+
+  /* AI ANALYSE modal */
+  .modal-overlay{position:fixed;inset:0;background:rgba(8,10,15,0.75);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;z-index:200}
+  .modal-overlay.show{display:flex}
+  .modal{width:min(640px,90vw);max-height:85vh;background:var(--bg2);border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,0.6),0 0 60px rgba(0,212,255,0.15);overflow:hidden;display:flex;flex-direction:column;animation:modalIn 0.2s ease}
+  @keyframes modalIn{from{opacity:0;transform:translateY(20px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+  .modal-hdr{padding:18px 22px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(0,212,255,0.06),transparent)}
+  .modal-hdr .title{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+  .modal-hdr .dir{font-size:11px;padding:4px 10px;border-radius:5px;font-weight:700;letter-spacing:0.1em}
+  .modal-hdr .dir.long{background:var(--gr);color:#000}
+  .modal-hdr .dir.short{background:var(--re);color:#fff}
+  .modal-hdr .dir.notrade{background:var(--mu);color:#000}
+  .modal-hdr .conf{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end}
+  .modal-hdr .conf .l{font-size:10px;color:var(--mu);letter-spacing:0.12em;text-transform:uppercase}
+  .modal-hdr .conf .v{font-size:22px;font-weight:700;color:var(--cy);font-family:var(--mono)}
+  .modal-close{background:none;border:none;color:var(--mu);font-size:24px;cursor:pointer;padding:0 4px;margin-left:8px}
+  .modal-close:hover{color:var(--fg)}
+  .modal-body{padding:20px 22px;overflow-y:auto}
+  .levels-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px}
+  .level-card{padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;text-align:center}
+  .level-card .l{font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:5px}
+  .level-card .v{font-family:var(--mono);font-size:18px;font-weight:700}
+  .level-card.entry .v{color:var(--fg)}
+  .level-card.sl .v{color:var(--re)}
+  .level-card.tp .v{color:var(--gr)}
+  .modal-section{padding:14px 0;border-top:1px solid var(--border)}
+  .modal-section:first-of-type{border-top:none;padding-top:0}
+  .modal-section .label{font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:6px;font-weight:600}
+  .modal-section .text{font-size:13px;line-height:1.55;color:var(--fg)}
+  .modal-section .text strong{color:var(--cy)}
+  .modal-actions{padding:16px 22px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border);background:var(--bg3)}
+  .btn-modal{padding:9px 18px;border:none;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;font-family:var(--sans)}
+  .btn-ghost{background:transparent;border:1px solid var(--border-strong);color:var(--mu)}
+  .btn-ghost:hover{color:var(--fg);border-color:var(--fg)}
+  .modal-loading{padding:60px 22px;text-align:center;color:var(--mu);font-family:var(--mono);font-size:13px}
+  .modal-error{padding:20px 22px;color:var(--re);font-family:var(--mono);font-size:13px}
+
   /* ── News tab ────────────────────────────── */
   .news{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;height:100%}
   .news-feed, .news-calendar{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;overflow-y:auto}
@@ -231,30 +287,51 @@
 
 <div class="main">
 
-  <!-- ── Terminal: macro context + stub for interactive bits ──────────── -->
+  <!-- ── Terminal: full interactive ─────────────────────────────────── -->
   <div class="panel" id="panel-terminal">
-    <div class="dxy-card">
-      <h3><span class="dot"></span>DXY / Gold Macro</h3>
-      <div class="dxy-grid">
-        <div class="dxy-cell"><div class="l">DXY</div><div class="v" id="dxy-val">—</div><div class="ch" id="dxy-ch">—</div></div>
-        <div class="dxy-cell"><div class="l">XAU / Gold</div><div class="v" id="xau-val">—</div><div class="ch" id="xau-ch">—</div></div>
+    <div class="term-controls">
+      <label>Broker</label>
+      <select id="t-broker"><option value="weex">WEEX</option><option value="binance">Binance</option><option value="hyperliquid">Hyperliquid</option></select>
+      <label style="margin-left:8px">Pair</label>
+      <select id="t-pair">
+        <option>BTCUSDT</option><option>ETHUSDT</option><option>SOLUSDT</option>
+        <option>LINKUSDT</option><option>AAVEUSDT</option><option>XAUTUSDT</option>
+        <option>DOGEUSDT</option><option>ADAUSDT</option><option>BNBUSDT</option>
+        <option>SUIUSDT</option><option>AVAXUSDT</option><option>XRPUSDT</option>
+      </select>
+      <label style="margin-left:8px">TF</label>
+      <div class="tf-row" id="t-tf-row">
+        <button class="tf-btn" data-tf="1m">1m</button>
+        <button class="tf-btn" data-tf="5m">5m</button>
+        <button class="tf-btn on" data-tf="15m">15m</button>
+        <button class="tf-btn" data-tf="1h">1h</button>
+        <button class="tf-btn" data-tf="4h">4h</button>
       </div>
-      <div class="dxy-bias" id="dxy-bias">
-        <span class="tag">LOADING</span>
-        <span>Fetching live macro context…</span>
-      </div>
+      <div class="price-display" id="t-price">—</div>
+      <button class="analyse-btn" id="t-analyse" onclick="runAnalyse()">⚡ Analyse</button>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1;min-height:0">
-      <div class="heatmap-card">
-        <h3>Liquidity Heatmap · BTC 15m</h3>
-        <div class="heatmap-list" id="heatmap-list"><div class="loading">Loading…</div></div>
+    <div class="term-main">
+      <div class="chart-card">
+        <h3 id="t-chart-title">BTCUSDT · 15m · WEEX</h3>
+        <div class="chart-body" id="t-chart"></div>
       </div>
-      <div class="terminal-stub" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px">
-        <div class="icon">⚡</div>
-        <h2 style="font-size:18px">Chart + Analyse</h2>
-        <p style="max-width:340px;font-size:13px;line-height:1.5">Interactive chart, ANALYSE flow, and autoscan controls land in Phase 4.</p>
-        <a href="/terminal">Open legacy /terminal</a>
+      <div class="term-right">
+        <div class="dxy-card">
+          <h3><span class="dot"></span>DXY / Gold Macro</h3>
+          <div class="dxy-grid">
+            <div class="dxy-cell"><div class="l">DXY</div><div class="v" id="dxy-val">—</div><div class="ch" id="dxy-ch">—</div></div>
+            <div class="dxy-cell"><div class="l">XAU / Gold</div><div class="v" id="xau-val">—</div><div class="ch" id="xau-ch">—</div></div>
+          </div>
+          <div class="dxy-bias" id="dxy-bias">
+            <span class="tag">LOADING</span>
+            <span>Fetching macro context…</span>
+          </div>
+        </div>
+        <div class="heatmap-card">
+          <h3 id="hm-title">Liquidity Heatmap · BTC 15m</h3>
+          <div class="heatmap-list" id="heatmap-list"><div class="loading">Loading…</div></div>
+        </div>
       </div>
     </div>
   </div>
@@ -336,6 +413,22 @@
     <div class="perf-grid" id="perf-grid"></div>
   </div>
 
+</div>
+
+<!-- AI ANALYSE Modal -->
+<div class="modal-overlay" id="ai-modal" onclick="if(event.target===this)closeAiModal()">
+  <div class="modal">
+    <div class="modal-hdr" id="ai-modal-hdr">
+      <div class="title" id="ai-modal-title">Analysing…</div>
+      <button class="modal-close" onclick="closeAiModal()">×</button>
+    </div>
+    <div class="modal-body" id="ai-modal-body">
+      <div class="modal-loading">⚡ Running Claude analysis · this takes 10-20s on Opus</div>
+    </div>
+    <div class="modal-actions" id="ai-modal-actions">
+      <button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -508,9 +601,142 @@ function hmRow(l){
   return row;
 }
 
+// ── Terminal chart + ANALYSE ───────────────
+var t_broker = 'weex', t_pair = 'BTCUSDT', t_tf = '15m';
+var t_chart = null, t_series = null;
+
+function tBinanceSymMap(p){ return p==='GOLD'?'PAXGUSDT':p; }
+function tWeexSym(p){ var m = {GOLD:'cmt_xautusdt'}; return m[p] || ('cmt_' + p.toLowerCase()); }
+
+function fetchTermCandles(){
+  var url;
+  if(t_broker==='binance'){
+    url = '/binance-futures/fapi/v1/klines?symbol=' + tBinanceSymMap(t_pair) + '&interval=' + t_tf + '&limit=200';
+  } else if(t_broker==='hyperliquid'){
+    // Hyperliquid uses POST /info — skip for v1, fall back to weex
+    url = '/weex-futures/capi/v2/market/candles?symbol=' + tWeexSym(t_pair) + '&granularity=' + t_tf + '&limit=200';
+  } else {
+    url = '/weex-futures/capi/v2/market/candles?symbol=' + tWeexSym(t_pair) + '&granularity=' + t_tf + '&limit=200';
+  }
+  return fetch(url,{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(data){
+    if(!Array.isArray(data)) return [];
+    return data.map(function(c){
+      var t = parseInt(c[0]);
+      return {
+        time: (t > 1e12 ? Math.floor(t/1000) : t),
+        open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]),
+      };
+    });
+  }).catch(function(){ return []; });
+}
+
+function renderChart(){
+  var box = el('t-chart');
+  if(!window.LightweightCharts){ box.innerHTML = '<div class="loading">Chart library failed to load</div>'; return; }
+  if(t_chart){ try{ t_chart.remove(); }catch(e){} t_chart=null; t_series=null; }
+  box.innerHTML = '';
+  t_chart = LightweightCharts.createChart(box,{
+    layout:{ background:{type:'solid',color:'#13151c'}, textColor:'#8b94a3' },
+    grid:{ vertLines:{color:'rgba(255,255,255,0.04)'}, horzLines:{color:'rgba(255,255,255,0.04)'} },
+    crosshair:{ mode:LightweightCharts.CrosshairMode.Normal },
+    timeScale:{ timeVisible:true, secondsVisible:false, borderColor:'rgba(255,255,255,0.08)' },
+    rightPriceScale:{ borderColor:'rgba(255,255,255,0.08)' },
+    width: box.clientWidth, height: box.clientHeight || 400,
+  });
+  t_series = t_chart.addCandlestickSeries({
+    upColor:'#00e5a0', downColor:'#ff5577', borderUpColor:'#00e5a0', borderDownColor:'#ff5577',
+    wickUpColor:'#00e5a0', wickDownColor:'#ff5577',
+  });
+  el('t-chart-title').textContent = t_pair + ' · ' + t_tf + ' · ' + t_broker.toUpperCase();
+  fetchTermCandles().then(function(data){
+    if(!data || !data.length) return;
+    t_series.setData(data);
+    t_chart.timeScale().fitContent();
+    var lastClose = data[data.length-1].close;
+    el('t-price').textContent = formatPrice(lastClose);
+  });
+}
+
+// Wire selectors
+function setupTermControls(){
+  el('t-broker').addEventListener('change', function(e){ t_broker = e.target.value; renderChart(); });
+  el('t-pair').addEventListener('change', function(e){ t_pair = e.target.value; renderChart(); });
+  document.querySelectorAll('#t-tf-row .tf-btn').forEach(function(b){
+    b.addEventListener('click', function(){
+      document.querySelectorAll('#t-tf-row .tf-btn').forEach(function(x){x.classList.remove('on')});
+      b.classList.add('on');
+      t_tf = b.dataset.tf;
+      renderChart();
+    });
+  });
+  // Re-render on window resize (chart is canvas-based)
+  window.addEventListener('resize', function(){ if(t_chart && el('panel-terminal').classList.contains('active')) renderChart(); });
+}
+setupTermControls();
+
+// ANALYSE flow
+function runAnalyse(){
+  var btn = el('t-analyse');
+  btn.disabled = true; btn.textContent = '⏳ Analysing…';
+  openAiModal();
+  el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf;
+  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 10-20s on Opus 4.8</div>';
+  fetch('/api/v2/analyse', {
+    method:'POST', credentials:'same-origin',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify({ coin: t_pair, tf: t_tf, broker: t_broker })
+  }).then(function(r){
+    if(!r.ok) return r.json().then(function(d){ throw new Error(d.error || 'HTTP '+r.status); });
+    return r.json();
+  }).then(function(d){
+    btn.disabled = false; btn.textContent = '⚡ Analyse';
+    renderAnalyseResult(d);
+  }).catch(function(e){
+    btn.disabled = false; btn.textContent = '⚡ Analyse';
+    el('ai-modal-body').innerHTML = '<div class="modal-error">Error: ' + escapeHtml(e.message) + '</div>';
+  });
+}
+
+function renderAnalyseResult(d){
+  var s = d.signal || {};
+  var dir = (s.direction || 'NO TRADE').toUpperCase();
+  var dirClass = dir === 'LONG' ? 'long' : dir === 'SHORT' ? 'short' : 'notrade';
+  var coin = String(t_pair).replace('USDT','');
+  el('ai-modal-title').innerHTML = coin + ' <span class="dir ' + dirClass + '">' + dir + '</span>';
+  var hdr = document.querySelector('#ai-modal-hdr');
+  // Add confidence block if present
+  var existingConf = hdr.querySelector('.conf'); if(existingConf) existingConf.remove();
+  if(s.confidence != null){
+    var c = document.createElement('div'); c.className = 'conf';
+    c.innerHTML = '<div class="l">Confidence</div><div class="v">' + Math.round(s.confidence) + '%</div>';
+    hdr.insertBefore(c, hdr.querySelector('.modal-close'));
+  }
+  var body = el('ai-modal-body');
+  if(dir === 'NO TRADE'){
+    body.innerHTML = '<div class="modal-section"><div class="label">No Trade</div><div class="text">' + escapeHtml(s.reasoning || 'AI suggests no trade right now.') + '</div></div>';
+  } else {
+    body.innerHTML =
+      '<div class="levels-grid">'
+      + '<div class="level-card entry"><div class="l">Entry</div><div class="v">' + formatPrice(s.entry) + '</div></div>'
+      + '<div class="level-card sl"><div class="l">Stop Loss</div><div class="v">' + formatPrice(s.sl) + '</div></div>'
+      + '<div class="level-card tp"><div class="l">Take Profit</div><div class="v">' + formatPrice(s.tp) + '</div></div>'
+      + '</div>'
+      + section('RR · Session · Trigger', '<strong>' + (s.rr || '—') + 'R</strong> · ' + escapeHtml(s.session || '—') + ' · MANUAL')
+      + section('Entry Reason', escapeHtml(s.entry_reason || '—'))
+      + section('Reasoning', escapeHtml(s.reasoning || '—'))
+      + (s.key_risk ? section('Key Risk', escapeHtml(s.key_risk)) : '')
+      + (s.invalidation ? section('Invalidation', escapeHtml(s.invalidation)) : '')
+      + (s.be_note ? section('Breakeven Note', escapeHtml(s.be_note)) : '');
+  }
+}
+function section(label, html){ return '<div class="modal-section"><div class="label">' + escapeHtml(label) + '</div><div class="text">' + html + '</div></div>'; }
+function openAiModal(){ el('ai-modal').classList.add('show'); }
+function closeAiModal(){ el('ai-modal').classList.remove('show'); }
+document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeAiModal(); });
+
 // Lazy-load Terminal data when tab is opened
 var _terminalLoaded = false;
-function loadTerminal(){ if(_terminalLoaded) return; _terminalLoaded = true; loadDxy(); loadHeatmap(); }
+function loadTerminal(){ if(_terminalLoaded) return; _terminalLoaded = true; loadDxy(); loadHeatmap(); setTimeout(renderChart, 100); }
 
 // ── Kingdom ───────────────────────────────
 function loadKingdom(){
