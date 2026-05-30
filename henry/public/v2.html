@@ -1718,12 +1718,11 @@ function _wpStartLive(entry, p){
 }
 
 function _wpUpdatePanel(entry, p){
-  // Header bits
+  // Header bits — always refreshed every poll
   entry.panel.className = 'wp-panel ' + p.state;
   entry.hdrEls.pname.textContent = String(p.coin).replace('USDT','').replace('1000','');
   entry.hdrEls.price.textContent = p.lastPrice != null ? formatPrice(p.lastPrice) : '—';
   var tag = entry.hdrEls.tag;
-  // BE MOVED overrides the in-trade tag when the server flipped SL → BE
   if(p.beAlerted && p.state === 'in-trade'){
     tag.className = 'wp-tag be-moved';
     tag.textContent = 'BE MOVED';
@@ -1731,32 +1730,46 @@ function _wpUpdatePanel(entry, p){
     tag.className = 'wp-tag ' + p.state;
     tag.textContent = p.state.toUpperCase().replace('-', ' ');
   }
-  // Candles — synthesise time if server didn't include t (fallback)
+  // ────────────────────────────────────────────────────────────────────────
+  // Candle data — Terminal-style hybrid model:
+  //   • Initial load OR new bar appeared on server → full setData
+  //   • Otherwise (same last bar) → SKIP setData so the live stream's
+  //     in-progress bar isn't clobbered by the slightly-stale poll response
+  // The live tick stream owns the active bar between polls. This is the
+  // exact same pattern Terminal uses and the reason Terminal feels alive
+  // while Kingdom used to feel static.
+  // ────────────────────────────────────────────────────────────────────────
   if(p.candles && p.candles.length){
     var data = p.candles.map(function(c){
-      // c.t is ms when present; lightweight-charts wants seconds for unix time.
       var t = c.t != null ? Math.floor(c.t / 1000) : null;
       return { time: t, open: c.o, high: c.h, low: c.l, close: c.c };
     }).filter(function(c){ return c.time != null; });
-    // Dedup by time (just in case) and sort ascending
     data.sort(function(a, b){ return a.time - b.time; });
     var seen = {};
     data = data.filter(function(c){ if(seen[c.time]) return false; seen[c.time] = 1; return true; });
     if(data.length){
-      entry.series.setData(data);
-      // Seed the merge tracker with the real last bar so the next live tick
-      // doesn't overwrite the open with a fabricated one.
-      var lb = data[data.length-1];
-      entry.lastBar = { time: lb.time, open: lb.open, high: lb.high, low: lb.low, close: lb.close };
-      // Narrow the visible range to the last ~50 bars so candles get enough
-      // horizontal room to read. The full 80 stays loaded so the user can
-      // scroll left for context. fitContent on 80 made each candle ~4px wide.
-      var n = data.length;
-      var visible = Math.min(50, n);
-      try { entry.chart.timeScale().setVisibleLogicalRange({ from: n - visible, to: n }); } catch(e){}
+      var serverLast = data[data.length-1];
+      var needsSetData = !entry.lastBar || serverLast.time > entry.lastBar.time;
+      if(needsSetData){
+        entry.series.setData(data);
+        entry.lastBar = { time: serverLast.time, open: serverLast.open, high: serverLast.high, low: serverLast.low, close: serverLast.close };
+        var n = data.length;
+        var visible = Math.min(50, n);
+        try { entry.chart.timeScale().setVisibleLogicalRange({ from: n - visible, to: n }); } catch(e){}
+      } else {
+        // Same bar — merge server's high/low/close into our local bar without
+        // touching the open (trustOpen=false). This is the safety net for
+        // when the live stream isn't connected: poll-based REST refresh
+        // keeps the wick growing instead of leaving the chart frozen.
+        // When live IS connected, this is harmless: live ticks come in
+        // between polls and the merge maths agree (server's data trails
+        // by a few seconds, can only equal or widen high/low we already have).
+        var merged = _wpMergeBar(entry, serverLast, false);
+        if(merged){ try { entry.series.update(merged); } catch(e) {} }
+      }
     }
   }
-  // Refresh trade overlay (ENTRY/SL/TP price lines)
+  // Trade overlay (ENTRY/SL/TP) — refresh every poll
   entry.lines.forEach(function(ln){ try{ entry.series.removePriceLine(ln); }catch(e){} });
   entry.lines = [];
   if(p.signal){
@@ -1765,11 +1778,11 @@ function _wpUpdatePanel(entry, p){
     if(isFinite(sl)) entry.lines.push(entry.series.createPriceLine({ price: sl, color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
     if(isFinite(tp)) entry.lines.push(entry.series.createPriceLine({ price: tp, color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
   }
-  // NOTE: per-panel live SSE/WS streams were causing visible candle
-  // glitches when fighting with the 10s setData rebuild. Legacy /kingdom
-  // used 10s polling alone and felt fine — keeping that behaviour. The
-  // _wpStartLive / _wpStopLive helpers stay in place so a future revert
-  // is a one-line change, but we do NOT call _wpStartLive here.
+  // Live tick stream — Terminal pattern. Idempotent: if the stream is
+  // already open for this pair/tf/broker (matching key), _wpStartLive
+  // returns immediately. The stream is what keeps the in-progress candle
+  // refreshing between 10s polls.
+  _wpStartLive(entry, p);
 }
 
 function _wpResizeAll(){
