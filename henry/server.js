@@ -2124,7 +2124,11 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
     const userMessage = `Analyse ${coin} on ${tf} (${pairBroker}) right now.` +
       (notes ? `\n\nUser notes: ${notes}` : '') +
       `\n\nLast close: ${lastClose}. Output the JSON signal only.`;
-    const text = await callAnthropicServer(systemPrompt, userMessage, 2000);
+    // Manual ANALYSE explicitly uses AI_MODEL (typically Sonnet 4.6) — faster
+    // than the autoscan model (Opus 4.8) because the user is actively waiting
+    // on the response. The callAnthropicServer default is AUTOSCAN_AI_MODEL so
+    // autoscan continues to use the stronger model with no change there.
+    const text = await callAnthropicServer(systemPrompt, userMessage, 2000, AI_MODEL);
     const signal = parseSignalJSONServer(text);
     if (!signal) {
       return res.status(500).json({ error: 'JSON parse failed', rawText: text ? text.slice(0, 500) : '' });
@@ -2141,7 +2145,7 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
     res.json({
       signal,
       generatedAt: new Date().toISOString(),
-      model: AUTOSCAN_AI_MODEL,
+      model: AI_MODEL,
       lastClose,
       // Diagnostics — same indicators autoscan computes. Modal surfaces these
       // so the user can see the regime/ADX/ATR/Vol/Div context the AI just saw.
@@ -5983,13 +5987,13 @@ async function _anthropicFetchWithRetry(payload) {
 }
 
 // Direct Anthropic API call (bypasses /api/claude proxy — no cookie auth needed server-side).
-async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800) {
+// Defaults to AUTOSCAN_AI_MODEL (typically Opus 4.8) for autonomous scan
+// decisions. Pass `model` explicitly to use a different model — manual ANALYSE
+// passes AI_MODEL (typically Sonnet 4.6) for speed.
+async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800, model = AUTOSCAN_AI_MODEL) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
-  // Uses AUTOSCAN_AI_MODEL so autonomous decisions can run on a stronger model
-  // (e.g. Opus 4.8) while the browser ANALYSE button stays on Sonnet 4.6 for
-  // speed. Both fall back to AI_MODEL when the override env var isn't set.
   const d = await _anthropicFetchWithRetry({
-    model: AUTOSCAN_AI_MODEL,
+    model,
     max_tokens: maxTokens,
     system: systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
