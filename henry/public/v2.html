@@ -503,6 +503,11 @@
   .whales-sort label{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--mu)}
   .whales-sort select{background:var(--bg3);color:var(--fg);border:1px solid var(--border-strong);border-radius:4px;padding:5px 8px;font-family:var(--mono);font-size:11px;cursor:pointer}
 
+  /* Two-column layout — left rail Treasury + Activity Feed, right rail Whales */
+  .whales-layout{display:grid;grid-template-columns:1fr 1.1fr;gap:14px;align-items:start}
+  .whales-left,.whales-right{display:flex;flex-direction:column;gap:14px;min-width:0}
+  .whales-treasury-card,.whales-feed-card{margin-bottom:0}
+
   /* List view — clickable directory rows */
   #whales-list{padding:0;margin-bottom:14px}
   .whales-list-hdr{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 50px;align-items:center;column-gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--mu)}
@@ -651,6 +656,10 @@
     .stats-grid, .perf-grid { grid-template-columns: 1fr; gap: 12px; }
     .whales-hdr h2 { font-size: 16px; }
     .whales-toolbar { padding: 8px 10px; }
+    /* Stack the two-column layout and put whale directory FIRST so primary
+       feature is at the top on phones. Treasury + feed flow underneath. */
+    .whales-layout { grid-template-columns: 1fr; gap: 12px; }
+    .whales-right { order: -1; }
     .whales-list-hdr, .whales-list-row { grid-template-columns: 1.4fr 1fr 1fr 40px; column-gap: 8px; padding: 10px 12px; }
     .whales-list-hdr span:nth-child(3), .whales-list-row .acct-col { display: none; }
     .whales-list-row .alias { font-size: 12px; }
@@ -984,31 +993,37 @@
       </div>
       <span style="color:var(--mu);font-family:var(--mono);font-size:11px" id="whales-meta">—</span>
     </div>
-    <!-- LIST VIEW (default) — clickable directory of tracked whales -->
+    <!-- LIST VIEW (default) — two columns on desktop: left rail is Treasury + Activity Feed, right rail is the whale directory. -->
     <div id="whales-list-view">
-      <div class="whales-toolbar">
-        <span class="whales-summary" id="whales-pos-meta">Loading…</span>
-        <div class="whales-sort">
-          <label>Sort by</label>
-          <select id="whales-sort">
-            <option value="month" selected>30d PnL</option>
-            <option value="upnl">Live uPnL</option>
-            <option value="acct">Account value</option>
-            <option value="positions">Open positions</option>
-          </select>
+      <div class="whales-layout">
+        <div class="whales-left">
+          <div class="stat-card whales-treasury-card">
+            <div class="stat-card-hdr">
+              <h3>Treasury Watch · On-chain</h3>
+              <span class="src" id="whales-treasury-meta">curated exchange + custody + stable issuer wallets · refresh 10m</span>
+            </div>
+            <div id="whales-treasury"><div class="loading">Loading balances…</div></div>
+          </div>
+          <div class="stat-card whales-feed-card">
+            <div class="stat-card-hdr"><h3>Activity Feed</h3><span class="src">opens, closes, size changes · last 80</span></div>
+            <div id="whales-events"><div class="loading">Loading activity…</div></div>
+          </div>
         </div>
-      </div>
-      <div id="whales-list" class="stat-card"><div class="loading">Loading whales…</div></div>
-      <div class="stat-card whales-treasury-card">
-        <div class="stat-card-hdr">
-          <h3>Treasury Watch · On-chain</h3>
-          <span class="src" id="whales-treasury-meta">curated exchange + stable issuer wallets · refresh 10m</span>
+        <div class="whales-right">
+          <div class="whales-toolbar">
+            <span class="whales-summary" id="whales-pos-meta">Loading…</span>
+            <div class="whales-sort">
+              <label>Sort by</label>
+              <select id="whales-sort">
+                <option value="month" selected>30d PnL</option>
+                <option value="upnl">Live uPnL</option>
+                <option value="acct">Account value</option>
+                <option value="positions">Open positions</option>
+              </select>
+            </div>
+          </div>
+          <div id="whales-list" class="stat-card"><div class="loading">Loading whales…</div></div>
         </div>
-        <div id="whales-treasury"><div class="loading">Loading balances…</div></div>
-      </div>
-      <div class="stat-card whales-feed-card">
-        <div class="stat-card-hdr"><h3>Activity Feed</h3><span class="src">opens, closes, size changes · last 80</span></div>
-        <div id="whales-events"><div class="loading">Loading activity…</div></div>
       </div>
     </div>
 
