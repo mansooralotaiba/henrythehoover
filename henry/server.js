@@ -2040,47 +2040,86 @@ app.get('/api/news/macro-summary', requireAuth, async (_req, res) => {
   }
 });
 
-// ── /api/v2/analyse ── Manual AI analysis. Server-side context build (so v2
-// client stays thin) + Claude call. Returns parsed signal JSON. Subset of the
-// autoscan context — no per-pair scan state since this is one-off manual.
+// ── /api/v2/analyse ── Manual AI analysis. FULL PARITY with the autoscan
+// engine context + gates: same MTF, BTC correlation, funding, OI, news,
+// calendar, DXY, cross-broker, ORDER FLOW / FOOTPRINT, CVD, LIQUIDITY, and
+// regime indicators. Same per-pair TF override (gold → 5m). Same NY-open
+// block window (configurable via HENRY_BLOCK_NY_OPEN). Returns the signal
+// PLUS the diagnostic indicators (regime, ADX, ATR, volRatio, divergence)
+// so the v2 modal can surface what autoscan would see.
 app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
-  const { coin, tf = '15m', broker = 'weex', notes, mode } = req.body || {};
+  const { coin, tf: reqTf = '15m', broker = 'weex', notes, mode, force } = req.body || {};
   if (!coin) return res.status(400).json({ error: 'missing coin' });
   try {
+    // Per-pair TF override — gold/metals run on 5m even when the user picked
+    // 15m. Matches autoscan's tfForCoin routing. ?force=true on the body will
+    // skip the override (user can force-fire a 15m gold analyse if they want).
+    const tf = (force ? reqTf : tfForCoin(coin, reqTf));
+    const tfOverridden = (tf !== reqTf);
     const isMetalOrOilPair = /^(GOLD|XAU|XAG|XTI|XBR)/.test(coin);
     const pairBroker = brokerForPair(coin, broker);
     const useMulti = String(mode || 'single').toLowerCase() === 'multi' && !isMetalOrOilPair;
+
+    // NY-open block (13:00-14:30 UTC) — autoscan skips the window; manual
+    // returns a blocked response unless ?force=true is sent. Existing in-trade
+    // monitoring keeps running regardless (this gate only stops *new* calls).
+    if (HENRY_BLOCK_NY_OPEN && !force) {
+      const utcMin = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      if (utcMin >= NY_OPEN_BLOCK_START_MIN && utcMin < NY_OPEN_BLOCK_END_MIN) {
+        const endH = String(Math.floor(NY_OPEN_BLOCK_END_MIN / 60)).padStart(2, '0');
+        const endM = String(NY_OPEN_BLOCK_END_MIN % 60).padStart(2, '0');
+        return res.status(409).json({
+          blocked: 'ny_open',
+          reason: `NY-open sweep window — autoscan blocks new signals until ${endH}:${endM} UTC. Re-send with force=true to override.`,
+        });
+      }
+    }
+
     const baseCandles = await fetchCandlesServer(coin, tf, 100, pairBroker);
     if (!baseCandles || baseCandles.length < 20) {
       return res.status(503).json({ error: `Insufficient candle data for ${coin} on ${tf} (${pairBroker})` });
     }
     const btcBroker = (pairBroker === 'massive') ? 'binance' : pairBroker;
-    const [mtfH1, mtfH4, btcCandles, funding, oi, newsCtx, calCtx, dxyData, crossBrokerCtx] = await Promise.all([
+    const [mtfH1, mtfH4, btcCandles, funding, oi, trades, newsCtx, calCtx, dxyData, crossBrokerCtx] = await Promise.all([
       fetchCandlesServer(coin, '1h', 50, pairBroker).catch(() => []),
       fetchCandlesServer(coin, '4h', 30, pairBroker).catch(() => []),
       (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
       fetchFundingRateServer(coin).catch(() => null),
       fetchOpenInterestServer(coin).catch(() => null),
+      // ORDER FLOW — recent trades for the footprint + CVD context strings
+      fetchTradesServer(coin, pairBroker).catch(() => []),
       fetchNewsContext().catch(() => ''),
       fetchCalendarContext().catch(() => ''),
       isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
-      // Reuses the existing autoscan cross-broker helper (defined further down
-      // in this file). Only runs when MULTI mode is requested and the pair
-      // isn't massive-only.
       useMulti ? buildCrossBrokerContextServer(coin, tf, pairBroker).catch(() => '') : Promise.resolve(''),
     ]);
-    const atr14 = computeATR(baseCandles, 14);
-    const adx = computeADX(baseCandles, 14);
-    const indicators = { atr14, adx };
+
+    // Full indicator set — matches autoscan exactly so the diagnostic readouts
+    // (regime, ADX, ATR, volRatio, divergence) reflect identical computations.
+    const last = baseCandles[baseCandles.length - 1];
+    const avgVol20 = baseCandles.slice(-21, -1).reduce((s, c) => s + (c.v || 0), 0) / 20;
+    const indicators = {
+      atr14: computeATR(baseCandles, 14),
+      adx:   computeADX(baseCandles, 14),
+      volRatio: avgVol20 > 0 ? (last.v || 0) / avgVol20 : null,
+      divergence: detectDivergence(baseCandles, 30),
+    };
+    const regime = (mtfH4 && mtfH4.length >= 20) ? detectRegimeFromCandles(mtfH4) : null;
+
     const trigger = { type: 'MANUAL', desc: 'User-initiated analysis from v2 Terminal' };
-    let contextStr = buildServerContextString({
-      coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators,
-    });
-    if (newsCtx) contextStr += '\n\n' + newsCtx;
-    if (calCtx) contextStr += '\n\n' + calCtx;
-    if (dxyData) contextStr += buildDXYContextString(dxyData);
-    if (crossBrokerCtx) contextStr += '\n' + crossBrokerCtx;
-    const lastClose = baseCandles[baseCandles.length - 1].c;
+
+    // Derived context strings — order-flow / footprint and CVD are the big
+    // ones manual used to miss. Liquidity context too.
+    const liquidityCtx = buildLiquidityContextServer(baseCandles, tf);
+    const footprintCtx = buildFootprintContextServer(trades, baseCandles);
+    const cvdCtx       = buildCVDContextServer(trades);
+    const dxyCtx       = isMetalOrOilPair && dxyData ? buildDXYContextString(dxyData) : '';
+
+    const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators });
+    const contextStr = [baseCtx, dxyCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
+      .filter(s => s && s.length).join('\n');
+
+    const lastClose = last.c;
     const systemPrompt = buildServerSystemPrompt(coin, tf, pairBroker, contextStr, lastClose);
     const userMessage = `Analyse ${coin} on ${tf} (${pairBroker}) right now.` +
       (notes ? `\n\nUser notes: ${notes}` : '') +
@@ -2104,6 +2143,29 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
       generatedAt: new Date().toISOString(),
       model: AUTOSCAN_AI_MODEL,
       lastClose,
+      // Diagnostics — same indicators autoscan computes. Modal surfaces these
+      // so the user can see the regime/ADX/ATR/Vol/Div context the AI just saw.
+      diagnostics: {
+        tfUsed: tf,
+        tfRequested: reqTf,
+        tfOverridden,
+        regime: regime ? { regime: regime.regime, confidence: regime.confidence } : null,
+        adx:    indicators.adx != null ? +indicators.adx.toFixed(2) : null,
+        atr14:  indicators.atr14 != null ? +indicators.atr14.toFixed(6) : null,
+        volRatio: indicators.volRatio != null ? +indicators.volRatio.toFixed(2) : null,
+        divergence: indicators.divergence || null,
+        contextSources: {
+          mtf: !!(mtfH1.length && mtfH4.length),
+          btcCorrelation: !!btcCandles.length,
+          orderFlow: !!(trades && trades.length),
+          cvd: !!(cvdCtx && cvdCtx.length),
+          liquidity: !!(liquidityCtx && liquidityCtx.length),
+          news: !!newsCtx,
+          calendar: !!calCtx,
+          dxy: !!dxyCtx,
+          crossBroker: !!crossBrokerCtx,
+        },
+      },
     });
   } catch (err) {
     console.error('[v2/analyse]', err.message || err);
