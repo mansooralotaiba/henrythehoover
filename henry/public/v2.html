@@ -1597,9 +1597,11 @@ function _wpUpdatePanel(entry, p){
     if(isFinite(sl)) entry.lines.push(entry.series.createPriceLine({ price: sl, color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
     if(isFinite(tp)) entry.lines.push(entry.series.createPriceLine({ price: tp, color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
   }
-  // Attach the live-tick stream so the last candle reshapes between polls
-  // and the header price ticks without the 10s polling lag.
-  _wpStartLive(entry, p);
+  // NOTE: per-panel live SSE/WS streams were causing visible candle
+  // glitches when fighting with the 10s setData rebuild. Legacy /kingdom
+  // used 10s polling alone and felt fine — keeping that behaviour. The
+  // _wpStartLive / _wpStopLive helpers stay in place so a future revert
+  // is a one-line change, but we do NOT call _wpStartLive here.
 }
 
 function _wpResizeAll(){
@@ -2110,6 +2112,7 @@ var _chartLastBar = null;       // last bar shown — preserves the real open
 function stopChartLiveStream(){
   if(_chartLiveSrc){ try{ _chartLiveSrc.close(); }catch(e){} _chartLiveSrc = null; }
   if(_chartLiveWs ){ try{ _chartLiveWs .close(); }catch(e){} _chartLiveWs  = null; }
+  if(_chartLivePollTimer){ clearInterval(_chartLivePollTimer); _chartLivePollTimer = null; }
   _chartLiveKey = null;
 }
 
@@ -2152,22 +2155,40 @@ function _onLiveTick(barPayload, priceTick, trustOpen){
   }
 }
 
-// Fallback when the direct Binance WebSocket can't connect (some ISPs and
-// corporate networks block public Binance WSS even from residential IPs).
-function _startBinanceServerFallback(key){
-  if(!('EventSource' in window)) return;
+// Fallback when the direct Binance WebSocket can't open. Going through the
+// server SSE didn't help here — server's WS to Binance has the same problem.
+// What DOES work is the same direct Binance REST that loads the initial
+// chart: if the user can fetch klines, they can poll klines. We poll every
+// 3 seconds with limit=2 (current + previous bar) and feed them through the
+// merge helper so the chart ticks.
+var _chartLivePollTimer = null;
+function _startBinanceBrowserPoll(key){
+  if(_chartLivePollTimer){ clearInterval(_chartLivePollTimer); _chartLivePollTimer = null; }
   if(_chartLiveKey !== key) return;
-  try{
-    var url = '/api/live/binance/' + encodeURIComponent(t_pair) + '?tf=' + encodeURIComponent(t_tf);
-    _chartLiveSrc = new EventSource(url, { withCredentials: true });
-    _chartLiveSrc.onmessage = function(ev){
-      try{
-        var d = JSON.parse(ev.data);
-        // Server-side Binance stream uses @aggTrade — open is fabricated
-        _onLiveTick(d.bar, d.price, false);
-      }catch(e){}
-    };
-  }catch(e){ _chartLiveSrc = null; }
+  var sym = tBinanceSymMap(t_pair);
+  var pollOnce = function(){
+    if(_chartLiveKey !== key){
+      if(_chartLivePollTimer){ clearInterval(_chartLivePollTimer); _chartLivePollTimer = null; }
+      return;
+    }
+    fetch('https://fapi.binance.com/fapi/v1/klines?symbol=' + sym + '&interval=' + t_tf + '&limit=2')
+      .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(arr){
+        if(!Array.isArray(arr) || !arr.length) return;
+        var k = arr[arr.length - 1];
+        var bar = {
+          time: Math.floor(+k[0] / 1000),
+          open:  parseFloat(k[1]),
+          high:  parseFloat(k[2]),
+          low:   parseFloat(k[3]),
+          close: parseFloat(k[4]),
+        };
+        _onLiveTick(bar, bar.close, true); // Binance REST kline has the real open
+      })
+      .catch(function(){});
+  };
+  pollOnce(); // immediate first tick
+  _chartLivePollTimer = setInterval(pollOnce, 3000);
 }
 
 function startChartLiveStream(){
@@ -2178,9 +2199,10 @@ function startChartLiveStream(){
   _chartLiveKey = key;
 
   // Binance: try direct browser WebSocket first. If it can't open or no
-  // message arrives within 5s, fall back to server SSE.
+  // message arrives within 5s, fall back to direct browser REST polling
+  // against fapi.binance.com (same path the initial chart fetch uses).
   if(t_broker === 'binance'){
-    if(!('WebSocket' in window)){ _startBinanceServerFallback(key); return; }
+    if(!('WebSocket' in window)){ _startBinanceBrowserPoll(key); return; }
     try{
       var sym = tBinanceSymMap(t_pair).toLowerCase();
       var ws = new WebSocket('wss://fstream.binance.com/ws/' + sym + '@kline_' + t_tf);
@@ -2189,7 +2211,7 @@ function startChartLiveStream(){
         if(!gotMessage && _chartLiveKey === key){
           try{ ws.close(); }catch(e){}
           _chartLiveWs = null;
-          _startBinanceServerFallback(key);
+          _startBinanceBrowserPoll(key);
         }
       }, 5000);
       ws.onmessage = function(ev){
@@ -2206,7 +2228,7 @@ function startChartLiveStream(){
         clearTimeout(fallbackTimer);
         if(_chartLiveKey === key && !gotMessage){
           _chartLiveWs = null;
-          _startBinanceServerFallback(key);
+          _startBinanceBrowserPoll(key);
         }
       };
       ws.onclose = function(){
@@ -2214,7 +2236,7 @@ function startChartLiveStream(){
         if(_chartLiveKey === key && gotMessage) setTimeout(startChartLiveStream, 5000);
       };
       _chartLiveWs = ws;
-    }catch(e){ _chartLiveWs = null; _startBinanceServerFallback(key); }
+    }catch(e){ _chartLiveWs = null; _startBinanceBrowserPoll(key); }
     return;
   }
 
