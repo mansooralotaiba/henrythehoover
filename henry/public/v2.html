@@ -2650,7 +2650,8 @@ function drawActiveSignalOnChart(){
   _activeChartLines.push(t_series.createPriceLine({ price: sig.entry, color: '#9aa0a6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'ENTRY' }));
   _activeChartLines.push(t_series.createPriceLine({ price: sig.sl,    color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
   _activeChartLines.push(t_series.createPriceLine({ price: sig.tp,    color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
-  if(sig.state === 'in-trade'){
+  // BE line only after the BE-move trigger fired (matches autoscan flow)
+  if(sig.beAlerted){
     _activeChartLines.push(t_series.createPriceLine({ price: sig.entry, color: '#ffaa30', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: false, title: 'BE' }));
   }
 }
@@ -2669,11 +2670,13 @@ function renderActiveSignalBar(){
   tag.textContent = states[sig.state] || sig.state.toUpperCase();
   var coin = String(sig.pair).replace('USDT','').replace('1000','');
   var arrow = sig.direction === 'LONG' ? '▲' : '▼';
+  var beTag = sig.beAlerted ? ' <span style="color:var(--am);font-weight:700">⚑ BE</span>' : '';
   txt.innerHTML = arrow + ' ' + sig.direction + ' ' + coin
     + ' · Entry <strong>' + formatPrice(sig.entry) + '</strong>'
     + ' · SL <strong style="color:var(--re)">' + formatPrice(sig.sl) + '</strong>'
     + ' · TP <strong style="color:var(--gr)">' + formatPrice(sig.tp) + '</strong>'
-    + ' · <strong>' + sig.rr.toFixed(2) + 'R</strong>';
+    + ' · <strong>' + sig.rr.toFixed(2) + 'R</strong>'
+    + beTag;
   // Age label
   var mins = Math.floor((Date.now() - sig.placedAt) / 60000);
   var ageStr = mins < 1 ? 'just now' : mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ' + (mins%60) + 'm ago';
@@ -2699,6 +2702,7 @@ function evalActiveSignal(){
     persistActiveChartSignal();
     _toast('⌛ EXPIRED', 'Signal never filled — closing as EXPIRED', 'info');
     _alertBeep(660, 660);
+    _nativeNotify('⌛ EXPIRED · ' + String(sig.pair).replace('USDT',''), sig.direction + ' never filled', 'henry-exp-' + sig.id);
     if(sig.id){
       fetch('/api/signals/' + sig.id + '/outcome', {
         method: 'PATCH', credentials: 'same-origin',
@@ -2719,16 +2723,36 @@ function evalActiveSignal(){
     var bars = d && d.candles;
     if(!Array.isArray(bars) || !bars.length) return;
     var entry = sig.entry, sl = sig.sl, tp = sig.tp;
+    var coinShort = String(sig.pair).replace('USDT','').replace('1000','');
     if(sig.state === 'waiting'){
       var entered = bars.some(function(c){ return c.low <= entry && c.high >= entry; });
       if(entered){
         sig.state = 'in-trade';
         persistActiveChartSignal();
-        _toast('▶ ENTRY HIT', String(sig.pair).replace('USDT','') + ' ' + sig.direction + ' active', 'entry');
+        _toast('▶ ENTRY HIT', coinShort + ' ' + sig.direction + ' active', 'entry');
         _alertBeep(880, 1100);
+        _nativeNotify('▶ ENTRY HIT · ' + coinShort, sig.direction + ' active @ ' + formatPrice(entry), 'henry-entry-' + sig.id);
         drawActiveSignalOnChart(); renderActiveSignalBar();
       }
     } else if(sig.state === 'in-trade'){
+      // BE-move trigger — when price has progressed halfway from entry to TP,
+      // alert the user to move SL to BE on their broker. One-shot per signal.
+      if(!sig.beAlerted){
+        var beThreshold = sig.direction === 'LONG'
+          ? entry + 0.5 * (tp - entry)
+          : entry - 0.5 * (entry - tp);
+        var beHit = sig.direction === 'LONG'
+          ? bars.some(function(c){ return c.high >= beThreshold; })
+          : bars.some(function(c){ return c.low  <= beThreshold; });
+        if(beHit){
+          sig.beAlerted = true;
+          persistActiveChartSignal();
+          _toast('⚑ MOVE SL → BE', coinShort + ' at +0.5R — move SL to breakeven on your broker', 'be');
+          _alertBeep(880, 880);
+          _nativeNotify('⚑ MOVE SL → BE · ' + coinShort, sig.direction + ' at +0.5R — move SL to ' + formatPrice(entry), 'henry-be-' + sig.id);
+          renderActiveSignalBar();
+        }
+      }
       var slHit, tpHit;
       if(sig.direction === 'LONG'){
         slHit = bars.some(function(c){ return c.low <= sl; });
@@ -2745,6 +2769,16 @@ function evalActiveSignal(){
   }).catch(function(){});
 }
 
+// Native browser notification (Notification API) — fires when the tab is
+// hidden so alerts reach the user even when v2 isn't the active tab.
+// Skips when the tab is visible (the on-page toast is enough). Silent when
+// permission wasn't granted at /api/me time via setupPushNotifications.
+function _nativeNotify(title, body, tag){
+  if(!('Notification' in window) || Notification.permission !== 'granted') return;
+  if(document.visibilityState === 'visible') return;
+  try{ new Notification(title, { body: body, tag: tag || 'henry-signal', icon: '/manifest.json' }); }catch(e){}
+}
+
 function closeChartSignal(outcome, rValue){
   var sig = _activeChartSignal;
   if(!sig) return;
@@ -2756,9 +2790,11 @@ function closeChartSignal(outcome, rValue){
   if(outcome === 'TP'){
     _toast('✓ TP HIT', coin + ' ' + sig.direction + ' closed +' + rValue.toFixed(2) + 'R', 'entry');
     _alertBeep(1100, 1320);
+    _nativeNotify('✓ TP HIT · ' + coin, sig.direction + ' closed +' + rValue.toFixed(2) + 'R', 'henry-tp-' + sig.id);
   } else {
     _toast('✗ SL HIT', coin + ' ' + sig.direction + ' closed -1.00R', 'signal');
     _alertBeep(660, 440);
+    _nativeNotify('✗ SL HIT · ' + coin, sig.direction + ' closed -1.00R', 'henry-sl-' + sig.id);
   }
   if(sig.id){
     fetch('/api/signals/' + sig.id + '/outcome', {
