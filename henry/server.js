@@ -3993,6 +3993,11 @@ function circuitBreakerStatus(sub, coin) {
 // ('massive'), so it's hard-routed regardless of user's broker choice.
 function brokerForPair(coin, defaultBroker) {
   if (coin === 'GOLD' || coin === 'XAUUSD') return 'massive';
+  // XAUTUSDT is listed on both WEEX and Binance Futures, but BF trades at
+  // a persistent $1-2 discount vs spot/WEEX due to thin volume + basis.
+  // User wants XAUT prices to match WEEX UI, so pin it regardless of
+  // whichever broker Kingdom or the user is otherwise set to.
+  if (coin === 'XAUTUSDT') return 'weex';
   return defaultBroker;
 }
 
