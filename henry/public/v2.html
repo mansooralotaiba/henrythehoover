@@ -1431,9 +1431,6 @@ function _wpCreatePanel(p, grid){
   };
 }
 
-// Stop the live-tick stream attached to a Kingdom watchlist panel. Called
-// when the panel is removed (coin left watchlist) or when broker/tf change
-// so we don't leak EventSources / WebSockets across panel rebuilds.
 function _wpStopLive(entry){
   if(!entry || !entry.live) return;
   if(entry.live.src){ try{ entry.live.src.close(); }catch(e){} entry.live.src = null; }
@@ -1441,9 +1438,51 @@ function _wpStopLive(entry){
   entry.live.key = null;
 }
 
-// Start the live-tick stream for a panel. Mirrors the Terminal main chart
-// strategy: Binance gets a direct browser WebSocket (Railway's IP is
-// geo-blocked); WEEX/HL/Massive use the server SSE /api/live/:broker/:symbol.
+// Per-panel merge — preserves the panel's last bar open so server-side
+// fabricated opens (WEEX poll, Polygon snapshot) don't overwrite it.
+function _wpMergeBar(entry, incoming, trustOpen){
+  if(!entry || !incoming || incoming.time == null) return null;
+  var lb = entry.lastBar;
+  if(!lb || incoming.time > lb.time){
+    var nb = { time: incoming.time, open: incoming.open, high: incoming.high, low: incoming.low, close: incoming.close };
+    entry.lastBar = nb;
+    return nb;
+  }
+  if(incoming.time < lb.time) return null;
+  var inHigh = incoming.high != null ? incoming.high : incoming.close;
+  var inLow  = incoming.low  != null ? incoming.low  : incoming.close;
+  var merged = {
+    time:  lb.time,
+    open:  trustOpen ? incoming.open : lb.open,
+    high:  Math.max(lb.high, inHigh),
+    low:   Math.min(lb.low,  inLow),
+    close: incoming.close,
+  };
+  lb.high = merged.high; lb.low = merged.low; lb.close = merged.close;
+  if(trustOpen) lb.open = merged.open;
+  return merged;
+}
+
+function _wpStartBinanceServerFallback(entry, p, key){
+  if(!('EventSource' in window)) return;
+  if(!entry.live || entry.live.key !== key) return;
+  try{
+    var url = '/api/live/binance/' + encodeURIComponent(p.coin) + '?tf=' + encodeURIComponent(p.tf);
+    var src = new EventSource(url, { withCredentials: true });
+    src.onmessage = function(ev){
+      try{
+        var d = JSON.parse(ev.data);
+        var bar = _wpMergeBar(entry, d.bar, false);
+        if(bar){ try{ entry.series.update(bar); }catch(e){} }
+        if(d.price != null && entry.hdrEls && entry.hdrEls.price){
+          entry.hdrEls.price.textContent = formatPrice(d.price);
+        }
+      }catch(e){}
+    };
+    entry.live.src = src;
+  }catch(e){}
+}
+
 function _wpStartLive(entry, p){
   if(!entry || !entry.series) return;
   var pairBroker = p.broker || 'weex';
@@ -1451,34 +1490,48 @@ function _wpStartLive(entry, p){
   if(entry.live && entry.live.key === key && (entry.live.src || entry.live.ws)) return;
   _wpStopLive(entry);
   entry.live.key = key;
-  var onTick = function(bar, price){
-    if(bar && bar.time != null){
-      try{
-        entry.series.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
-      }catch(e){}
-    }
+  var onTick = function(bar, price, trustOpen){
+    var merged = _wpMergeBar(entry, bar, !!trustOpen);
+    if(merged){ try{ entry.series.update(merged); }catch(e){} }
     if(price != null && entry.hdrEls && entry.hdrEls.price){
       entry.hdrEls.price.textContent = formatPrice(price);
     }
   };
   if(pairBroker === 'binance'){
-    if(!('WebSocket' in window)) return;
+    if(!('WebSocket' in window)){ _wpStartBinanceServerFallback(entry, p, key); return; }
     try{
       var sym = String(p.coin === 'GOLD' ? 'PAXGUSDT' : p.coin).toLowerCase();
       var ws = new WebSocket('wss://fstream.binance.com/ws/' + sym + '@kline_' + p.tf);
+      var gotMessage = false;
+      var fallbackTimer = setTimeout(function(){
+        if(!gotMessage && entry.live && entry.live.key === key){
+          try{ ws.close(); }catch(e){}
+          entry.live.ws = null;
+          _wpStartBinanceServerFallback(entry, p, key);
+        }
+      }, 5000);
       ws.onmessage = function(ev){
+        gotMessage = true;
+        clearTimeout(fallbackTimer);
         try{
           var msg = JSON.parse(ev.data);
           var k = msg.k; if(!k) return;
-          onTick({ time: Math.floor(k.t / 1000), open: +k.o, high: +k.h, low: +k.l, close: +k.c }, +k.c);
+          onTick({ time: Math.floor(k.t / 1000), open: +k.o, high: +k.h, low: +k.l, close: +k.c }, +k.c, true);
         }catch(e){}
       };
+      ws.onerror = function(){
+        clearTimeout(fallbackTimer);
+        if(entry.live && entry.live.key === key && !gotMessage){
+          entry.live.ws = null;
+          _wpStartBinanceServerFallback(entry, p, key);
+        }
+      };
       ws.onclose = function(){
-        // Reconnect if panel still exists with same key
-        if(entry.live && entry.live.key === key) setTimeout(function(){ _wpStartLive(entry, p); }, 5000);
+        clearTimeout(fallbackTimer);
+        if(entry.live && entry.live.key === key && gotMessage) setTimeout(function(){ _wpStartLive(entry, p); }, 5000);
       };
       entry.live.ws = ws;
-    }catch(e){}
+    }catch(e){ _wpStartBinanceServerFallback(entry, p, key); }
     return;
   }
   if(!('EventSource' in window)) return;
@@ -1489,7 +1542,7 @@ function _wpStartLive(entry, p){
     src.onmessage = function(ev){
       try{
         var d = JSON.parse(ev.data);
-        onTick(d.bar, d.price);
+        onTick(d.bar, d.price, false);
       }catch(e){}
     };
     entry.live.src = src;
@@ -1523,6 +1576,10 @@ function _wpUpdatePanel(entry, p){
     data = data.filter(function(c){ if(seen[c.time]) return false; seen[c.time] = 1; return true; });
     if(data.length){
       entry.series.setData(data);
+      // Seed the merge tracker with the real last bar so the next live tick
+      // doesn't overwrite the open with a fabricated one.
+      var lb = data[data.length-1];
+      entry.lastBar = { time: lb.time, open: lb.open, high: lb.high, low: lb.low, close: lb.close };
       // Narrow the visible range to the last ~50 bars so candles get enough
       // horizontal room to read. The full 80 stays loaded so the user can
       // scroll left for context. fitContent on 80 made each candle ~4px wide.
@@ -2042,9 +2099,13 @@ function fetchTermCandles(){
 // browser's residential IP even when Railway is geo-blocked). The key tracks
 // broker:pair:tf so a re-render with the same selection doesn't churn the
 // connection; only an actual selector change tears it down.
-var _chartLiveSrc = null;     // EventSource handle
-var _chartLiveWs  = null;     // WebSocket handle
-var _chartLiveKey = null;     // 'broker:pair:tf'
+var _chartLiveSrc = null;       // EventSource handle
+var _chartLiveWs  = null;       // WebSocket handle
+var _chartLiveKey = null;       // 'broker:pair:tf'
+var _chartLastBar = null;       // last bar shown — preserves the real open
+                                // when server SSE sources fabricate the open
+                                // from the current price (WEEX ticker poll,
+                                // Polygon snapshot)
 
 function stopChartLiveStream(){
   if(_chartLiveSrc){ try{ _chartLiveSrc.close(); }catch(e){} _chartLiveSrc = null; }
@@ -2052,22 +2113,61 @@ function stopChartLiveStream(){
   _chartLiveKey = null;
 }
 
-function _onLiveTick(barPayload, priceTick){
-  if(t_series && barPayload && barPayload.time != null){
-    try{
-      t_series.update({
-        time:  barPayload.time,
-        open:  barPayload.open,
-        high:  barPayload.high,
-        low:   barPayload.low,
-        close: barPayload.close,
-      });
-    }catch(e){}
+// Merge an incoming live tick with the chart's last known bar. Lets us
+// preserve the real bar open when the source doesn't carry it (everywhere
+// except Binance @kline). `trustOpen=true` means the source has the true
+// open from the exchange — overwrite. `trustOpen=false` means keep our open.
+function _mergeLiveBar(incoming, trustOpen){
+  if(!incoming || incoming.time == null) return null;
+  if(!_chartLastBar || incoming.time > _chartLastBar.time){
+    var nb = { time: incoming.time, open: incoming.open, high: incoming.high, low: incoming.low, close: incoming.close };
+    _chartLastBar = nb;
+    return nb;
+  }
+  if(incoming.time < _chartLastBar.time) return null; // stale, ignore
+  var inHigh = incoming.high != null ? incoming.high : incoming.close;
+  var inLow  = incoming.low  != null ? incoming.low  : incoming.close;
+  var merged = {
+    time:  _chartLastBar.time,
+    open:  trustOpen ? incoming.open : _chartLastBar.open,
+    high:  Math.max(_chartLastBar.high, inHigh),
+    low:   Math.min(_chartLastBar.low,  inLow),
+    close: incoming.close,
+  };
+  _chartLastBar.high  = merged.high;
+  _chartLastBar.low   = merged.low;
+  _chartLastBar.close = merged.close;
+  if(trustOpen) _chartLastBar.open = merged.open;
+  return merged;
+}
+
+function _onLiveTick(barPayload, priceTick, trustOpen){
+  if(t_series && barPayload){
+    var bar = _mergeLiveBar(barPayload, !!trustOpen);
+    if(bar){ try{ t_series.update(bar); }catch(e){} }
   }
   if(priceTick != null){
     var p = el('t-price');
     if(p) p.textContent = formatPrice(priceTick);
   }
+}
+
+// Fallback when the direct Binance WebSocket can't connect (some ISPs and
+// corporate networks block public Binance WSS even from residential IPs).
+function _startBinanceServerFallback(key){
+  if(!('EventSource' in window)) return;
+  if(_chartLiveKey !== key) return;
+  try{
+    var url = '/api/live/binance/' + encodeURIComponent(t_pair) + '?tf=' + encodeURIComponent(t_tf);
+    _chartLiveSrc = new EventSource(url, { withCredentials: true });
+    _chartLiveSrc.onmessage = function(ev){
+      try{
+        var d = JSON.parse(ev.data);
+        // Server-side Binance stream uses @aggTrade — open is fabricated
+        _onLiveTick(d.bar, d.price, false);
+      }catch(e){}
+    };
+  }catch(e){ _chartLiveSrc = null; }
 }
 
 function startChartLiveStream(){
@@ -2077,31 +2177,48 @@ function startChartLiveStream(){
   if(!t_chart || !t_series) return;
   _chartLiveKey = key;
 
-  // Binance: direct browser WebSocket to fstream.binance.com — sub-second
-  // updates without the server hop, and works even when Railway's egress IP
-  // is geo-blocked by Binance REST.
+  // Binance: try direct browser WebSocket first. If it can't open or no
+  // message arrives within 5s, fall back to server SSE.
   if(t_broker === 'binance'){
-    if(!('WebSocket' in window)) return;
+    if(!('WebSocket' in window)){ _startBinanceServerFallback(key); return; }
     try{
       var sym = tBinanceSymMap(t_pair).toLowerCase();
-      _chartLiveWs = new WebSocket('wss://fstream.binance.com/ws/' + sym + '@kline_' + t_tf);
-      _chartLiveWs.onmessage = function(ev){
+      var ws = new WebSocket('wss://fstream.binance.com/ws/' + sym + '@kline_' + t_tf);
+      var gotMessage = false;
+      var fallbackTimer = setTimeout(function(){
+        if(!gotMessage && _chartLiveKey === key){
+          try{ ws.close(); }catch(e){}
+          _chartLiveWs = null;
+          _startBinanceServerFallback(key);
+        }
+      }, 5000);
+      ws.onmessage = function(ev){
+        gotMessage = true;
+        clearTimeout(fallbackTimer);
         try{
           var msg = JSON.parse(ev.data);
           var k = msg.k; if(!k) return;
           var bar = { time: Math.floor(k.t / 1000), open: parseFloat(k.o), high: parseFloat(k.h), low: parseFloat(k.l), close: parseFloat(k.c) };
-          _onLiveTick(bar, bar.close);
+          _onLiveTick(bar, bar.close, true); // Binance @kline carries the real open
         }catch(e){}
       };
-      _chartLiveWs.onclose = function(){
-        // Reconnect if user is still on this chart
-        if(_chartLiveKey === key) setTimeout(startChartLiveStream, 5000);
+      ws.onerror = function(){
+        clearTimeout(fallbackTimer);
+        if(_chartLiveKey === key && !gotMessage){
+          _chartLiveWs = null;
+          _startBinanceServerFallback(key);
+        }
       };
-    }catch(e){ _chartLiveWs = null; }
+      ws.onclose = function(){
+        clearTimeout(fallbackTimer);
+        if(_chartLiveKey === key && gotMessage) setTimeout(startChartLiveStream, 5000);
+      };
+      _chartLiveWs = ws;
+    }catch(e){ _chartLiveWs = null; _startBinanceServerFallback(key); }
     return;
   }
 
-  // WEEX / Hyperliquid / Massive — use the server SSE stream.
+  // WEEX / Hyperliquid / Massive — server SSE.
   if(!('EventSource' in window)) return;
   var ssym = (t_broker === 'massive') ? 'GOLD' : t_pair;
   var url = '/api/live/' + encodeURIComponent(t_broker) + '/' + encodeURIComponent(ssym) + '?tf=' + encodeURIComponent(t_tf);
@@ -2110,10 +2227,10 @@ function startChartLiveStream(){
     _chartLiveSrc.onmessage = function(ev){
       try{
         var d = JSON.parse(ev.data);
-        _onLiveTick(d.bar, d.price);
+        // Server fabricates open from current price → don't trust it
+        _onLiveTick(d.bar, d.price, false);
       }catch(e){}
     };
-    // onerror: EventSource auto-reconnects; nothing to do
   }catch(e){ _chartLiveSrc = null; }
 }
 
@@ -2147,8 +2264,11 @@ function renderChart(){
     var n = data.length;
     var visible = Math.min(80, n);
     t_chart.timeScale().setVisibleLogicalRange({ from: n - visible, to: n });
-    var lastClose = data[data.length-1].close;
-    el('t-price').textContent = formatPrice(lastClose);
+    var lastBar = data[data.length-1];
+    el('t-price').textContent = formatPrice(lastBar.close);
+    // Seed the merge tracker with the real last bar so server fabricated opens
+    // don't overwrite it on the first live tick.
+    _chartLastBar = { time: lastBar.time, open: lastBar.open, high: lastBar.high, low: lastBar.low, close: lastBar.close };
     // Re-draw active manual-signal lines when chart is on the signal's pair
     if(typeof drawActiveSignalOnChart === 'function') drawActiveSignalOnChart();
     // Start the live tick stream so new bars update in-place without page reload
