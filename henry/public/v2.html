@@ -849,7 +849,7 @@
       <button class="modal-close" onclick="closeAiModal()">×</button>
     </div>
     <div class="modal-body" id="ai-modal-body">
-      <div class="modal-loading">⚡ Running Claude analysis · this takes 10-20s on Opus</div>
+      <div class="modal-loading">⚡ Running Claude analysis · this takes 8-15s on Sonnet</div>
     </div>
     <div class="modal-actions" id="ai-modal-actions">
       <button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>
@@ -2293,7 +2293,7 @@ function runAnalyse(force){
   window._lastManualSignal = null;
   var modeLabel = _t_multi ? ' · MULTI-BROKER' : '';
   el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf + modeLabel + (force ? ' · FORCED' : '');
-  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 10-20s on Opus 4.8' + (_t_multi ? ' · cross-venue compare' : '') + '</div>';
+  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 8-15s on Sonnet 4.6' + (_t_multi ? ' · cross-venue compare' : '') + '</div>';
   el('ai-modal-actions').innerHTML = '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
   fetch('/api/v2/analyse', {
     method:'POST', credentials:'same-origin',
