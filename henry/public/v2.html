@@ -1511,17 +1511,105 @@ var _hmData = null;
 function loadHeatmap(){
   var titleEl = el('hm-title');
   if(titleEl) titleEl.textContent = 'Liquidity Heatmap · ' + String(t_pair).replace('USDT','') + ' ' + t_tf;
+  // For Binance broker, compute the heatmap client-side from a direct
+  // Binance fetch so the levels reflect real Binance data instead of the
+  // server-side WEEX fallback (which fires when Railway is geo-blocked).
+  var paintFromHmData = function(){
+    var cpEl = el('hm-cp');
+    if(cpEl) cpEl.textContent = (_hmData && _hmData.cp != null) ? ('$' + formatPrice(_hmData.cp)) : '—';
+    renderHeatmapCanvas();
+  };
+  if(t_broker === 'binance'){
+    var sym = tBinanceSymMap(t_pair);
+    var direct = 'https://fapi.binance.com/fapi/v1/klines?symbol=' + sym + '&interval=' + t_tf + '&limit=100';
+    fetch(direct).then(function(r){
+      if(!r.ok) throw new Error('binance ' + r.status);
+      return r.json();
+    }).then(function(arr){
+      if(!Array.isArray(arr) || arr.length < 10) throw new Error('insufficient');
+      var candles = arr.map(function(c){
+        return { o: parseFloat(c[1]), h: parseFloat(c[2]), l: parseFloat(c[3]), c: parseFloat(c[4]) };
+      });
+      _hmData = computeHeatmapLevelsClient(candles);
+      paintFromHmData();
+    }).catch(function(){
+      // Browser direct failed — fall back to server (will be WEEX-backed)
+      _heatmapServerFallback(paintFromHmData);
+    });
+    return;
+  }
+  _heatmapServerFallback(paintFromHmData);
+}
+
+function _heatmapServerFallback(done){
   fetch('/api/heatmap?coin=' + encodeURIComponent(t_pair) + '&tf=' + encodeURIComponent(t_tf) + '&broker=' + encodeURIComponent(t_broker),{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
     _hmData = d;
-    var cpEl = el('hm-cp');
-    if(cpEl) cpEl.textContent = (d.cp != null) ? ('$' + formatPrice(d.cp)) : '—';
-    renderHeatmapCanvas();
+    done();
   }).catch(function(){
     _hmData = null;
     var canvas = el('hm-canvas');
     if(canvas){ var ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); }
     var cpEl = el('hm-cp'); if(cpEl) cpEl.textContent = '—';
   });
+}
+
+// Client-side port of computeHeatmapLevels (server fn). Takes candles
+// shaped {o,h,l,c} (NOT lightweight-charts format) and returns the same
+// {levels, cp, pMin, pMax} payload the server endpoint would.
+function computeHeatmapLevelsClient(candles){
+  if(!candles || candles.length < 10) return { levels: [], cp: null, pMin: null, pMax: null };
+  var highs = candles.map(function(c){ return c.h; });
+  var lows  = candles.map(function(c){ return c.l; });
+  var closes= candles.map(function(c){ return c.c; });
+  var pMax = Math.max.apply(null, highs);
+  var pMin = Math.min.apply(null, lows);
+  var pR = (pMax - pMin) || 1;
+  var cp = closes[closes.length - 1];
+  var levels = [];
+  // Swing highs/lows (5-bar pivots)
+  for(var i = 2; i < candles.length - 2; i++){
+    if(candles[i].h > candles[i-1].h && candles[i].h > candles[i-2].h
+       && candles[i].h > candles[i+1].h && candles[i].h > candles[i+2].h){
+      levels.push({ price: candles[i].h, label: 'SH', color: 'rgba(255,68,102,0.7)', strength: 1 });
+    }
+    if(candles[i].l < candles[i-1].l && candles[i].l < candles[i-2].l
+       && candles[i].l < candles[i+1].l && candles[i].l < candles[i+2].l){
+      levels.push({ price: candles[i].l, label: 'SL', color: 'rgba(0,229,160,0.7)', strength: 1 });
+    }
+  }
+  // Equal highs/lows (rest liquidity)
+  var srtH = candles.slice().sort(function(a,b){ return b.h - a.h; });
+  for(var j = 0; j < Math.min(srtH.length - 1, 20); j++){
+    if(Math.abs(srtH[j].h - srtH[j+1].h) < pR * 0.002){
+      levels.push({ price: (srtH[j].h + srtH[j+1].h) / 2, label: 'EQH', color: 'rgba(255,68,102,0.9)', strength: 2 });
+    }
+  }
+  var srtL = candles.slice().sort(function(a,b){ return a.l - b.l; });
+  for(var k = 0; k < Math.min(srtL.length - 1, 20); k++){
+    if(Math.abs(srtL[k].l - srtL[k+1].l) < pR * 0.002){
+      levels.push({ price: (srtL[k].l + srtL[k+1].l) / 2, label: 'EQL', color: 'rgba(0,229,160,0.9)', strength: 2 });
+    }
+  }
+  // Round numbers — retail stop magnets
+  var step = cp >= 1000 ? 100 : cp >= 100 ? 10 : cp >= 10 ? 1 : 0.1;
+  var rndStart = Math.floor(pMin / step) * step;
+  for(var r = rndStart; r <= pMax + step; r += step){
+    if(r >= pMin && r <= pMax){
+      levels.push({ price: r, label: 'R', color: 'rgba(255,184,48,0.4)', strength: 1 });
+    }
+  }
+  // Dedup nearby levels
+  levels.sort(function(a,b){ return a.price - b.price; });
+  var dedup = [];
+  for(var m = 0; m < levels.length; m++){
+    var l = levels[m];
+    if(!dedup.length || Math.abs(l.price - dedup[dedup.length - 1].price) > pR * 0.004){
+      dedup.push(l);
+    } else if(l.strength > dedup[dedup.length - 1].strength){
+      dedup[dedup.length - 1] = l;
+    }
+  }
+  return { levels: dedup, cp: cp, pMin: pMin, pMax: pMax };
 }
 
 function renderHeatmapCanvas(){
@@ -1767,16 +1855,35 @@ function fetchHlCandles(){
   }).catch(function(){ return []; });
 }
 
-// Binance: route through /api/v2/candles so the server can handle the
-// Binance geo-block by falling back to WEEX under the hood. The legacy
-// /binance-futures proxy returned empty in those windows.
+// Binance: fetch DIRECTLY from fapi.binance.com (browser → Binance). The
+// public REST API supports CORS so cross-origin works. We have to do this
+// because Railway's egress IP is geo-blocked by Binance — routing through
+// the server returns WEEX data as a fallback, which means the user sees
+// WEEX prices on a chart labelled Binance. From a residential IP, Binance
+// is reachable in most regions. The server endpoint stays as a last-resort
+// fallback only for users whose own ISP also blocks Binance (US, UK).
 function fetchBinanceCandles(){
-  var url = '/api/v2/candles?coin=' + encodeURIComponent(tBinanceSymMap(t_pair))
-          + '&tf=' + encodeURIComponent(t_tf)
-          + '&broker=binance&limit=200';
-  return fetch(url,{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
-    return Array.isArray(d.candles) ? d.candles : [];
-  }).catch(function(){ return []; });
+  var sym = tBinanceSymMap(t_pair);
+  var direct = 'https://fapi.binance.com/fapi/v1/klines?symbol=' + sym + '&interval=' + t_tf + '&limit=200';
+  return fetch(direct).then(function(r){
+    if(!r.ok) throw new Error('binance ' + r.status);
+    return r.json();
+  }).then(function(data){
+    if(!Array.isArray(data) || !data.length) throw new Error('empty');
+    return data.map(function(c){
+      var t = parseInt(c[0]);
+      return { time: (t > 1e12 ? Math.floor(t/1000) : t), open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]) };
+    });
+  }).catch(function(){
+    // Browser direct fetch failed (user IP also blocked, CORS, offline).
+    // Last-resort: server endpoint with its own broker fallback chain.
+    var fb = '/api/v2/candles?coin=' + encodeURIComponent(sym)
+           + '&tf=' + encodeURIComponent(t_tf)
+           + '&broker=binance&limit=200';
+    return fetch(fb,{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+      return Array.isArray(d.candles) ? d.candles : [];
+    }).catch(function(){ return []; });
+  });
 }
 
 // Massive: server-side /api/gold/candles (Binance PAXG/USDT spot, gold-tracked).
