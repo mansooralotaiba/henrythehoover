@@ -1790,7 +1790,7 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
     })();
     const { data: rows, error } = await supaAdmin
       .from('signals')
-      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, confidence, broker')
+      .select('id, pair, direction, outcome, outcome_rr, outcome_at, created_at, trigger_type, session_name, confidence, broker, reasoning, entry_reason')
       .eq('user_id', userId)
       .order('created_at', { ascending: true });
     if (error) return res.status(500).json({ error: error.message });
@@ -1918,6 +1918,88 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
         return { when: s.outcome_at || s.created_at, r: +cum.toFixed(2) };
       });
 
+    // By setup tag — regex-extracted from the AI `reasoning` text plus the
+    // shorter `entry_reason` field. No schema column for setup yet; this is
+    // a zero-migration v1 that works on every historical row. A signal can
+    // belong to multiple buckets (e.g., "FVG + Sweep retest") and counts as
+    // 1 trade in each.
+    function extractSetupTags(s) {
+      const text = String((s.reasoning || '') + ' ' + (s.entry_reason || '')).toUpperCase();
+      if (!text.trim()) return [];
+      const tags = [];
+      if (/\bFVG\b|FAIR VALUE GAP/.test(text)) tags.push('FVG');
+      if (/\bOB\b|ORDER BLOCK|ORDER-BLOCK/.test(text)) tags.push('OB');
+      if (/\bBOS\b|BREAK OF STRUCTURE/.test(text)) tags.push('BOS');
+      if (/\bCHOCH\b|CHANGE OF CHARACTER/.test(text)) tags.push('CHoCH');
+      if (/SWEEP|LIQUIDITY GRAB|STOP HUNT|LIQ GRAB/.test(text)) tags.push('Sweep');
+      if (/\bEQH\b|EQUAL HIGH/.test(text)) tags.push('EQH');
+      if (/\bEQL\b|EQUAL LOW/.test(text)) tags.push('EQL');
+      if (/RETEST/.test(text)) tags.push('Retest');
+      if (/DISPLACEMENT|IMPULSE LEG/.test(text)) tags.push('Displacement');
+      if (/SUPPORT|RESISTANCE|\bS\/R\b/.test(text)) tags.push('S/R');
+      if (/PREMIUM|DISCOUNT/.test(text)) tags.push('Premium/Discount');
+      if (/TRENDLINE|TREND LINE/.test(text)) tags.push('Trendline');
+      if (/\bRANGE\b/.test(text)) tags.push('Range');
+      if (/\bMSS\b|MARKET STRUCTURE SHIFT/.test(text)) tags.push('MSS');
+      return tags;
+    }
+    const bySetup = {};
+    for (const s of closed) {
+      const tags = extractSetupTags(s);
+      for (const tag of tags) {
+        if (!bySetup[tag]) bySetup[tag] = { n: 0, tp: 0, sl: 0, be: 0, totalR: 0 };
+        bySetup[tag].n++;
+        bySetup[tag].totalR += effR(s);
+        if (s.outcome === 'TP') bySetup[tag].tp++;
+        else if (s.outcome === 'SL') bySetup[tag].sl++;
+        else if (s.outcome === 'BE') bySetup[tag].be++;
+      }
+    }
+    const setupBreakdown = Object.entries(bySetup).map(([setup, st]) => {
+      const cN = st.tp + st.sl + st.be;
+      return {
+        setup, n: st.n,
+        winRate: cN ? +((st.tp + st.be * 0.5) / cN * 100).toFixed(1) : 0,
+        expectancy: st.n ? +(st.totalR / st.n).toFixed(3) : 0,
+        totalR: +st.totalR.toFixed(2),
+      };
+    }).sort((a, b) => b.totalR - a.totalR);
+
+    // Confidence calibration — buckets the AI's stated 0-100 confidence and
+    // shows the actual win-rate per bucket. If "85+" trades win at the same
+    // rate as "50-69" trades, the model is overconfident and the buckets
+    // make that visible at a glance.
+    const CONF_BUCKETS = [
+      { label: '0-49',   lo: 0,  hi: 49  },
+      { label: '50-69',  lo: 50, hi: 69  },
+      { label: '70-84',  lo: 70, hi: 84  },
+      { label: '85-100', lo: 85, hi: 100 },
+    ];
+    const confBuckets = CONF_BUCKETS.map(b => ({ ...b, n: 0, tp: 0, sl: 0, be: 0, totalR: 0, confSum: 0 }));
+    for (const s of closed) {
+      const c = parseFloat(s.confidence);
+      if (!isFinite(c)) continue;
+      const bucket = confBuckets.find(b => c >= b.lo && c <= b.hi);
+      if (!bucket) continue;
+      bucket.n++;
+      bucket.confSum += c;
+      bucket.totalR += effR(s);
+      if (s.outcome === 'TP') bucket.tp++;
+      else if (s.outcome === 'SL') bucket.sl++;
+      else if (s.outcome === 'BE') bucket.be++;
+    }
+    const confidenceBreakdown = confBuckets.map(b => {
+      const cN = b.tp + b.sl + b.be;
+      return {
+        bucket: b.label,
+        n: b.n,
+        avgConfidence: b.n ? +(b.confSum / b.n).toFixed(1) : null,
+        winRate: cN ? +((b.tp + b.be * 0.5) / cN * 100).toFixed(1) : 0,
+        expectancy: b.n ? +(b.totalR / b.n).toFixed(3) : 0,
+        totalR: +b.totalR.toFixed(2),
+      };
+    });
+
     res.json({
       user: { id: userId, email: req.user.email },
       source, // 'auto' | 'manual' | 'all'
@@ -1932,6 +2014,8 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
       triggerBreakdown,
       sessionBreakdown,
       hourBreakdown,
+      setupBreakdown,
+      confidenceBreakdown,
       bestTrades,
       worstTrades,
       cumulativeR,
@@ -2197,7 +2281,10 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
     // time axis. Still well under broker rate limits.
     const candleArrays = await Promise.all(watchlist.map(coin => {
       const pairBroker = brokerForPair(coin, broker);
-      const pairTf = (typeof tfForCoin === 'function') ? tfForCoin(coin, tf) : tf;
+      // Use displayTfForCoin (not tfForCoin) — for XAUT the strategy runs 5m
+      // but the Kingdom panel renders on 15m for readability. Strategy state
+      // below still flows from the 5m engine via the subscription object.
+      const pairTf = (typeof displayTfForCoin === 'function') ? displayTfForCoin(coin, tf) : tf;
       return fetchCandlesServer(coin, pairTf, 80, pairBroker).catch(() => []);
     }));
 
@@ -2221,7 +2308,9 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
       return {
         coin,
         broker: brokerForPair(coin, broker),
-        tf: (typeof tfForCoin === 'function') ? tfForCoin(coin, tf) : tf,
+        // Report the DISPLAY tf so the panel header label matches the candles
+        // the user is actually looking at. Strategy TF stays internal.
+        tf: (typeof displayTfForCoin === 'function') ? displayTfForCoin(coin, tf) : tf,
         state,
         lastPrice,
         pctChange: pctChange != null ? +pctChange.toFixed(2) : null,
@@ -3488,6 +3577,23 @@ const HENRY_TF_OVERRIDES = (() => {
 function tfForCoin(coin, defaultTf) {
   const sym = String(coin || '').toUpperCase();
   return HENRY_TF_OVERRIDES[sym] || defaultTf;
+}
+// Display-only TF overrides — used purely for the Kingdom mini-chart candles.
+// The strategy / autoscan engine continues to use tfForCoin() for its actual
+// signal generation. XAUT runs a 5m strategy but reads better on 15m candles
+// in the cramped Kingdom panel, so we render the chart on 15m here without
+// touching the entry/SL/TP logic.
+const HENRY_DISPLAY_TF_OVERRIDES = (() => {
+  const raw = process.env.HENRY_DISPLAY_TF_OVERRIDES;
+  if (!raw) return { XAUTUSDT: '15m', GOLD: '15m', XAUUSD: '15m' };
+  try { return JSON.parse(raw); } catch (err) {
+    console.warn('[scan] HENRY_DISPLAY_TF_OVERRIDES not valid JSON:', err.message);
+    return { XAUTUSDT: '15m', GOLD: '15m', XAUUSD: '15m' };
+  }
+})();
+function displayTfForCoin(coin, defaultTf) {
+  const sym = String(coin || '').toUpperCase();
+  return HENRY_DISPLAY_TF_OVERRIDES[sym] || tfForCoin(coin, defaultTf);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
