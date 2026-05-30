@@ -516,17 +516,21 @@
   .whale-card-hdr .pnl-chip .v.pos{color:var(--gr)}
   .whale-card-hdr .pnl-chip .v.neg{color:var(--re)}
   .whale-card-body{display:flex;flex-direction:column}
-  .whale-pos{display:grid;grid-template-columns:auto auto 1fr auto;align-items:center;column-gap:10px;row-gap:3px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.03);font-family:var(--mono);font-size:11px}
+  /* Position column header — same grid as rows below so things line up */
+  .whale-pos-cols{display:grid;grid-template-columns:54px 50px 1fr 90px 38px;align-items:center;column-gap:10px;padding:6px 14px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--mu);background:rgba(255,255,255,0.015)}
+  .whale-pos-cols span.r{text-align:right}
+  .whale-pos{display:grid;grid-template-columns:54px 50px 1fr 90px 38px;align-items:center;column-gap:10px;padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.04);font-family:var(--mono);font-size:11px}
   .whale-pos:last-child{border-bottom:none}
   .whale-pos:hover{background:rgba(255,255,255,0.02)}
-  .whale-pos .coin{font-weight:700;font-size:13px;color:var(--fg);letter-spacing:0.02em}
-  .whale-pos .upnl{font-weight:700;font-size:13px;text-align:right;justify-self:end}
+  .whale-pos .coin{font-weight:700;font-size:12px;color:var(--fg);letter-spacing:0.04em}
+  .whale-pos .size{color:var(--fg);text-align:right;font-variant-numeric:tabular-nums}
+  .whale-pos .size .lev{color:var(--mu);font-size:10px;margin-left:4px}
+  .whale-pos .upnl{font-weight:700;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;display:flex;flex-direction:column;line-height:1.15}
+  .whale-pos .upnl .roe{font-size:9px;font-weight:500;letter-spacing:0.06em}
   .whale-pos .upnl.pos{color:var(--gr)}
   .whale-pos .upnl.neg{color:var(--re)}
-  .whale-pos .details{display:flex;flex-wrap:wrap;gap:8px;font-size:10px;color:var(--mu);grid-column:1 / 4}
-  .whale-pos .details strong{color:var(--fg);font-weight:600}
-  .whale-pos .opened{grid-column:4;justify-self:end;font-size:10px;color:var(--mu);text-align:right}
-  .whale-pos .opened.fresh{color:var(--cy)}
+  .whale-pos .opened{font-size:10px;color:var(--mu);text-align:right;font-variant-numeric:tabular-nums}
+  .whale-pos .opened.fresh{color:var(--cy);font-weight:700}
   .whale-tag-long{display:inline-block;background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.45);padding:1px 6px;border-radius:3px;font-size:9px;letter-spacing:0.1em;font-weight:700}
   .whale-tag-short{display:inline-block;background:rgba(255,85,119,0.15);color:var(--re);border:1px solid rgba(255,85,119,0.45);padding:1px 6px;border-radius:3px;font-size:9px;letter-spacing:0.1em;font-weight:700}
   .whale-card-empty{padding:14px;font-size:11px;color:var(--mu);text-align:center}
@@ -3774,31 +3778,36 @@ function renderWhaleCards(data){
       + '<span class="v '+upnlCls+'">'+upnlSign+'$'+_whaleFmtUsd(Math.abs(w.totalUpnl))+'</span>'
       + '</div>'
       + '</div>';
-    var body = '<div class="whale-card-body">';
+    // Column header inside the card — only show on first card to anchor
+    // the visual rhythm; subsequent cards skip it to keep density high.
+    var body = '<div class="whale-pos-cols">'
+      + '<span>Coin</span><span>Side</span><span class="r">Size · Lev</span><span class="r">uPnL · ROE</span><span class="r">Age</span>'
+      + '</div>';
+    body += '<div class="whale-card-body">';
     w.positions.forEach(function(p){
       var sideCls = p.direction === 'LONG' ? 'whale-tag-long' : 'whale-tag-short';
       var posCls = p.uPnl >= 0 ? 'pos' : 'neg';
       var posSign = p.uPnl >= 0 ? '+' : '−';
       var roePct = (p.roe * 100);
       var freshClass = '';
-      var openedLabel = 'before tracking';
+      var openedLabel = '—';
+      var openedTitle = 'opened before tracking started';
       if(p.openedAt){
         var ageMs = Date.now() - p.openedAt;
-        // Highlight cyan if opened within the last 6 hours (still "fresh")
         if(ageMs < 6 * 3600 * 1000) freshClass = ' fresh';
-        openedLabel = _whaleAgo(p.openedAt);
+        openedLabel = _whaleAgo(p.openedAt).replace(' ago','');
+        openedTitle = 'opened ' + _whaleAbsDate(p.openedAt);
       }
-      var openedAttr = p.openedAt ? ' title="'+escapeHtml(_whaleAbsDate(p.openedAt))+'"' : '';
-      body += '<div class="whale-pos">'
+      var rowTitle = openedTitle + ' · Entry ' + _whaleFmtEntry(p.entry);
+      body += '<div class="whale-pos" title="'+escapeHtml(rowTitle)+'">'
         + '<span class="coin">'+escapeHtml(p.coin)+'</span>'
         + '<span class="'+sideCls+'">'+p.direction+'</span>'
-        + '<span style="color:var(--mu);font-size:10px;text-align:right">$'+_whaleFmtUsd(p.sizeUsd)+' · '+p.leverage+'x</span>'
-        + '<span class="upnl '+posCls+'">'+posSign+'$'+_whaleFmtUsd(Math.abs(p.uPnl))+'</span>'
-        + '<div class="details">'
-        +   '<span>Entry <strong>'+_whaleFmtEntry(p.entry)+'</strong></span>'
-        +   '<span>ROE <strong style="color:'+(posCls==='pos'?'var(--gr)':'var(--re)')+'">'+posSign+roePct.toFixed(1)+'%</strong></span>'
-        + '</div>'
-        + '<span class="opened'+freshClass+'"'+openedAttr+'>'+openedLabel+'</span>'
+        + '<span class="size">$'+_whaleFmtUsd(p.sizeUsd)+'<span class="lev">'+p.leverage+'x</span></span>'
+        + '<span class="upnl '+posCls+'">'
+        +   posSign+'$'+_whaleFmtUsd(Math.abs(p.uPnl))
+        +   '<span class="roe">'+posSign+roePct.toFixed(1)+'%</span>'
+        + '</span>'
+        + '<span class="opened'+freshClass+'">'+openedLabel+'</span>'
         + '</div>';
     });
     body += '</div>';
