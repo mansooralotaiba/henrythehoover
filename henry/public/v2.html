@@ -1099,6 +1099,11 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){return r.json();})
   if(typeof refreshResumeBtn === 'function') refreshResumeBtn();
   if(typeof checkExpiryBanner === 'function') checkExpiryBanner();
   if(typeof setupPushNotifications === 'function') setupPushNotifications();
+  // AUTO-TRADE pill polling — admin only (endpoint requires admin auth)
+  if(state.isAdmin && typeof refreshAutoTrade === 'function'){
+    refreshAutoTrade();
+    setInterval(refreshAutoTrade, 10_000);
+  }
 }).catch(function(){
   // not logged in — punt to login
   window.location.href = '/login';
@@ -1355,6 +1360,10 @@ function renderAutoTradeBtn(d){
   btn.title = 'Risk $' + d.riskUsd + ' per trade at ' + d.leverage + 'x leverage. Click to toggle.';
 }
 function refreshAutoTrade(){
+  // /api/bot/state is admin-only. For non-admin subscribers, the auto-pill
+  // is already hidden via body.view-public CSS — polling here would just
+  // generate 403 console spam every 10s for no UI benefit. Bail early.
+  if(!state.isAdmin) return;
   fetch('/api/bot/state',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();return r.json();}).then(function(d){
     var p = el('auto-pill');
     if(!d.available){ p.style.display='none'; }
@@ -1368,8 +1377,8 @@ function refreshAutoTrade(){
     renderAutoTradeBtn(null);
   });
 }
-refreshAutoTrade();
-setInterval(refreshAutoTrade, 10_000);
+// First call + interval are kicked off from the /api/me handler once we
+// know state.isAdmin, instead of unconditionally at module load.
 
 // ── UTC clock + session bar ───────────────
 // Sessions are UTC-fixed (no DST shift). Asia is the broad window before
