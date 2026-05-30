@@ -8351,14 +8351,22 @@ const TREASURY_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // keep last week
 
 const TREASURY_ADDRESSES = (() => {
   const base = [
-    { addr: '34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo',        name: 'Binance · Cold BTC',   chain: 'btc', entity: 'Binance'  },
-    { addr: 'bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h',name: 'Binance · Cold BTC 2', chain: 'btc', entity: 'Binance'  },
-    { addr: '0x28C6c06298d514Db089934071355E5743bf21d60',name: 'Binance · Hot 14',     chain: 'eth', entity: 'Binance'  },
-    { addr: '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549',name: 'Binance · Hot 7',      chain: 'eth', entity: 'Binance'  },
-    { addr: '0x71660c4005ba85c37ccec55d0c4493e66fe775d3',name: 'Coinbase · 1',         chain: 'eth', entity: 'Coinbase' },
-    { addr: '0x503828976D22510aad0201ac7EC88293211D23Da',name: 'Coinbase · 2',         chain: 'eth', entity: 'Coinbase' },
-    { addr: '0x5754284f345afc66a98fbB0a0Afe71e0F007B949',name: 'Tether · Treasury',    chain: 'eth', entity: 'Tether'   },
-    { addr: '0x5041ed759Dd4aFc3a72b8192C143F72f4724081A',name: 'OKX · Hot',            chain: 'eth', entity: 'OKX'      },
+    { addr: '34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo',                              name: 'Binance · Cold BTC',          chain: 'btc', entity: 'Binance'   },
+    { addr: 'bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h',                      name: 'Binance · Cold BTC 2',        chain: 'btc', entity: 'Binance'   },
+    // BlackRock IBIT is custodied at Coinbase Prime. There is no officially
+    // disclosed BlackRock-owned BTC address — the IBIT holdings sit inside
+    // Coinbase Custody segregated cold wallets. This is the largest
+    // publicly-attributed Coinbase Prime cold wallet associated with IBIT
+    // in on-chain analyses (Arkham, Lookonchain). Holding 97k+ BTC across
+    // 174+ txs at the time of curation. Best-effort attribution, not
+    // official disclosure — labeled to make that clear in the UI.
+    { addr: 'bc1qjasf9z3h7w3jspkhtgatgpyvvzgpa2wwd2lr0eh5tx44reyn2k7sfc27a4', name: 'BlackRock · IBIT (Coinbase Custody)', chain: 'btc', entity: 'BlackRock' },
+    { addr: '0x28C6c06298d514Db089934071355E5743bf21d60',                      name: 'Binance · Hot 14',            chain: 'eth', entity: 'Binance'   },
+    { addr: '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549',                      name: 'Binance · Hot 7',             chain: 'eth', entity: 'Binance'   },
+    { addr: '0x71660c4005ba85c37ccec55d0c4493e66fe775d3',                      name: 'Coinbase · 1',                chain: 'eth', entity: 'Coinbase'  },
+    { addr: '0x503828976D22510aad0201ac7EC88293211D23Da',                      name: 'Coinbase · 2',                chain: 'eth', entity: 'Coinbase'  },
+    { addr: '0x5754284f345afc66a98fbB0a0Afe71e0F007B949',                      name: 'Tether · Treasury',           chain: 'eth', entity: 'Tether'    },
+    { addr: '0x5041ed759Dd4aFc3a72b8192C143F72f4724081A',                      name: 'OKX · Hot',                   chain: 'eth', entity: 'OKX'       },
   ];
   const raw = process.env.HENRY_TREASURY_ADDRESSES;
   if (raw) {
