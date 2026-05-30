@@ -1427,7 +1427,73 @@ function _wpCreatePanel(p, grid){
       price: panel.querySelector('.price'),
       tag:   panel.querySelector('.wp-tag'),
     },
+    live: { src: null, ws: null, key: null }, // live-tick stream handles
   };
+}
+
+// Stop the live-tick stream attached to a Kingdom watchlist panel. Called
+// when the panel is removed (coin left watchlist) or when broker/tf change
+// so we don't leak EventSources / WebSockets across panel rebuilds.
+function _wpStopLive(entry){
+  if(!entry || !entry.live) return;
+  if(entry.live.src){ try{ entry.live.src.close(); }catch(e){} entry.live.src = null; }
+  if(entry.live.ws ){ try{ entry.live.ws .close(); }catch(e){} entry.live.ws  = null; }
+  entry.live.key = null;
+}
+
+// Start the live-tick stream for a panel. Mirrors the Terminal main chart
+// strategy: Binance gets a direct browser WebSocket (Railway's IP is
+// geo-blocked); WEEX/HL/Massive use the server SSE /api/live/:broker/:symbol.
+function _wpStartLive(entry, p){
+  if(!entry || !entry.series) return;
+  var pairBroker = p.broker || 'weex';
+  var key = pairBroker + ':' + p.coin + ':' + p.tf;
+  if(entry.live && entry.live.key === key && (entry.live.src || entry.live.ws)) return;
+  _wpStopLive(entry);
+  entry.live.key = key;
+  var onTick = function(bar, price){
+    if(bar && bar.time != null){
+      try{
+        entry.series.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
+      }catch(e){}
+    }
+    if(price != null && entry.hdrEls && entry.hdrEls.price){
+      entry.hdrEls.price.textContent = formatPrice(price);
+    }
+  };
+  if(pairBroker === 'binance'){
+    if(!('WebSocket' in window)) return;
+    try{
+      var sym = String(p.coin === 'GOLD' ? 'PAXGUSDT' : p.coin).toLowerCase();
+      var ws = new WebSocket('wss://fstream.binance.com/ws/' + sym + '@kline_' + p.tf);
+      ws.onmessage = function(ev){
+        try{
+          var msg = JSON.parse(ev.data);
+          var k = msg.k; if(!k) return;
+          onTick({ time: Math.floor(k.t / 1000), open: +k.o, high: +k.h, low: +k.l, close: +k.c }, +k.c);
+        }catch(e){}
+      };
+      ws.onclose = function(){
+        // Reconnect if panel still exists with same key
+        if(entry.live && entry.live.key === key) setTimeout(function(){ _wpStartLive(entry, p); }, 5000);
+      };
+      entry.live.ws = ws;
+    }catch(e){}
+    return;
+  }
+  if(!('EventSource' in window)) return;
+  var ssym = (pairBroker === 'massive') ? 'GOLD' : p.coin;
+  var url = '/api/live/' + encodeURIComponent(pairBroker) + '/' + encodeURIComponent(ssym) + '?tf=' + encodeURIComponent(p.tf);
+  try{
+    var src = new EventSource(url, { withCredentials: true });
+    src.onmessage = function(ev){
+      try{
+        var d = JSON.parse(ev.data);
+        onTick(d.bar, d.price);
+      }catch(e){}
+    };
+    entry.live.src = src;
+  }catch(e){}
 }
 
 function _wpUpdatePanel(entry, p){
@@ -1474,6 +1540,9 @@ function _wpUpdatePanel(entry, p){
     if(isFinite(sl)) entry.lines.push(entry.series.createPriceLine({ price: sl, color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
     if(isFinite(tp)) entry.lines.push(entry.series.createPriceLine({ price: tp, color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
   }
+  // Attach the live-tick stream so the last candle reshapes between polls
+  // and the header price ticks without the 10s polling lag.
+  _wpStartLive(entry, p);
 }
 
 function _wpResizeAll(){
@@ -1493,6 +1562,7 @@ function loadWatchlist(){
     // Drop charts for coins that fell off the watchlist
     Object.keys(_wpCharts).forEach(function(coin){
       if(!pairs.find(function(p){ return p.coin === coin; })){
+        _wpStopLive(_wpCharts[coin]); // close EventSource/WebSocket before disposing the chart
         try{ _wpCharts[coin].chart.remove(); }catch(e){}
         if(_wpCharts[coin].panel.parentNode) _wpCharts[coin].panel.parentNode.removeChild(_wpCharts[coin].panel);
         delete _wpCharts[coin];
