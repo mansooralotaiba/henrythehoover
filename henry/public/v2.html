@@ -528,7 +528,7 @@
     /* Watchlist header: buttons wrap to next line */
     .wp-hdr { flex-wrap: wrap; gap: 6px; }
     .wp-hdr .r { margin-left: auto; }
-    .wp-grid { grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, minmax(140px, 1fr)); }
+    .wp-grid { grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, minmax(240px, 1fr)); }
 
     /* Terminal: chart on top, right column below */
     .term-controls { padding: 8px 10px; gap: 6px; }
@@ -603,8 +603,8 @@
     .big-pnl { grid-template-columns: 1fr; }
     .big-pnl .num { font-size: 24px; }
 
-    /* Watchlist grid: 1 column, slightly taller cells */
-    .wp-grid { grid-template-columns: 1fr; grid-template-rows: repeat(6, minmax(130px, auto)); }
+    /* Watchlist grid: 1 column, taller cells so candles read clearly */
+    .wp-grid { grid-template-columns: 1fr; grid-template-rows: repeat(6, minmax(260px, auto)); }
 
     /* Terminal controls: 2 rows */
     .term-controls .price-display { width: 100%; text-align: right; margin: 4px 0 0; padding: 0; }
@@ -3564,6 +3564,39 @@ function loadStats(){
       })
     ]));
     grid.appendChild(c4);
+
+    // 4b. By Setup — regex-extracted from reasoning text. Each signal can
+    // belong to multiple buckets (e.g. "FVG + Sweep retest"), so totals
+    // across rows will exceed closedN. Sorted by net R.
+    var sb = (perf && perf.setupBreakdown) || [];
+    var sbBody = sb.length
+      ? tableHtml([
+          ['Setup','N','WR%','Expectancy','Total R'],
+          ...sb.slice(0,12).map(function(s){
+            var exp = (s.expectancy>=0?'+':'')+(+s.expectancy).toFixed(2)+'R';
+            return [s.setup, s.n, fmtPct(s.winRate), exp, rcell(s.totalR)]
+          })
+        ])
+      : '<p style="font-size:12px;color:var(--mu);padding:8px 4px">No setup tags detected yet. Bins are extracted from AI rationale text — keywords like FVG, OB, BOS, Sweep, Retest, etc.</p>';
+    var c4b = card('By Setup','regex-tagged from AI reasoning · a trade can match multiple', sbBody);
+    grid.appendChild(c4b);
+
+    // 4c. Confidence calibration — does the AI's stated confidence actually
+    // correlate with win-rate? If "85+" trades win at the same rate as
+    // "50-69" trades the model is overconfident and the buckets show it.
+    var cb = (perf && perf.confidenceBreakdown) || [];
+    var cbBody = cb.some(function(b){ return b.n > 0 })
+      ? tableHtml([
+          ['Bucket','N','Avg Conf','WR%','Expectancy','Total R'],
+          ...cb.map(function(b){
+            var exp = (b.expectancy>=0?'+':'')+(+b.expectancy).toFixed(2)+'R';
+            var avg = b.avgConfidence == null ? '—' : (+b.avgConfidence).toFixed(0);
+            return [b.bucket, b.n, avg, fmtPct(b.winRate), exp, rcell(b.totalR)]
+          })
+        ])
+      : '<p style="font-size:12px;color:var(--mu);padding:8px 4px">No closed signals with confidence values yet.</p>';
+    var c4c = card('Confidence Calibration','win-rate by AI confidence bucket · expect WR to rise with bucket', cbBody);
+    grid.appendChild(c4c);
 
     // 5. Live executor state
     var es = d.executorState;
