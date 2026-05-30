@@ -1369,7 +1369,10 @@ function _wpCreatePanel(p, grid){
   var chart = LightweightCharts.createChart(body, {
     layout: { background: { type: 'solid', color: 'rgba(0,0,0,0)' }, textColor: '#5a5f7a', fontSize: 10 },
     grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.08)', barSpacing: 5 },
+    // barSpacing 8 gives ~6-7px of body width on the small panels which is
+    // big enough to actually read individual candles. minBarSpacing 4 sets a
+    // floor in case the user resizes the window narrow.
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.08)', barSpacing: 8, minBarSpacing: 4 },
     rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.08, bottom: 0.08 } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     handleScroll: false,
@@ -1420,7 +1423,15 @@ function _wpUpdatePanel(entry, p){
     data.sort(function(a, b){ return a.time - b.time; });
     var seen = {};
     data = data.filter(function(c){ if(seen[c.time]) return false; seen[c.time] = 1; return true; });
-    if(data.length) entry.series.setData(data);
+    if(data.length){
+      entry.series.setData(data);
+      // Narrow the visible range to the last ~50 bars so candles get enough
+      // horizontal room to read. The full 80 stays loaded so the user can
+      // scroll left for context. fitContent on 80 made each candle ~4px wide.
+      var n = data.length;
+      var visible = Math.min(50, n);
+      try { entry.chart.timeScale().setVisibleLogicalRange({ from: n - visible, to: n }); } catch(e){}
+    }
   }
   // Refresh trade overlay (ENTRY/SL/TP price lines)
   entry.lines.forEach(function(ln){ try{ entry.series.removePriceLine(ln); }catch(e){} });
@@ -1933,7 +1944,9 @@ function renderChart(){
     layout:{ background:{type:'solid',color:'#13151c'}, textColor:'#8b94a3' },
     grid:{ vertLines:{color:'rgba(255,255,255,0.04)'}, horzLines:{color:'rgba(255,255,255,0.04)'} },
     crosshair:{ mode:LightweightCharts.CrosshairMode.Normal },
-    timeScale:{ timeVisible:true, secondsVisible:false, borderColor:'rgba(255,255,255,0.08)' },
+    // barSpacing 12 gives candles ~10px of body width which is the TradingView
+    // default look. minBarSpacing 6 sets the floor when the user zooms out.
+    timeScale:{ timeVisible:true, secondsVisible:false, borderColor:'rgba(255,255,255,0.08)', barSpacing: 12, minBarSpacing: 6 },
     rightPriceScale:{ borderColor:'rgba(255,255,255,0.08)' },
     width: box.clientWidth, height: box.clientHeight || 400,
   });
@@ -1945,7 +1958,12 @@ function renderChart(){
   fetchTermCandles().then(function(data){
     if(!data || !data.length) return;
     t_series.setData(data);
-    t_chart.timeScale().fitContent();
+    // Show the last ~80 bars as the default visible range. We still load 200
+    // so the user can scroll left for history. fitContent on 200 made each
+    // candle ~2-3px wide; 80 with barSpacing 12 lands ~10px per candle.
+    var n = data.length;
+    var visible = Math.min(80, n);
+    t_chart.timeScale().setVisibleLogicalRange({ from: n - visible, to: n });
     var lastClose = data[data.length-1].close;
     el('t-price').textContent = formatPrice(lastClose);
   });
