@@ -358,6 +358,23 @@
   .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;min-height:0}
   .chart-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px}
   .chart-body{flex:1;background:var(--bg3);border-radius:5px;min-height:400px;position:relative}
+  /* Active signal status bar below the chart (when user clicks Track on Chart) */
+  .active-signal-bar{display:flex;align-items:center;gap:10px;margin-top:8px;padding:8px 12px;background:linear-gradient(180deg,rgba(0,212,255,0.08),rgba(0,212,255,0.02));border:1px solid rgba(0,212,255,0.35);border-radius:6px;font-family:var(--mono);font-size:11px}
+  .active-signal-bar.in-trade{background:linear-gradient(180deg,rgba(0,229,160,0.1),rgba(0,229,160,0.02));border-color:rgba(0,229,160,0.45)}
+  .active-signal-bar.closed{background:linear-gradient(180deg,rgba(247,201,72,0.1),rgba(247,201,72,0.02));border-color:rgba(247,201,72,0.4);opacity:0.85}
+  .active-signal-bar.expired{background:linear-gradient(180deg,rgba(255,170,48,0.08),rgba(255,170,48,0.02));border-color:rgba(255,170,48,0.35)}
+  .active-signal-bar .asb-info{flex:1;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .active-signal-bar .asb-tag{font-size:9px;letter-spacing:0.14em;font-weight:700;padding:3px 8px;border-radius:3px;background:rgba(0,212,255,0.18);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
+  .active-signal-bar.in-trade .asb-tag{background:rgba(0,229,160,0.18);color:var(--gr);border-color:rgba(0,229,160,0.5)}
+  .active-signal-bar.closed .asb-tag{background:rgba(247,201,72,0.16);color:var(--go);border-color:rgba(247,201,72,0.4)}
+  .active-signal-bar.expired .asb-tag{background:rgba(255,170,48,0.18);color:var(--am);border-color:rgba(255,170,48,0.45)}
+  .active-signal-bar .asb-text{color:var(--fg);font-weight:600;letter-spacing:0.04em}
+  .active-signal-bar .asb-age{color:var(--mu);font-size:10px;margin-left:auto}
+  .active-signal-bar .asb-discard{padding:5px 11px;background:transparent;border:1px solid var(--border-strong);border-radius:4px;color:var(--mu);font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:0.1em;cursor:pointer}
+  .active-signal-bar .asb-discard:hover{color:var(--re);border-color:rgba(255,85,119,0.4)}
+  /* PLACE ON CHART button in the modal action row */
+  .btn-modal.btn-track{background:linear-gradient(135deg,#00d4ff,#9966ff);color:#000;border:none;font-weight:700}
+  .btn-modal.btn-track:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,212,255,0.3)}
   .term-right{display:flex;flex-direction:column;gap:12px;overflow-y:auto;min-height:0}
 
   /* AI ANALYSE modal */
@@ -376,7 +393,7 @@
   .modal-hdr .conf .v{font-size:22px;font-weight:700;color:var(--cy);font-family:var(--mono)}
   .modal-close{background:none;border:none;color:var(--mu);font-size:24px;cursor:pointer;padding:0 4px;margin-left:8px}
   .modal-close:hover{color:var(--fg)}
-  .modal-body{padding:20px 22px;overflow-y:auto}
+  .modal-body{padding:20px 22px;overflow-y:auto;flex:1;min-height:0}
   .levels-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px}
   .level-card{padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;text-align:center}
   .level-card .l{font-size:10px;color:var(--mu);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:5px}
@@ -553,15 +570,22 @@
     .stat-table { font-size: 10px; }
     .stat-table th, .stat-table td { padding: 5px 6px; }
 
-    /* AI modal — fills the viewport */
+    /* AI modal — fills the viewport, content scrolls, actions wrap */
     .modal-overlay { padding: 0; }
-    .modal { max-width: 100%; width: 100%; max-height: 100vh; border-radius: 0; }
+    .modal { max-width: 100%; width: 100%; max-height: 100vh; border-radius: 0; height: 100vh }
     .modal-hdr { padding: 12px 14px; gap: 10px; }
     .modal-hdr .title { font-size: 14px; }
     .modal-hdr .conf .v { font-size: 18px; }
     .modal-body { padding: 14px; }
-    .levels-grid { grid-template-columns: 1fr; gap: 6px; margin-bottom: 12px; }
-    .modal-actions { padding: 10px 14px; }
+    /* Keep levels readable on phones — 3 narrow cards across so user sees
+       Entry/SL/TP in one glance without scrolling. */
+    .levels-grid { grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-bottom: 12px; }
+    .level-card { padding: 7px 4px; }
+    .level-card .l { font-size: 9px; }
+    .level-card .v { font-size: 14px; }
+    /* Actions row wraps so 5-6 outcome buttons don't push content out of view */
+    .modal-actions { padding: 8px 10px; flex-wrap: wrap; justify-content: stretch; gap: 6px; }
+    .modal-actions .btn-modal { padding: 8px 10px; font-size: 10px; letter-spacing: 0.06em; flex: 1 1 30%; }
 
     /* Touch tap feedback */
     .tab, .au-watch, .au-cell, .tf-btn, .au-toggle, .k-auto-trade, .k-resume,
@@ -709,6 +733,14 @@
       <div class="chart-card">
         <h3 id="t-chart-title">BTCUSDT · 15m · WEEX</h3>
         <div class="chart-body" id="t-chart"></div>
+        <div class="active-signal-bar" id="active-signal-bar" style="display:none">
+          <div class="asb-info">
+            <span class="asb-tag" id="asb-tag">WAITING</span>
+            <span class="asb-text" id="asb-text">—</span>
+            <span class="asb-age" id="asb-age">—</span>
+          </div>
+          <button class="asb-discard" onclick="discardChartSignal()" title="Stop tracking — leaves the signal in your history">✕ Discard</button>
+        </div>
       </div>
       <div class="term-right">
         <div class="dxy-card">
@@ -1966,6 +1998,8 @@ function renderChart(){
     t_chart.timeScale().setVisibleLogicalRange({ from: n - visible, to: n });
     var lastClose = data[data.length-1].close;
     el('t-price').textContent = formatPrice(lastClose);
+    // Re-draw active manual-signal lines when chart is on the signal's pair
+    if(typeof drawActiveSignalOnChart === 'function') drawActiveSignalOnChart();
   });
 }
 
@@ -2511,7 +2545,8 @@ function renderOutcomeButtons(){
     } else { rr = 2; }
   }
   box.innerHTML =
-    '<button class="btn-modal btn-tp"  onclick="logOutcome(\'TP\',  '  + rr.toFixed(3) + ')">TP HIT</button>'
+    '<button class="btn-modal btn-track" onclick="placeSignalOnChart()">📍 Track on Chart</button>'
+  + '<button class="btn-modal btn-tp"  onclick="logOutcome(\'TP\',  '  + rr.toFixed(3) + ')">TP HIT</button>'
   + '<button class="btn-modal btn-sl"  onclick="logOutcome(\'SL\',  -1)">SL HIT</button>'
   + '<button class="btn-modal btn-be"  onclick="logOutcome(\'BE\',  0)">BREAKEVEN</button>'
   + '<button class="btn-modal btn-exp" onclick="logOutcome(\'EXPIRED\', 0)">EXPIRED</button>'
@@ -2543,6 +2578,224 @@ function discardManual(){
   // (matches legacy DISCARD behaviour — non-destructive).
   window._lastManualSignal = null;
   closeAiModal();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TRACK MANUAL SIGNAL ON CHART
+// User clicks "📍 Track on Chart" in the modal → signal is pinned to the
+// Terminal chart with entry/SL/TP price lines + a status bar below the chart.
+// A 30s poller fetches the latest candles for the signal's pair/tf/broker and
+// fires toast + auto-PATCHes outcome when entry/BE/TP/SL/expired conditions
+// trigger. State persists to localStorage so it survives reloads.
+// ════════════════════════════════════════════════════════════════════════════
+var _activeChartSignal = null;     // current tracked signal
+var _activeChartLines = [];        // priceLine handles currently on t_series
+var _activeChartPoll = null;       // setInterval handle
+var _activeChartUiTick = null;     // updates the age label every 60s
+var ACTIVE_SIGNAL_LS_KEY = 'v2_active_chart_signal';
+var ACTIVE_EXPIRY_HOURS = 6;       // signal expires if not entered within 6h
+
+function loadActiveChartSignal(){
+  try{
+    var raw = localStorage.getItem(ACTIVE_SIGNAL_LS_KEY);
+    if(raw) _activeChartSignal = JSON.parse(raw);
+  }catch(e){ _activeChartSignal = null; }
+}
+function persistActiveChartSignal(){
+  try{
+    if(_activeChartSignal) localStorage.setItem(ACTIVE_SIGNAL_LS_KEY, JSON.stringify(_activeChartSignal));
+    else localStorage.removeItem(ACTIVE_SIGNAL_LS_KEY);
+  }catch(e){}
+}
+
+// Called from the modal "📍 Track on Chart" button. Pins the just-persisted
+// manual signal to the chart and starts the polling loop.
+function placeSignalOnChart(){
+  var ms = window._lastManualSignal;
+  if(!ms || !ms.signal){ closeAiModal(); return; }
+  var s = ms.signal;
+  var entry = parseFloat(s.entry), sl = parseFloat(s.sl), tp = parseFloat(s.tp);
+  if(!isFinite(entry) || !isFinite(sl) || !isFinite(tp)){
+    alert('Signal levels invalid — cannot track on chart.');
+    return;
+  }
+  var rr = parseFloat(s.rr);
+  if(!isFinite(rr) || rr <= 0) rr = Math.abs(tp - entry) / Math.abs(entry - sl);
+  _activeChartSignal = {
+    id: ms.id,
+    pair: t_pair, tf: t_tf, broker: t_broker,
+    direction: String(s.direction || '').toUpperCase(),
+    entry: entry, sl: sl, tp: tp, rr: rr,
+    state: 'waiting',
+    placedAt: Date.now(),
+  };
+  persistActiveChartSignal();
+  drawActiveSignalOnChart();
+  renderActiveSignalBar();
+  startActiveSignalPoll();
+  closeAiModal();
+  _toast('📍 SIGNAL TRACKED', String(t_pair).replace('USDT','') + ' ' + _activeChartSignal.direction + ' pinned to chart', 'signal');
+}
+
+function drawActiveSignalOnChart(){
+  if(!t_series){ return; }
+  // Wipe existing
+  _activeChartLines.forEach(function(ln){ try{ t_series.removePriceLine(ln); }catch(e){} });
+  _activeChartLines = [];
+  var sig = _activeChartSignal;
+  if(!sig) return;
+  // Only draw when the chart is showing the signal's pair (and TF/broker)
+  if(sig.pair !== t_pair) return;
+  if(!LightweightCharts) return;
+  _activeChartLines.push(t_series.createPriceLine({ price: sig.entry, color: '#9aa0a6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'ENTRY' }));
+  _activeChartLines.push(t_series.createPriceLine({ price: sig.sl,    color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
+  _activeChartLines.push(t_series.createPriceLine({ price: sig.tp,    color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
+  if(sig.state === 'in-trade'){
+    _activeChartLines.push(t_series.createPriceLine({ price: sig.entry, color: '#ffaa30', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: false, title: 'BE' }));
+  }
+}
+
+function renderActiveSignalBar(){
+  var bar = el('active-signal-bar');
+  if(!bar) return;
+  var sig = _activeChartSignal;
+  if(!sig){ bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  bar.className = 'active-signal-bar ' + sig.state;
+  var tag = el('asb-tag');
+  var txt = el('asb-text');
+  var age = el('asb-age');
+  var states = { 'waiting': 'WAITING', 'in-trade': 'IN TRADE', 'closed': 'CLOSED', 'expired': 'EXPIRED' };
+  tag.textContent = states[sig.state] || sig.state.toUpperCase();
+  var coin = String(sig.pair).replace('USDT','').replace('1000','');
+  var arrow = sig.direction === 'LONG' ? '▲' : '▼';
+  txt.innerHTML = arrow + ' ' + sig.direction + ' ' + coin
+    + ' · Entry <strong>' + formatPrice(sig.entry) + '</strong>'
+    + ' · SL <strong style="color:var(--re)">' + formatPrice(sig.sl) + '</strong>'
+    + ' · TP <strong style="color:var(--gr)">' + formatPrice(sig.tp) + '</strong>'
+    + ' · <strong>' + sig.rr.toFixed(2) + 'R</strong>';
+  // Age label
+  var mins = Math.floor((Date.now() - sig.placedAt) / 60000);
+  var ageStr = mins < 1 ? 'just now' : mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ' + (mins%60) + 'm ago';
+  age.textContent = ageStr;
+}
+
+function startActiveSignalPoll(){
+  if(_activeChartPoll){ clearInterval(_activeChartPoll); }
+  if(_activeChartUiTick){ clearInterval(_activeChartUiTick); }
+  if(!_activeChartSignal) return;
+  // Immediate eval + then every 30s for transitions, 60s for the age label
+  evalActiveSignal();
+  _activeChartPoll = setInterval(evalActiveSignal, 30_000);
+  _activeChartUiTick = setInterval(renderActiveSignalBar, 60_000);
+}
+
+function evalActiveSignal(){
+  var sig = _activeChartSignal;
+  if(!sig || sig.state === 'closed' || sig.state === 'expired') return;
+  // Check the expiry first — N hours since placed without entry
+  if(sig.state === 'waiting' && (Date.now() - sig.placedAt) > ACTIVE_EXPIRY_HOURS * 3600_000){
+    sig.state = 'expired';
+    persistActiveChartSignal();
+    _toast('⌛ EXPIRED', 'Signal never filled — closing as EXPIRED', 'info');
+    _alertBeep(660, 660);
+    if(sig.id){
+      fetch('/api/signals/' + sig.id + '/outcome', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outcome: 'EXPIRED', outcomeRr: 0 })
+      }).catch(function(){});
+    }
+    drawActiveSignalOnChart(); renderActiveSignalBar();
+    _perfLoaded = false;
+    return;
+  }
+  // Fetch recent candles for the signal's pair/tf/broker
+  var url = '/api/v2/candles?coin=' + encodeURIComponent(sig.pair)
+          + '&tf=' + encodeURIComponent(sig.tf)
+          + '&broker=' + encodeURIComponent(sig.broker)
+          + '&limit=8';
+  fetch(url, {credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    var bars = d && d.candles;
+    if(!Array.isArray(bars) || !bars.length) return;
+    var entry = sig.entry, sl = sig.sl, tp = sig.tp;
+    if(sig.state === 'waiting'){
+      var entered = bars.some(function(c){ return c.low <= entry && c.high >= entry; });
+      if(entered){
+        sig.state = 'in-trade';
+        persistActiveChartSignal();
+        _toast('▶ ENTRY HIT', String(sig.pair).replace('USDT','') + ' ' + sig.direction + ' active', 'entry');
+        _alertBeep(880, 1100);
+        drawActiveSignalOnChart(); renderActiveSignalBar();
+      }
+    } else if(sig.state === 'in-trade'){
+      var slHit, tpHit;
+      if(sig.direction === 'LONG'){
+        slHit = bars.some(function(c){ return c.low <= sl; });
+        tpHit = bars.some(function(c){ return c.high >= tp; });
+      } else {
+        slHit = bars.some(function(c){ return c.high >= sl; });
+        tpHit = bars.some(function(c){ return c.low <= tp; });
+      }
+      // TP wins ties (rare same-candle TP+SL) since once we move SL to BE
+      // the SL leg shouldn't fire — we treat the trade as TP-eligible
+      if(tpHit){       closeChartSignal('TP',  sig.rr); }
+      else if(slHit){  closeChartSignal('SL', -1); }
+    }
+  }).catch(function(){});
+}
+
+function closeChartSignal(outcome, rValue){
+  var sig = _activeChartSignal;
+  if(!sig) return;
+  sig.state = 'closed';
+  sig.closedOutcome = outcome;
+  sig.closedRr = rValue;
+  persistActiveChartSignal();
+  var coin = String(sig.pair).replace('USDT','').replace('1000','');
+  if(outcome === 'TP'){
+    _toast('✓ TP HIT', coin + ' ' + sig.direction + ' closed +' + rValue.toFixed(2) + 'R', 'entry');
+    _alertBeep(1100, 1320);
+  } else {
+    _toast('✗ SL HIT', coin + ' ' + sig.direction + ' closed -1.00R', 'signal');
+    _alertBeep(660, 440);
+  }
+  if(sig.id){
+    fetch('/api/signals/' + sig.id + '/outcome', {
+      method: 'PATCH', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ outcome: outcome, outcomeRr: rValue })
+    }).catch(function(){});
+  }
+  _perfLoaded = false; // invalidate so Performance tab reloads on next visit
+  renderActiveSignalBar();
+  // Keep lines on chart for 10s so the user sees the outcome, then clear
+  setTimeout(function(){
+    _activeChartSignal = null;
+    persistActiveChartSignal();
+    if(_activeChartPoll){ clearInterval(_activeChartPoll); _activeChartPoll = null; }
+    if(_activeChartUiTick){ clearInterval(_activeChartUiTick); _activeChartUiTick = null; }
+    drawActiveSignalOnChart(); renderActiveSignalBar();
+  }, 10000);
+}
+
+function discardChartSignal(){
+  if(!_activeChartSignal) return;
+  if(!confirm('Stop tracking this signal? The row stays in your history with outcome NULL.')) return;
+  _activeChartSignal = null;
+  persistActiveChartSignal();
+  if(_activeChartPoll){ clearInterval(_activeChartPoll); _activeChartPoll = null; }
+  if(_activeChartUiTick){ clearInterval(_activeChartUiTick); _activeChartUiTick = null; }
+  drawActiveSignalOnChart();
+  renderActiveSignalBar();
+}
+
+// Restore tracking on page load
+loadActiveChartSignal();
+if(_activeChartSignal){
+  renderActiveSignalBar();
+  // Defer the chart re-draw until t_chart exists
+  setTimeout(function(){ drawActiveSignalOnChart(); startActiveSignalPoll(); }, 1500);
 }
 
 function renderAnalyseResult(d){
