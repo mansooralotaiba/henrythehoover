@@ -357,7 +357,7 @@
   .term-main{display:grid;grid-template-columns:1fr 360px;gap:12px;flex:1;min-height:0}
   .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;min-height:0}
   .chart-card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px}
-  .chart-body{flex:1;background:var(--bg3);border-radius:5px;min-height:400px;position:relative}
+  .chart-body{flex:1;background:var(--bg3);border-radius:5px;min-height:400px;position:relative;overflow:hidden}
   /* Active signal status bar below the chart (when user clicks Track on Chart) */
   .active-signal-bar{display:flex;align-items:center;gap:10px;margin-top:8px;padding:8px 12px;background:linear-gradient(180deg,rgba(0,212,255,0.08),rgba(0,212,255,0.02));border:1px solid rgba(0,212,255,0.35);border-radius:6px;font-family:var(--mono);font-size:11px}
   .active-signal-bar.in-trade{background:linear-gradient(180deg,rgba(0,229,160,0.1),rgba(0,229,160,0.02));border-color:rgba(0,229,160,0.45)}
@@ -2976,27 +2976,43 @@ function renderActiveSignalBar(){
   var bar = el('active-signal-bar');
   if(!bar) return;
   var sig = _activeChartSignal;
-  if(!sig){ bar.style.display = 'none'; return; }
-  bar.style.display = 'flex';
-  bar.className = 'active-signal-bar ' + sig.state;
-  var tag = el('asb-tag');
-  var txt = el('asb-text');
-  var age = el('asb-age');
-  var states = { 'waiting': 'WAITING', 'in-trade': 'IN TRADE', 'closed': 'CLOSED', 'expired': 'EXPIRED' };
-  tag.textContent = states[sig.state] || sig.state.toUpperCase();
-  var coin = String(sig.pair).replace('USDT','').replace('1000','');
-  var arrow = sig.direction === 'LONG' ? '▲' : '▼';
-  var beTag = sig.beAlerted ? ' <span style="color:var(--am);font-weight:700">⚑ BE</span>' : '';
-  txt.innerHTML = arrow + ' ' + sig.direction + ' ' + coin
-    + ' · Entry <strong>' + formatPrice(sig.entry) + '</strong>'
-    + ' · SL <strong style="color:var(--re)">' + formatPrice(sig.sl) + '</strong>'
-    + ' · TP <strong style="color:var(--gr)">' + formatPrice(sig.tp) + '</strong>'
-    + ' · <strong>' + sig.rr.toFixed(2) + 'R</strong>'
-    + beTag;
-  // Age label
-  var mins = Math.floor((Date.now() - sig.placedAt) / 60000);
-  var ageStr = mins < 1 ? 'just now' : mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ' + (mins%60) + 'm ago';
-  age.textContent = ageStr;
+  var prevDisplay = bar.style.display;
+  if(!sig){
+    bar.style.display = 'none';
+  } else {
+    bar.style.display = 'flex';
+    bar.className = 'active-signal-bar ' + sig.state;
+    var tag = el('asb-tag');
+    var txt = el('asb-text');
+    var age = el('asb-age');
+    var states = { 'waiting': 'WAITING', 'in-trade': 'IN TRADE', 'closed': 'CLOSED', 'expired': 'EXPIRED' };
+    tag.textContent = states[sig.state] || sig.state.toUpperCase();
+    var coin = String(sig.pair).replace('USDT','').replace('1000','');
+    var arrow = sig.direction === 'LONG' ? '▲' : '▼';
+    var beTag = sig.beAlerted ? ' <span style="color:var(--am);font-weight:700">⚑ BE</span>' : '';
+    txt.innerHTML = arrow + ' ' + sig.direction + ' ' + coin
+      + ' · Entry <strong>' + formatPrice(sig.entry) + '</strong>'
+      + ' · SL <strong style="color:var(--re)">' + formatPrice(sig.sl) + '</strong>'
+      + ' · TP <strong style="color:var(--gr)">' + formatPrice(sig.tp) + '</strong>'
+      + ' · <strong>' + sig.rr.toFixed(2) + 'R</strong>'
+      + beTag;
+    // Age label
+    var mins = Math.floor((Date.now() - sig.placedAt) / 60000);
+    var ageStr = mins < 1 ? 'just now' : mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ' + (mins%60) + 'm ago';
+    age.textContent = ageStr;
+  }
+  // If the bar's visibility just changed, the chart-body height changed too —
+  // resize the Lightweight Charts canvas so it fills the new height instead
+  // of overflowing/under-filling. requestAnimationFrame lets the browser
+  // settle the new layout before we measure clientHeight.
+  if(bar.style.display !== prevDisplay){
+    requestAnimationFrame(function(){
+      if(!t_chart) return;
+      var box = el('t-chart');
+      if(!box) return;
+      try{ t_chart.resize(box.clientWidth, box.clientHeight); }catch(e){}
+    });
+  }
 }
 
 function startActiveSignalPoll(){
@@ -3041,9 +3057,15 @@ function evalActiveSignal(){
     var entry = sig.entry, sl = sig.sl, tp = sig.tp;
     var coinShort = String(sig.pair).replace('USDT','').replace('1000','');
     if(sig.state === 'waiting'){
-      var entered = bars.some(function(c){ return c.low <= entry && c.high >= entry; });
+      // Only count candles that OPENED at or after the signal was placed.
+      // Without this filter the first poll fires "entry hit" off historical
+      // wicks that happened minutes/hours before the user clicked Track.
+      // c.time is unix seconds (lightweight-charts format from /api/v2/candles).
+      var placedSec = Math.floor(sig.placedAt / 1000);
+      var entered = bars.some(function(c){ return c.time >= placedSec && c.low <= entry && c.high >= entry; });
       if(entered){
         sig.state = 'in-trade';
+        sig.enteredAt = Date.now(); // anchor for SL/TP/BE checks so they ignore pre-entry wicks
         persistActiveChartSignal();
         _toast('▶ ENTRY HIT', coinShort + ' ' + sig.direction + ' active', 'entry');
         _alertBeep(880, 1100);
@@ -3051,6 +3073,12 @@ function evalActiveSignal(){
         drawActiveSignalOnChart(); renderActiveSignalBar();
       }
     } else if(sig.state === 'in-trade'){
+      // All in-trade checks must only consider candles from at or after entry
+      // detection — otherwise a pre-entry wick that breached SL/TP/BE would
+      // immediately close the trade as soon as the state flipped to in-trade.
+      var sinceSec = Math.floor((sig.enteredAt || sig.placedAt) / 1000);
+      var liveBars = bars.filter(function(c){ return c.time >= sinceSec; });
+      if(!liveBars.length) return;
       // BE-move trigger — when price has progressed halfway from entry to TP,
       // alert the user to move SL to BE on their broker. One-shot per signal.
       if(!sig.beAlerted){
@@ -3058,8 +3086,8 @@ function evalActiveSignal(){
           ? entry + 0.5 * (tp - entry)
           : entry - 0.5 * (entry - tp);
         var beHit = sig.direction === 'LONG'
-          ? bars.some(function(c){ return c.high >= beThreshold; })
-          : bars.some(function(c){ return c.low  <= beThreshold; });
+          ? liveBars.some(function(c){ return c.high >= beThreshold; })
+          : liveBars.some(function(c){ return c.low  <= beThreshold; });
         if(beHit){
           sig.beAlerted = true;
           persistActiveChartSignal();
@@ -3071,11 +3099,11 @@ function evalActiveSignal(){
       }
       var slHit, tpHit;
       if(sig.direction === 'LONG'){
-        slHit = bars.some(function(c){ return c.low <= sl; });
-        tpHit = bars.some(function(c){ return c.high >= tp; });
+        slHit = liveBars.some(function(c){ return c.low <= sl; });
+        tpHit = liveBars.some(function(c){ return c.high >= tp; });
       } else {
-        slHit = bars.some(function(c){ return c.high >= sl; });
-        tpHit = bars.some(function(c){ return c.low <= tp; });
+        slHit = liveBars.some(function(c){ return c.high >= sl; });
+        tpHit = liveBars.some(function(c){ return c.low <= tp; });
       }
       // TP wins ties (rare same-candle TP+SL) since once we move SL to BE
       // the SL leg shouldn't fire — we treat the trade as TP-eligible
