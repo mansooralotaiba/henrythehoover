@@ -1967,10 +1967,91 @@ function fetchTermCandles(){
   return fetchWeexCandles();
 }
 
+// Live-tick stream state. We keep a single EventSource (for WEEX/HL/Massive)
+// OR a single WebSocket (for Binance — Binance public WSS works from the
+// browser's residential IP even when Railway is geo-blocked). The key tracks
+// broker:pair:tf so a re-render with the same selection doesn't churn the
+// connection; only an actual selector change tears it down.
+var _chartLiveSrc = null;     // EventSource handle
+var _chartLiveWs  = null;     // WebSocket handle
+var _chartLiveKey = null;     // 'broker:pair:tf'
+
+function stopChartLiveStream(){
+  if(_chartLiveSrc){ try{ _chartLiveSrc.close(); }catch(e){} _chartLiveSrc = null; }
+  if(_chartLiveWs ){ try{ _chartLiveWs .close(); }catch(e){} _chartLiveWs  = null; }
+  _chartLiveKey = null;
+}
+
+function _onLiveTick(barPayload, priceTick){
+  if(t_series && barPayload && barPayload.time != null){
+    try{
+      t_series.update({
+        time:  barPayload.time,
+        open:  barPayload.open,
+        high:  barPayload.high,
+        low:   barPayload.low,
+        close: barPayload.close,
+      });
+    }catch(e){}
+  }
+  if(priceTick != null){
+    var p = el('t-price');
+    if(p) p.textContent = formatPrice(priceTick);
+  }
+}
+
+function startChartLiveStream(){
+  var key = t_broker + ':' + t_pair + ':' + t_tf;
+  if(_chartLiveKey === key && (_chartLiveSrc || _chartLiveWs)) return;
+  stopChartLiveStream();
+  if(!t_chart || !t_series) return;
+  _chartLiveKey = key;
+
+  // Binance: direct browser WebSocket to fstream.binance.com — sub-second
+  // updates without the server hop, and works even when Railway's egress IP
+  // is geo-blocked by Binance REST.
+  if(t_broker === 'binance'){
+    if(!('WebSocket' in window)) return;
+    try{
+      var sym = tBinanceSymMap(t_pair).toLowerCase();
+      _chartLiveWs = new WebSocket('wss://fstream.binance.com/ws/' + sym + '@kline_' + t_tf);
+      _chartLiveWs.onmessage = function(ev){
+        try{
+          var msg = JSON.parse(ev.data);
+          var k = msg.k; if(!k) return;
+          var bar = { time: Math.floor(k.t / 1000), open: parseFloat(k.o), high: parseFloat(k.h), low: parseFloat(k.l), close: parseFloat(k.c) };
+          _onLiveTick(bar, bar.close);
+        }catch(e){}
+      };
+      _chartLiveWs.onclose = function(){
+        // Reconnect if user is still on this chart
+        if(_chartLiveKey === key) setTimeout(startChartLiveStream, 5000);
+      };
+    }catch(e){ _chartLiveWs = null; }
+    return;
+  }
+
+  // WEEX / Hyperliquid / Massive — use the server SSE stream.
+  if(!('EventSource' in window)) return;
+  var ssym = (t_broker === 'massive') ? 'GOLD' : t_pair;
+  var url = '/api/live/' + encodeURIComponent(t_broker) + '/' + encodeURIComponent(ssym) + '?tf=' + encodeURIComponent(t_tf);
+  try{
+    _chartLiveSrc = new EventSource(url, { withCredentials: true });
+    _chartLiveSrc.onmessage = function(ev){
+      try{
+        var d = JSON.parse(ev.data);
+        _onLiveTick(d.bar, d.price);
+      }catch(e){}
+    };
+    // onerror: EventSource auto-reconnects; nothing to do
+  }catch(e){ _chartLiveSrc = null; }
+}
+
 function renderChart(){
   var box = el('t-chart');
   if(!window.LightweightCharts){ box.innerHTML = '<div class="loading">Chart library failed to load</div>'; return; }
   if(t_chart){ try{ t_chart.remove(); }catch(e){} t_chart=null; t_series=null; }
+  stopChartLiveStream(); // drop any prior live stream so we don't update a freed series
   box.innerHTML = '';
   t_chart = LightweightCharts.createChart(box,{
     layout:{ background:{type:'solid',color:'#13151c'}, textColor:'#8b94a3' },
@@ -2000,6 +2081,8 @@ function renderChart(){
     el('t-price').textContent = formatPrice(lastClose);
     // Re-draw active manual-signal lines when chart is on the signal's pair
     if(typeof drawActiveSignalOnChart === 'function') drawActiveSignalOnChart();
+    // Start the live tick stream so new bars update in-place without page reload
+    startChartLiveStream();
   });
 }
 
