@@ -4815,26 +4815,63 @@ async function fetchCandlesServer(coin, tf, limit, broker) {
       }
       // Fall through to WEEX path below (same code as broker === 'weex')
     }
-    // weex (default) — they changed the API: granularity now takes string
-    // suffixes ("15m" instead of "900") and the timestamp is returned in
-    // MILLISECONDS, not seconds. The old format silently returned HTTP 400
-    // with code 40020 ("参数granularity错误") and our parser swallowed the
-    // error, leaving lastPrice=null and no triggers ever firing.
+    // WEEX path — they changed the API: granularity takes string suffixes
+    // ("15m" instead of "900") and timestamps come back in MILLISECONDS.
+    // Two endpoints exist: `historyCandles` is the modern path and returns
+    // data for the most pairs; `candles` is the legacy fallback that has
+    // started returning empty/non-array for some symbols. Try modern first,
+    // fall through to legacy, then to Hyperliquid as last resort so the
+    // chart never goes blank when Binance is geo-blocked.
     const fsym = FUTURES_SYM_SERVER[coin] || ('cmt_' + coin.toLowerCase());
     const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '12h': '12h', '1d': '1d', '1w': '1w' };
     const gran = tfMap[tf] || '15m';
-    const r = await fetch(`https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${gran}&limit=${limit}`);
-    const raw = await r.json();
-    if (!Array.isArray(raw)) {
-      // Weex error object — log so it surfaces in Railway instead of silent failure
-      console.warn('[fetchCandlesServer] weex non-array:', coin, gran, JSON.stringify(raw).slice(0, 200));
-      return [];
+    const weexUrls = [
+      `https://api-contract.weex.com/capi/v2/market/historyCandles?symbol=${fsym}&granularity=${gran}&limit=${limit}`,
+      `https://api-contract.weex.com/capi/v2/market/candles?symbol=${fsym}&granularity=${gran}&limit=${limit}`,
+    ];
+    for (const u of weexUrls) {
+      try {
+        const r = await fetch(u);
+        if (!r.ok) {
+          console.warn('[fetchCandlesServer] weex', r.status, u.split('?')[0].split('/').pop(), coin);
+          continue;
+        }
+        const raw = await r.json();
+        if (Array.isArray(raw) && raw.length) {
+          return raw.map(c => {
+            const t = +c[0];
+            return { t: t > 1e12 ? t : t * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] };
+          });
+        }
+        console.warn('[fetchCandlesServer] weex non-array/empty:', coin, gran, u.split('?')[0].split('/').pop(), Array.isArray(raw) ? `len=${raw.length}` : JSON.stringify(raw).slice(0, 120));
+      } catch (e) {
+        console.warn('[fetchCandlesServer] weex threw:', coin, u.split('?')[0].split('/').pop(), e.message);
+      }
     }
-    return raw.map(c => {
-      const t = +c[0];
-      // Auto-detect units: > 1e12 means ms already, else seconds
-      return { t: t > 1e12 ? t : t * 1000, o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] };
-    });
+    // Last-resort fallback: Hyperliquid public API. Works from any IP. Coin
+    // format is the bare symbol (BTC, ETH, SOL …) without USDT.
+    try {
+      const hlSym = coin.replace('USDT', '').replace(/^1000/, 'k'); // kPEPE etc.
+      const tfMs = { '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '4h': 14400000, '1d': 86400000 };
+      const ms = tfMs[tf] || 900000;
+      const start = Date.now() - ms * limit * 1.1;
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'candleSnapshot', req: { coin: hlSym, interval: tf, startTime: start, endTime: Date.now() } }),
+      });
+      if (r.ok) {
+        const arr = await r.json();
+        if (Array.isArray(arr) && arr.length) {
+          console.log('[fetchCandlesServer] hl rescue', coin, tf, `len=${arr.length}`);
+          return arr.map(k => ({ t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v }));
+        }
+      }
+    } catch (e) {
+      console.warn('[fetchCandlesServer] hl rescue threw:', coin, e.message);
+    }
+    console.error('[fetchCandlesServer] all sources failed for', coin, tf, 'original broker:', broker);
+    return [];
   } catch (e) {
     console.error('[fetchCandlesServer]', e.message);
     return [];
