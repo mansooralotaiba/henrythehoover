@@ -126,7 +126,7 @@
   .card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px}
   .card h3{font-size:11px;font-weight:600;letter-spacing:0.14em;color:var(--mu);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:6px}
   .card h3 .dot{width:6px;height:6px;border-radius:50%;background:var(--cy)}
-  .pos{color:var(--gr)} .neg{color:var(--re)} .am{color:var(--am)}
+  .pos{color:var(--gr)} .neg{color:var(--re)} .am{color:var(--am)} .cy{color:var(--cy)}
   .mono{font-family:var(--mono)}
   .loading{display:flex;align-items:center;justify-content:center;color:var(--di);font-size:12px;padding:40px;font-family:var(--mono)}
   .error-banner{padding:10px 14px;background:rgba(255,85,119,0.1);border:1px solid rgba(255,85,119,0.3);border-radius:6px;color:var(--re);font-size:12px;font-family:var(--mono);margin-bottom:10px}
@@ -430,6 +430,21 @@
   .stats-grid, .perf-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .cum-chart-wrap, .hour-chart-wrap{background:var(--bg3);border-radius:6px;padding:6px;margin-top:8px}
   .cum-chart-wrap svg, .hour-chart-wrap svg{display:block;width:100%}
+
+  /* Stats overview row — large cards spanning the full grid */
+  .stats-grid > .stats-overview-row{grid-column:1 / -1;display:grid;grid-template-columns:1.05fr 1fr 1fr 1.2fr;gap:14px;margin-bottom:4px}
+  .stats-overview-row .ov-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+  .stats-overview-row .ov-card .l{font-size:10px;color:var(--mu);letter-spacing:0.16em;text-transform:uppercase;margin-bottom:6px;font-family:var(--mono)}
+  .stats-overview-row .ov-card .v{font-family:var(--mono);font-size:34px;font-weight:700;line-height:1.05}
+  .stats-overview-row .ov-card .sub{font-size:11px;color:var(--mu);margin-top:6px;font-family:var(--mono);letter-spacing:0.03em}
+  .stat-counter-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;align-items:stretch}
+  .stat-counter{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 8px;text-align:center;display:flex;flex-direction:column;justify-content:center}
+  .stat-counter .l{font-size:10px;color:var(--mu);letter-spacing:0.16em;text-transform:uppercase;font-family:var(--mono);margin-bottom:6px}
+  .stat-counter .v{font-family:var(--mono);font-size:24px;font-weight:700;line-height:1}
+  .stat-counter.pos .v{color:var(--gr)}
+  .stat-counter.neg .v{color:var(--re)}
+  .stat-counter.am .v{color:var(--am)}
+  .stat-counter.mu .v{color:var(--mu)}
   .stat-card, .perf-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;min-width:0}
   .stat-card-hdr, .perf-card-hdr{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
   .stat-card-hdr h3, .perf-card-hdr h3{font-size:13px;font-weight:600}
@@ -527,6 +542,8 @@
     /* Stats / Performance grids stack */
     .stats-grid, .perf-grid { grid-template-columns: 1fr; gap: 12px; }
     .perf-overall { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+    .stats-grid > .stats-overview-row { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stats-overview-row .ov-card .v { font-size: 24px; }
     .ov-card .v { font-size: 22px; }
     .stats-hdr h2, .perf-hdr h2 { font-size: 16px; }
     .stats-hdr p, .perf-sub { font-size: 12px; }
@@ -2793,10 +2810,58 @@ var _statsLoaded = false;
 function loadStats(){
   if(!state.isAdmin) return;
   if(_statsLoaded) return; _statsLoaded = true;
-  // Stats tab = AUTOSCAN trades only (trigger_type != null on the server)
-  fetch('/api/admin/stats?source=auto',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(d){
+  // Stats tab = AUTOSCAN trades only. Fetch both the existing detailed
+  // breakdowns AND the per-user perf payload (which has the overall
+  // aggregates + cumulativeR series the new overview cards need).
+  Promise.all([
+    fetch('/api/admin/stats?source=auto',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}),
+    fetch('/api/performance/me?source=auto',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}),
+  ]).then(function(both){
+    var d = both[0], perf = both[1];
     el('stats-meta').textContent = d.totalClosed+' autoscan closed trades · generated '+new Date(d.generatedAt).toUTCString().slice(17,22)+' UTC';
     var grid = el('stats-grid'); grid.innerHTML = '';
+
+    // ── Overview row: Net R / Win Rate / Expectancy + TP/SL/BE/EXP counters
+    var ov = perf.overall || {};
+    var lastWeek = ov.lastWeekR || 0;
+    var wrSub = (ov.tp + ov.be) + ' of ' + (ov.closedN || 0) + ' closed';
+    var lwArrow = lastWeek >= 0 ? '↗' : '↘';
+    var ovRow = document.createElement('div');
+    ovRow.className = 'stats-overview-row';
+    ovRow.appendChild(card2('Net R',     fmtR(ov.totalR),     lwArrow + ' ' + fmtR(lastWeek) + ' this week', ov.totalR>=0?'pos':'neg'));
+    ovRow.appendChild(card2('Win Rate',  fmtPct(ov.winRate),  wrSub, 'cy'));
+    ovRow.appendChild(card2('Expectancy', (ov.expectancy>=0?'+':'')+ov.expectancy+'R/trade', 'net of fees', ov.expectancy>=0?'pos':'neg'));
+    // TP/SL/BE/EXP counter grid
+    var ctrGrid = document.createElement('div');
+    ctrGrid.className = 'stat-counter-grid';
+    var mkCounter = function(label, val, cls){
+      var b = document.createElement('div');
+      b.className = 'stat-counter ' + cls;
+      b.innerHTML = '<div class="l">' + label + '</div><div class="v">' + val + '</div>';
+      return b;
+    };
+    ctrGrid.appendChild(mkCounter('TP',  ov.tp || 0,      'pos'));
+    ctrGrid.appendChild(mkCounter('SL',  ov.sl || 0,      'neg'));
+    ctrGrid.appendChild(mkCounter('BE',  ov.be || 0,      'am'));
+    ctrGrid.appendChild(mkCounter('EXP', ov.expired || 0, 'mu'));
+    ovRow.appendChild(ctrGrid);
+    grid.appendChild(ovRow);
+
+    // ── Cumulative R Over Time — full-width SVG line chart
+    var cumWrap = document.createElement('div');
+    cumWrap.className = 'stat-card';
+    cumWrap.style.gridColumn = '1 / -1';
+    cumWrap.innerHTML = '<div class="stat-card-hdr"><h3>Cumulative R Over Time</h3><span class="src">autoscan account · ' + (perf.cumulativeR ? perf.cumulativeR.length : 0) + ' closed</span></div>'
+      + '<div class="cum-chart-wrap"><svg id="stats-cum-svg" width="100%" height="220" preserveAspectRatio="none"></svg></div>';
+    grid.appendChild(cumWrap);
+    // Reuse the Performance tab's chart drawer by temporarily aliasing the el id
+    var realSvg = el('stats-cum-svg');
+    var prev = el('perf-cum-svg');
+    realSvg.id = 'perf-cum-svg';
+    drawCumChart(perf.cumulativeR || []);
+    realSvg.id = 'stats-cum-svg';
+    if(prev) prev.id = 'perf-cum-svg';
+
     // 1. Stacking categories
     var c1 = card('Stacking Categories', d.totalClosed + ' autoscan closed', tableHtml([
       ['Category','N','WR%','Total R','Avg R'],
