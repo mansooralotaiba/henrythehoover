@@ -8209,6 +8209,106 @@ app.get('/api/whales/positions', requireAuth, async (_req, res) => {
   res.json({ positions: out, count: out.length, generatedAt: new Date().toISOString() });
 });
 
+// ── /api/whales/detail/:address ── full account detail for the click-through page.
+// Returns: account stats (equity, total notional, margin used, withdrawable),
+// every open position with the full HL position object decoded into our
+// shape, recent fills (last 30) from HL's userFills endpoint, and recent
+// whale_events rows for that address. Used when the user clicks a whale in
+// the list view. Route uses /detail/ prefix so static routes like /list,
+// /positions, /events don't get caught by Express's :address param.
+app.get('/api/whales/detail/:address', requireAuth, async (req, res) => {
+  const addr = String(req.params.address || '').toLowerCase();
+  const w = _whales.find(x => x.address.toLowerCase() === addr);
+  if (!w) return res.status(404).json({ error: 'whale not tracked' });
+
+  const [state, fills] = await Promise.all([
+    _hlClearinghouseState(w.address),
+    fetch(WHALE_INFO_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'userFills', user: w.address }),
+    }).then(r => r.ok ? r.json() : []).catch(() => []),
+  ]);
+  if (!state || !state.marginSummary) {
+    return res.status(503).json({ error: 'Hyperliquid fetch failed; try again' });
+  }
+
+  const positions = (state.assetPositions || [])
+    .filter(p => p && p.position)
+    .map(p => {
+      const pos = p.position;
+      const szi = parseFloat(pos.szi);
+      const openedAt = _whalePositionOpens.get(_whaleOpenKey(w.address, pos.coin)) || null;
+      return {
+        coin: pos.coin,
+        direction: szi >= 0 ? 'LONG' : 'SHORT',
+        sizeCoin: Math.abs(szi),
+        sizeUsd: parseFloat(pos.positionValue) || 0,
+        entry: parseFloat(pos.entryPx),
+        leverage: parseFloat(pos.leverage?.value) || 1,
+        leverageType: pos.leverage?.type || 'cross',
+        uPnl: parseFloat(pos.unrealizedPnl) || 0,
+        roe: parseFloat(pos.returnOnEquity) || 0,
+        liquidationPx: parseFloat(pos.liquidationPx) || null,
+        marginUsed: parseFloat(pos.marginUsed) || 0,
+        cumFundingAllTime: parseFloat(pos.cumFunding?.allTime) || 0,
+        openedAt,
+      };
+    })
+    .sort((a, b) => {
+      if (a.openedAt && b.openedAt) return b.openedAt - a.openedAt;
+      if (a.openedAt) return -1;
+      if (b.openedAt) return 1;
+      return b.sizeUsd - a.sizeUsd;
+    });
+
+  // Recent fills — HL returns most-recent-first already. Trim to 30.
+  const recentFills = (Array.isArray(fills) ? fills.slice(0, 30) : []).map(f => ({
+    coin: f.coin,
+    side: f.side,            // 'B' = buy, 'A' = ask/sell
+    direction: f.dir,        // 'Open Long' / 'Close Short' / 'Open Short' / 'Close Long'
+    px: parseFloat(f.px) || 0,
+    sz: parseFloat(f.sz) || 0,
+    usd: (parseFloat(f.px) || 0) * (parseFloat(f.sz) || 0),
+    time: f.time,            // ms epoch
+    fee: parseFloat(f.fee || 0),
+    closedPnl: parseFloat(f.closedPnl || 0),
+  }));
+
+  // Recent tracked events for this address (opens / closes detected by our
+  // diff loop). Falls back to in-memory ring buffer if DB is unavailable.
+  let recentEvents = [];
+  if (supaAdmin) {
+    try {
+      const { data } = await supaAdmin
+        .from('whale_events')
+        .select('coin, direction, action, size_usd, leverage, pnl_usd, ts')
+        .eq('address', w.address)
+        .order('ts', { ascending: false })
+        .limit(20);
+      if (data) recentEvents = data;
+    } catch (err) { /* fall through */ }
+  }
+  if (!recentEvents.length) {
+    recentEvents = _whaleEventCache.filter(e => e.address === w.address).slice(0, 20);
+  }
+
+  res.json({
+    address: w.address,
+    alias: w.alias,
+    monthPnl: w.monthPnl,
+    accountValue: parseFloat(state.marginSummary.accountValue) || 0,
+    totalNotional: parseFloat(state.marginSummary.totalNtlPos) || 0,
+    totalMarginUsed: parseFloat(state.marginSummary.totalMarginUsed) || 0,
+    withdrawable: parseFloat(state.withdrawable) || 0,
+    crossMaintenanceMargin: parseFloat(state.crossMaintenanceMarginUsed) || 0,
+    positions,
+    recentFills,
+    recentEvents,
+    generatedAt: new Date().toISOString(),
+  });
+});
+
 // ── /api/whales/events ── recent activity feed (DB-backed)
 app.get('/api/whales/events', requireAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
