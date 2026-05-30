@@ -299,6 +299,13 @@
   .au-cell .au-close-x{position:absolute;top:6px;right:6px;width:16px;height:16px;border:1px solid var(--border);border-radius:3px;color:var(--mu);font-size:11px;line-height:14px;text-align:center;cursor:pointer;background:rgba(255,255,255,0.02)}
   .au-cell .au-close-x:hover{color:var(--re);border-color:rgba(255,85,119,0.4)}
 
+  /* Manual ANALYSE modal — diagnostic chips + block card */
+  .modal-body .diag-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px}
+  .modal-body .diag-srcs{font-size:10px;color:var(--mu);font-family:var(--mono);letter-spacing:0.04em;margin-bottom:14px;padding-left:4px}
+  .modal-body .diag-tf-note{font-size:9px;color:var(--am);letter-spacing:0.08em;font-family:var(--mono);margin-left:auto;padding:2px 8px;background:rgba(255,170,48,0.1);border:1px solid rgba(255,170,48,0.3);border-radius:3px}
+  .modal-body .block-card{background:rgba(255,85,119,0.08);border:1px solid rgba(255,85,119,0.3);border-radius:6px;padding:14px;margin-bottom:14px}
+  .modal-body .block-card .label{color:var(--re)!important}
+
   /* Live veto report card */
   #veto-report .veto-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
   #veto-report .veto-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--re);border-radius:4px}
@@ -2279,20 +2286,37 @@ function toggleMulti(){
 }
 _applyMultiUI();
 
-function runAnalyse(){
+function runAnalyse(force){
   var btn = el('t-analyse');
   btn.disabled = true; btn.textContent = '⏳ Analysing…';
   openAiModal();
   window._lastManualSignal = null;
   var modeLabel = _t_multi ? ' · MULTI-BROKER' : '';
-  el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf + modeLabel;
+  el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf + modeLabel + (force ? ' · FORCED' : '');
   el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 10-20s on Opus 4.8' + (_t_multi ? ' · cross-venue compare' : '') + '</div>';
   el('ai-modal-actions').innerHTML = '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
   fetch('/api/v2/analyse', {
     method:'POST', credentials:'same-origin',
     headers:{ 'Content-Type':'application/json' },
-    body: JSON.stringify({ coin: t_pair, tf: t_tf, broker: t_broker, mode: _t_multi ? 'multi' : 'single' })
+    body: JSON.stringify({ coin: t_pair, tf: t_tf, broker: t_broker, mode: _t_multi ? 'multi' : 'single', force: !!force })
   }).then(function(r){
+    if(r.status === 409){
+      // Autoscan-equivalent gate blocked the call. Surface the reason and
+      // offer a force-fire button so the user can override.
+      return r.json().then(function(d){
+        btn.disabled = false; btn.textContent = '⚡ Analyse';
+        var coin = String(t_pair).replace('USDT','');
+        el('ai-modal-title').innerHTML = coin + ' <span class="dir notrade">BLOCKED</span>';
+        el('ai-modal-body').innerHTML =
+          '<div class="modal-section block-card"><div class="label">⛔ Autoscan gate active</div>'
+        + '<div class="text">' + escapeHtml(d.reason || 'Analysis blocked by an autoscan gate.') + '</div></div>'
+        + '<div class="modal-section"><div class="label">Why this matters</div><div class="text">Autoscan skips this window because historical data shows degraded performance. You can override by force-firing if you have a specific reason.</div></div>';
+        el('ai-modal-actions').innerHTML =
+          '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Cancel</button>'
+        + '<button class="btn-modal btn-tp" onclick="runAnalyse(true)">⚡ Force Analyse Anyway</button>';
+        throw new Error('__handled');
+      });
+    }
     if(!r.ok) return r.json().then(function(d){ throw new Error(d.error || 'HTTP '+r.status); });
     return r.json();
   }).then(function(d){
@@ -2325,6 +2349,7 @@ function runAnalyse(){
     }
   }).catch(function(e){
     btn.disabled = false; btn.textContent = '⚡ Analyse';
+    if(e && e.message === '__handled') return; // 409 path already rendered the blocked UI
     el('ai-modal-body').innerHTML = '<div class="modal-error">Error: ' + escapeHtml(e.message) + '</div>';
   });
 }
@@ -2393,10 +2418,46 @@ function renderAnalyseResult(d){
     hdr.insertBefore(c, hdr.querySelector('.modal-close'));
   }
   var body = el('ai-modal-body');
+
+  // Diagnostics block — same indicators autoscan computed (regime + ADX +
+  // ATR + Vol + Div) plus the list of context sources the AI actually saw.
+  var diag = d.diagnostics || null;
+  var diagHtml = '';
+  if(diag){
+    var chips = [];
+    if(diag.regime && diag.regime.regime){
+      var rg = String(diag.regime.regime).toUpperCase();
+      var arrow = rg.indexOf('UP') !== -1 ? '↑' : rg.indexOf('DOWN') !== -1 ? '↓' : '↔';
+      var rgClass = rg.indexOf('UP') !== -1 ? 'up' : rg.indexOf('DOWN') !== -1 ? 'down' : 'flat';
+      chips.push('<span class="au-chip regime ' + rgClass + '" title="Regime confidence ' + Math.round(diag.regime.confidence || 0) + '%">' + arrow + ' ' + rg.replace('REGIME ', '') + '</span>');
+    }
+    if(diag.adx != null)     chips.push('<span class="au-chip ind ' + (diag.adx >= 25 ? 'strong' : '') + '">ADX ' + diag.adx.toFixed(1) + '</span>');
+    if(diag.atr14 != null)   chips.push('<span class="au-chip ind">ATR ' + diag.atr14 + '</span>');
+    if(diag.volRatio != null)chips.push('<span class="au-chip ind ' + (diag.volRatio >= 1.5 ? 'strong' : '') + '">Vol ' + diag.volRatio.toFixed(2) + 'x</span>');
+    if(diag.divergence){
+      var dv = String(diag.divergence).toUpperCase();
+      chips.push('<span class="au-chip ind ' + (dv.indexOf('BULL') !== -1 ? 'bull' : 'bear') + '">Div ' + dv.slice(0,4) + '</span>');
+    }
+    var srcs = diag.contextSources || {};
+    var srcLabels = [];
+    if(srcs.mtf)            srcLabels.push('MTF');
+    if(srcs.btcCorrelation) srcLabels.push('BTC');
+    if(srcs.orderFlow)      srcLabels.push('Footprint');
+    if(srcs.cvd)            srcLabels.push('CVD');
+    if(srcs.liquidity)      srcLabels.push('Liquidity');
+    if(srcs.news)           srcLabels.push('News');
+    if(srcs.calendar)       srcLabels.push('Calendar');
+    if(srcs.dxy)            srcLabels.push('DXY');
+    if(srcs.crossBroker)    srcLabels.push('Multi-broker');
+    var tfNote = diag.tfOverridden ? ('<span class="diag-tf-note">TF auto-set to ' + diag.tfUsed + ' for ' + coin + ' (was ' + diag.tfRequested + ')</span>') : '';
+    diagHtml = '<div class="diag-row">' + chips.join('') + tfNote + '</div>'
+             + (srcLabels.length ? '<div class="diag-srcs">AI saw: ' + srcLabels.join(' · ') + '</div>' : '');
+  }
+
   if(dir === 'NO TRADE'){
-    body.innerHTML = '<div class="modal-section"><div class="label">No Trade</div><div class="text">' + escapeHtml(s.reasoning || 'AI suggests no trade right now.') + '</div></div>';
+    body.innerHTML = diagHtml + '<div class="modal-section"><div class="label">No Trade</div><div class="text">' + escapeHtml(s.reasoning || 'AI suggests no trade right now.') + '</div></div>';
   } else {
-    body.innerHTML =
+    body.innerHTML = diagHtml +
       '<div class="levels-grid">'
       + '<div class="level-card entry"><div class="l">Entry</div><div class="v">' + formatPrice(s.entry) + '</div></div>'
       + '<div class="level-card sl"><div class="l">Stop Loss</div><div class="v">' + formatPrice(s.sl) + '</div></div>'
