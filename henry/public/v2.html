@@ -494,6 +494,31 @@
   .stats-hdr .admin-badge{font-size:10px;letter-spacing:0.16em;padding:3px 9px;background:rgba(247,201,72,0.15);color:var(--go);border:1px solid rgba(247,201,72,0.4);border-radius:4px;font-weight:700;text-transform:uppercase}
   .stats-hdr p{font-size:13px;color:var(--mu)}
 
+  /* ── Whales tab ───────────────────────────────────────────────────── */
+  .whales-hdr{margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px}
+  .whales-hdr h2{font-size:20px;font-weight:700;margin-bottom:4px}
+  .whales-layout{display:grid;grid-template-columns:1fr 320px;gap:14px}
+  .whales-main{display:flex;flex-direction:column;gap:14px;min-width:0}
+  .whales-side{min-width:0}
+  .whale-pos-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+  .whale-pos-table th{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--mu);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--border);text-align:left}
+  .whale-pos-table td{padding:8px 6px;border-bottom:1px solid rgba(255,255,255,0.04)}
+  .whale-pos-table tr:hover td{background:rgba(255,255,255,0.02)}
+  .whale-tag-long{background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.45);padding:2px 7px;border-radius:3px;font-size:9px;letter-spacing:0.1em;font-weight:700}
+  .whale-tag-short{background:rgba(255,85,119,0.15);color:var(--re);border:1px solid rgba(255,85,119,0.45);padding:2px 7px;border-radius:3px;font-size:9px;letter-spacing:0.1em;font-weight:700}
+  .whale-addr{color:var(--cy);font-weight:600}
+  .whale-feed-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,0.04);font-family:var(--mono);font-size:11px}
+  .whale-feed-row .act{font-size:9px;letter-spacing:0.1em;font-weight:700;padding:2px 6px;border-radius:3px;min-width:64px;text-align:center}
+  .whale-feed-row .act.OPEN{background:rgba(0,212,255,0.15);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
+  .whale-feed-row .act.CLOSE{background:rgba(247,201,72,0.15);color:var(--go);border:1px solid rgba(247,201,72,0.4)}
+  .whale-feed-row .act.INCREASE{background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.4)}
+  .whale-feed-row .act.DECREASE{background:rgba(255,170,48,0.15);color:var(--am);border:1px solid rgba(255,170,48,0.4)}
+  .whale-feed-row .when{color:var(--mu);margin-left:auto;font-size:10px}
+  .whale-list-row{display:flex;justify-content:space-between;align-items:center;padding:7px 4px;border-bottom:1px solid rgba(255,255,255,0.04);font-family:var(--mono);font-size:11px}
+  .whale-list-row .pnl{font-weight:700}
+  .whale-list-row .pnl.pos{color:var(--gr)}
+  .whale-list-row .pnl.neg{color:var(--re)}
+
   /* ═══════════════════════════════════════════════════════════════════
      MOBILE — phone & small tablet adaptations
      ═══════════════════════════════════════════════════════════════════ */
@@ -556,8 +581,12 @@
     .news { grid-template-columns: 1fr; height: auto; gap: 10px; }
     .news-feed, .news-calendar { max-height: none; padding: 12px; }
 
-    /* Stats / Performance grids stack */
+    /* Stats / Performance / Whales grids stack */
     .stats-grid, .perf-grid { grid-template-columns: 1fr; gap: 12px; }
+    .whales-layout { grid-template-columns: 1fr; gap: 12px; }
+    .whales-hdr h2 { font-size: 16px; }
+    .whale-pos-table { font-size: 10px; }
+    .whale-pos-table th, .whale-pos-table td { padding: 6px 5px; }
     .perf-overall { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
     .stats-grid > .stats-overview-row { grid-template-columns: 1fr 1fr; gap: 10px; }
     .stats-overview-row .ov-card .v { font-size: 24px; }
@@ -641,6 +670,7 @@
     <div class="tab" data-tab="terminal">Terminal</div>
     <div class="tab active" data-tab="kingdom">Kingdom</div>
     <div class="tab" data-tab="news">News</div>
+    <div class="tab" data-tab="whales">Whales</div>
     <div class="tab admin-only-content" data-tab="stats">Stats <span class="admin-lock">⚑</span></div>
     <div class="tab" data-tab="perf">Performance</div>
   </div>
@@ -863,6 +893,35 @@
       <div class="news-calendar">
         <h3>Economic Calendar</h3>
         <div id="calendar-items"><div class="loading">Loading calendar…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Whales (Hyperliquid top-15 watch page) ─────── -->
+  <div class="panel" id="panel-whales">
+    <div class="whales-hdr">
+      <div>
+        <h2>Whales · Hyperliquid</h2>
+        <p class="perf-sub">Top 15 traders by 30d PnL on Hyperliquid. Polls every 30s. <strong style="color:var(--am)">Watch, don't follow blindly</strong> — leaderboard rewards survivorship and loud whales often pump-and-dump retail. Best used as macro sentiment, not signals.</p>
+      </div>
+      <span style="color:var(--mu);font-family:var(--mono);font-size:11px" id="whales-meta">—</span>
+    </div>
+    <div class="whales-layout">
+      <div class="whales-main">
+        <div class="stat-card">
+          <div class="stat-card-hdr"><h3>Live Positions</h3><span class="src" id="whales-pos-meta">—</span></div>
+          <div id="whales-positions"><div class="loading">Loading positions…</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-hdr"><h3>Activity Feed</h3><span class="src">recent opens, closes, size changes</span></div>
+          <div id="whales-events"><div class="loading">Loading activity…</div></div>
+        </div>
+      </div>
+      <div class="whales-side">
+        <div class="stat-card">
+          <div class="stat-card-hdr"><h3>Tracked Whales</h3><span class="src">ranked by 30d PnL</span></div>
+          <div id="whales-list"><div class="loading">Loading list…</div></div>
+        </div>
       </div>
     </div>
   </div>
@@ -1320,6 +1379,7 @@ document.querySelectorAll('.tab').forEach(function(t){
     el('panel-' + t.dataset.tab).classList.add('active');
     // Lazy-load that tab's data
     if(t.dataset.tab==='news')        loadNews();
+    if(t.dataset.tab==='whales')      loadWhales();
     if(t.dataset.tab==='stats')       loadStats();
     if(t.dataset.tab==='perf')        loadPerformance();
     if(t.dataset.tab==='terminal')    loadTerminal();
@@ -3469,6 +3529,120 @@ function loadNews(){
       });
     } else { cbox.innerHTML = '<div class="loading">No upcoming events.</div>'; }
   }).catch(function(e){ el('news-items').innerHTML = '<div class="error-banner">'+e.message+'</div>'; });
+}
+
+// ── Whales tab ────────────────────────────
+// Loads + auto-refreshes every 30s while the tab is active. Three fetches in
+// parallel: list (whom we track), positions (live snapshot), events (feed).
+var _whalesPoll = null;
+function loadWhales(){
+  // Initial draw
+  refreshWhales();
+  // Restart 30s poll on every tab open so we don't double-poll if user toggles
+  if(_whalesPoll){ clearInterval(_whalesPoll); }
+  _whalesPoll = setInterval(function(){
+    var panel = el('panel-whales');
+    if(panel && panel.classList.contains('active')) refreshWhales();
+  }, 30000);
+}
+function _whaleFmtUsd(n){
+  var v = parseFloat(n); if(!isFinite(v)) return '—';
+  var abs = Math.abs(v);
+  if(abs >= 1e9) return (v/1e9).toFixed(2)+'B';
+  if(abs >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if(abs >= 1e3) return (v/1e3).toFixed(1)+'k';
+  return v.toFixed(0);
+}
+function _whaleAgo(ts){
+  if(!ts) return '—';
+  var s = (Date.now() - new Date(ts).getTime())/1000;
+  if(s < 60) return Math.floor(s)+'s ago';
+  if(s < 3600) return Math.floor(s/60)+'m ago';
+  if(s < 86400) return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
+function refreshWhales(){
+  Promise.all([
+    fetch('/api/whales/list',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
+    fetch('/api/whales/positions',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
+    fetch('/api/whales/events?limit=80',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
+  ]).then(function(all){
+    var list = all[0], pos = all[1], evs = all[2];
+
+    // ── Tracked Whales sidebar
+    var lb = el('whales-list');
+    if(list && list.whales && list.whales.length){
+      lb.innerHTML = '';
+      list.whales.forEach(function(w){
+        var row = document.createElement('div');
+        row.className = 'whale-list-row';
+        var pnlCls = w.monthPnl >= 0 ? 'pos' : 'neg';
+        var pnlSign = w.monthPnl >= 0 ? '+' : '−';
+        row.innerHTML = '<span><span class="whale-addr">'+escapeHtml(w.alias)+'</span>'
+          + ' <span style="color:var(--mu);font-size:10px">· '+w.currentPositions+' open</span></span>'
+          + '<span class="pnl '+pnlCls+'">'+pnlSign+'$'+_whaleFmtUsd(Math.abs(w.monthPnl))+'</span>';
+        lb.appendChild(row);
+      });
+    } else {
+      lb.innerHTML = '<div class="loading">Discovery in progress — first run takes ~30s after server start.</div>';
+    }
+
+    // ── Live Positions table
+    var pb = el('whales-positions');
+    if(pos && pos.positions && pos.positions.length){
+      var hdr = '<table class="whale-pos-table"><thead><tr>'
+        +'<th>Whale</th><th>Coin</th><th>Side</th><th>Size USD</th><th>Lev</th><th>Entry</th><th>uPnL</th><th>ROE</th>'
+        +'</tr></thead><tbody>';
+      var body = pos.positions.map(function(p){
+        var sideCls = p.direction === 'LONG' ? 'whale-tag-long' : 'whale-tag-short';
+        var pnlCol = p.uPnl >= 0 ? 'var(--gr)' : 'var(--re)';
+        var pnlSign = p.uPnl >= 0 ? '+' : '−';
+        var roePct = (p.roe * 100).toFixed(1);
+        var entryFmt = p.entry >= 1000 ? p.entry.toFixed(0) : p.entry >= 1 ? p.entry.toFixed(3) : p.entry.toFixed(5);
+        return '<tr>'
+          +'<td><span class="whale-addr">'+escapeHtml(p.alias)+'</span></td>'
+          +'<td><strong>'+escapeHtml(p.coin)+'</strong></td>'
+          +'<td><span class="'+sideCls+'">'+p.direction+'</span></td>'
+          +'<td>$'+_whaleFmtUsd(p.sizeUsd)+'</td>'
+          +'<td>'+p.leverage+'x</td>'
+          +'<td>'+entryFmt+'</td>'
+          +'<td style="color:'+pnlCol+';font-weight:700">'+pnlSign+'$'+_whaleFmtUsd(Math.abs(p.uPnl))+'</td>'
+          +'<td style="color:'+pnlCol+'">'+pnlSign+roePct+'%</td>'
+          +'</tr>';
+      }).join('');
+      pb.innerHTML = hdr + body + '</tbody></table>';
+      var pm = el('whales-pos-meta');
+      if(pm) pm.textContent = pos.count + ' positions across ' + (list ? list.whales.length : '—') + ' whales';
+    } else {
+      pb.innerHTML = '<div class="loading">No open positions reported yet — polling…</div>';
+    }
+
+    // ── Activity Feed
+    var fb = el('whales-events');
+    if(evs && evs.events && evs.events.length){
+      fb.innerHTML = '';
+      evs.events.forEach(function(ev){
+        var row = document.createElement('div');
+        row.className = 'whale-feed-row';
+        var dirCls = ev.direction === 'LONG' ? 'whale-tag-long' : 'whale-tag-short';
+        row.innerHTML = '<span class="act '+escapeHtml(ev.action)+'">'+ev.action+'</span>'
+          +'<span class="whale-addr">'+escapeHtml(ev.alias || ev.address.slice(0,8))+'</span>'
+          +'<span><strong>'+escapeHtml(ev.coin || '')+'</strong></span>'
+          +'<span class="'+dirCls+'">'+ev.direction+'</span>'
+          +'<span style="color:var(--mu)">$'+_whaleFmtUsd(ev.size_usd)+(ev.leverage?' · '+ev.leverage+'x':'')+'</span>'
+          +'<span class="when">'+_whaleAgo(ev.ts)+'</span>';
+        fb.appendChild(row);
+      });
+    } else {
+      fb.innerHTML = '<div class="loading">No activity yet — waiting for the next position change.</div>';
+    }
+
+    var meta = el('whales-meta');
+    if(meta) meta.textContent = 'updated ' + new Date().toUTCString().slice(17,22) + ' UTC';
+  }).catch(function(e){
+    var meta = el('whales-meta');
+    if(meta) meta.innerHTML = '<span style="color:var(--re)">Error: '+escapeHtml(e.message)+'</span>';
+  });
 }
 
 // ── Stats (admin only) ────────────────────

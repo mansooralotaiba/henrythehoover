@@ -7931,6 +7931,280 @@ app.get('/api/live/:broker/:symbol', requireAuth, (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// WHALE TRACKER — Hyperliquid top-15 by 30d PnL
+// ════════════════════════════════════════════════════════════════════════════
+// Pure dashboard, not a trading input. Reads the public HL leaderboard once
+// an hour, takes top 150 by 30d PnL, queries clearinghouseState on each to
+// filter out withdrawn / inactive accounts, keeps top 15 with ≥$50k equity
+// AND at least one open position. Then polls those 15 every 30s and emits
+// OPEN / CLOSE / INCREASE / DECREASE events into the whale_events table
+// when a position appears, disappears, or changes by ≥10% in size.
+//
+// Anonymous addresses (displayName=null on the HL leaderboard, which is
+// nearly all of them) get a 0x393d…2109 short alias. We never auto-execute
+// off this data — it's just a watch page.
+
+const WHALE_LEADERBOARD_URL       = 'https://stats-data.hyperliquid.xyz/Mainnet/leaderboard';
+const WHALE_INFO_URL              = 'https://api.hyperliquid.xyz/info';
+const WHALE_LIST_SIZE             = 15;
+const WHALE_DISCOVERY_INTERVAL_MS = 60 * 60 * 1000;   // refresh list hourly
+const WHALE_POLL_INTERVAL_MS      = 30 * 1000;        // poll positions every 30s
+const WHALE_MIN_ACCOUNT_VALUE     = 50_000;           // filter out withdrawn accounts
+const WHALE_DISCOVERY_POOL        = 150;              // candidates to inspect per discovery
+const WHALE_SIZE_CHANGE_THRESHOLD = 0.10;             // 10% size delta => INCREASE/DECREASE event
+
+let _whales            = [];        // [{ address, alias, monthPnl, accountValue }]
+let _whalePositions    = {};        // address -> { alias, monthPnl, accountValue, positions[], asOf }
+let _whaleLastSnapshot = {};        // address -> { coin -> position } for next-tick diff
+const _whaleEventCache = [];        // in-memory ring buffer for fast feed
+
+function _fmtWhaleAlias(addr) {
+  if (!addr || addr.length < 10) return addr || '';
+  return addr.slice(0, 6) + '…' + addr.slice(-4);
+}
+
+async function _hlClearinghouseState(address) {
+  try {
+    const r = await fetch(WHALE_INFO_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'clearinghouseState', user: address }),
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (err) {
+    return null;
+  }
+}
+
+async function _whaleDiscovery() {
+  try {
+    const r = await fetch(WHALE_LEADERBOARD_URL);
+    if (!r.ok) throw new Error('leaderboard HTTP ' + r.status);
+    const data = await r.json();
+    const rows = data.leaderboardRows || [];
+    const monthPnl = (row) => {
+      for (const [w, v] of (row.windowPerformances || [])) {
+        if (w === 'month') return parseFloat(v.pnl) || 0;
+      }
+      return 0;
+    };
+    rows.sort((a, b) => monthPnl(b) - monthPnl(a));
+    const candidates = rows.slice(0, WHALE_DISCOVERY_POOL);
+    const states = await Promise.all(candidates.map(c =>
+      _hlClearinghouseState(c.ethAddress).catch(() => null)
+    ));
+    const kept = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const row = candidates[i];
+      const state = states[i];
+      if (!state || !state.marginSummary) continue;
+      const accVal = parseFloat(state.marginSummary.accountValue) || 0;
+      const positions = (state.assetPositions || []).filter(p => p && p.position);
+      if (accVal < WHALE_MIN_ACCOUNT_VALUE) continue;
+      if (positions.length === 0) continue;
+      kept.push({
+        address: row.ethAddress,
+        alias: row.displayName || _fmtWhaleAlias(row.ethAddress),
+        monthPnl: monthPnl(row),
+        accountValue: accVal,
+      });
+      if (kept.length >= WHALE_LIST_SIZE) break;
+    }
+    if (kept.length) {
+      _whales = kept;
+      console.log(`[whales] discovery: tracking ${kept.length} (top monthPnl $${Math.round(kept[0].monthPnl).toLocaleString()})`);
+    } else {
+      console.warn('[whales] discovery: no active whales matched filters');
+    }
+  } catch (err) {
+    console.warn('[whales] discovery failed:', err.message || err);
+  }
+}
+
+function _diffWhaleSnapshot(address, newPositionsArr) {
+  const next = {};
+  for (const p of newPositionsArr) next[p.coin] = p;
+  const prev = _whaleLastSnapshot[address] || {};
+  const events = [];
+  for (const [coin, p] of Object.entries(next)) {
+    const old = prev[coin];
+    if (!old) {
+      events.push({ action: 'OPEN', coin, position: p });
+    } else {
+      const oldSize = Math.abs(parseFloat(old.szi)) || 0;
+      const newSize = Math.abs(parseFloat(p.szi))   || 0;
+      if (oldSize > 0) {
+        const changePct = Math.abs((newSize - oldSize) / oldSize);
+        if (changePct >= WHALE_SIZE_CHANGE_THRESHOLD) {
+          events.push({ action: newSize > oldSize ? 'INCREASE' : 'DECREASE', coin, position: p });
+        }
+      }
+    }
+  }
+  for (const [coin, p] of Object.entries(prev)) {
+    if (!next[coin]) events.push({ action: 'CLOSE', coin, position: p });
+  }
+  _whaleLastSnapshot[address] = next;
+  return events;
+}
+
+async function _logWhaleEvents(address, alias, events, accountValue) {
+  if (!events.length) return;
+  const ts = new Date().toISOString();
+  const rows = events.map(ev => {
+    const p = ev.position;
+    const szi = parseFloat(p.szi);
+    return {
+      address,
+      alias,
+      coin: ev.coin,
+      direction: szi >= 0 ? 'LONG' : 'SHORT',
+      action: ev.action,
+      size_usd: parseFloat(p.positionValue) || null,
+      size_coin: Math.abs(szi),
+      entry_px: parseFloat(p.entryPx) || null,
+      leverage: parseFloat(p.leverage?.value) || null,
+      pnl_usd: parseFloat(p.unrealizedPnl) || null,
+      account_value: accountValue,
+    };
+  });
+  // In-memory cache (ring buffer of 200)
+  for (const r of rows) _whaleEventCache.unshift({ ...r, ts });
+  if (_whaleEventCache.length > 200) _whaleEventCache.length = 200;
+  // Best-effort DB persist
+  if (supaAdmin) {
+    try {
+      const { error } = await supaAdmin.from('whale_events').insert(rows);
+      if (error) console.warn('[whales] db insert error:', error.message);
+    } catch (err) {
+      console.warn('[whales] db insert failed:', err.message);
+    }
+  }
+}
+
+async function _whalePollOne(w) {
+  const state = await _hlClearinghouseState(w.address);
+  if (!state || !state.marginSummary) return;
+  const accountValue = parseFloat(state.marginSummary.accountValue) || 0;
+  const positions = (state.assetPositions || [])
+    .filter(p => p && p.position)
+    .map(p => p.position);
+  _whalePositions[w.address] = {
+    alias: w.alias,
+    monthPnl: w.monthPnl,
+    accountValue,
+    positions,
+    asOf: new Date().toISOString(),
+  };
+  const events = _diffWhaleSnapshot(w.address, positions);
+  if (events.length) await _logWhaleEvents(w.address, w.alias, events, accountValue);
+}
+
+async function _whalePollAll() {
+  if (!_whales.length) return;
+  await Promise.all(_whales.map(w => _whalePollOne(w).catch(() => null)));
+}
+
+async function _whaleBoot() {
+  try {
+    await _whaleDiscovery();
+    // First poll seeds _whaleLastSnapshot — we suppress events on the first
+    // tick so we don't flood the feed with "every current position just
+    // opened" on every server restart.
+    if (_whales.length) {
+      const first = await Promise.all(_whales.map(w => _hlClearinghouseState(w.address)));
+      for (let i = 0; i < _whales.length; i++) {
+        const w = _whales[i], state = first[i];
+        if (!state) continue;
+        const positions = (state.assetPositions || []).filter(p => p && p.position).map(p => p.position);
+        _whaleLastSnapshot[w.address] = {};
+        for (const p of positions) _whaleLastSnapshot[w.address][p.coin] = p;
+        _whalePositions[w.address] = {
+          alias: w.alias,
+          monthPnl: w.monthPnl,
+          accountValue: parseFloat(state.marginSummary?.accountValue) || 0,
+          positions,
+          asOf: new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[whales] boot failed:', err.message);
+  }
+  setInterval(_whaleDiscovery, WHALE_DISCOVERY_INTERVAL_MS);
+  setInterval(_whalePollAll,   WHALE_POLL_INTERVAL_MS);
+}
+
+// Don't block server startup; warm up after a short delay so other init
+// (DB, env, executor) gets to log first.
+setTimeout(() => { _whaleBoot(); }, 5000);
+
+// ── /api/whales/list ── tracked whales + summary
+app.get('/api/whales/list', requireAuth, async (_req, res) => {
+  res.json({
+    whales: _whales.map(w => ({
+      address: w.address,
+      alias: w.alias,
+      monthPnl: +w.monthPnl.toFixed(0),
+      accountValue: +w.accountValue.toFixed(0),
+      currentPositions: (_whalePositions[w.address]?.positions || []).length,
+    })),
+    generatedAt: new Date().toISOString(),
+  });
+});
+
+// ── /api/whales/positions ── current open positions across all tracked
+app.get('/api/whales/positions', requireAuth, async (_req, res) => {
+  const out = [];
+  for (const w of _whales) {
+    const data = _whalePositions[w.address];
+    if (!data) continue;
+    for (const p of data.positions) {
+      const szi = parseFloat(p.szi);
+      out.push({
+        address: w.address,
+        alias: w.alias,
+        coin: p.coin,
+        direction: szi >= 0 ? 'LONG' : 'SHORT',
+        sizeCoin: +Math.abs(szi),
+        sizeUsd: +(parseFloat(p.positionValue) || 0).toFixed(0),
+        entry: parseFloat(p.entryPx),
+        leverage: +(parseFloat(p.leverage?.value) || 1),
+        leverageType: p.leverage?.type || 'cross',
+        uPnl: +(parseFloat(p.unrealizedPnl) || 0).toFixed(0),
+        roe: +(parseFloat(p.returnOnEquity) || 0),
+        liquidationPx: parseFloat(p.liquidationPx) || null,
+        accountValue: +data.accountValue.toFixed(0),
+        asOf: data.asOf,
+      });
+    }
+  }
+  out.sort((a, b) => b.sizeUsd - a.sizeUsd);
+  res.json({ positions: out, count: out.length, generatedAt: new Date().toISOString() });
+});
+
+// ── /api/whales/events ── recent activity feed (DB-backed)
+app.get('/api/whales/events', requireAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  try {
+    if (supaAdmin) {
+      const { data, error } = await supaAdmin
+        .from('whale_events')
+        .select('address, alias, coin, direction, action, size_usd, size_coin, entry_px, leverage, pnl_usd, account_value, ts')
+        .order('ts', { ascending: false })
+        .limit(limit);
+      if (error) throw error;
+      return res.json({ events: data || [], generatedAt: new Date().toISOString() });
+    }
+    return res.json({ events: _whaleEventCache.slice(0, limit), generatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.warn('[whales/events]', err.message);
+    return res.json({ events: _whaleEventCache.slice(0, limit), generatedAt: new Date().toISOString() });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 
 app.listen(PORT, () => {
   console.log(`Henry The Hoover listening on :${PORT}`);
