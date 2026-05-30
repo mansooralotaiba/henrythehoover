@@ -7957,6 +7957,12 @@ let _whales            = [];        // [{ address, alias, monthPnl, accountValue
 let _whalePositions    = {};        // address -> { alias, monthPnl, accountValue, positions[], asOf }
 let _whaleLastSnapshot = {};        // address -> { coin -> position } for next-tick diff
 const _whaleEventCache = [];        // in-memory ring buffer for fast feed
+// Tracks when each whale's current position in a coin was first observed by
+// the diff loop. Key = "address:coin". null openedAt means the position was
+// already open when we started tracking — we mark these "before tracking"
+// in the UI so users know not to read the date as a real entry timestamp.
+const _whalePositionOpens = new Map();
+function _whaleOpenKey(addr, coin) { return addr + ':' + coin; }
 
 function _fmtWhaleAlias(addr) {
   if (!addr || addr.length < 10) return addr || '';
@@ -8027,10 +8033,14 @@ function _diffWhaleSnapshot(address, newPositionsArr) {
   for (const p of newPositionsArr) next[p.coin] = p;
   const prev = _whaleLastSnapshot[address] || {};
   const events = [];
+  const now = Date.now();
   for (const [coin, p] of Object.entries(next)) {
     const old = prev[coin];
     if (!old) {
       events.push({ action: 'OPEN', coin, position: p });
+      // Stamp first-seen so the UI can show "opened 12m ago" instead of
+      // "unknown" once a position actually opens during tracking.
+      _whalePositionOpens.set(_whaleOpenKey(address, coin), now);
     } else {
       const oldSize = Math.abs(parseFloat(old.szi)) || 0;
       const newSize = Math.abs(parseFloat(p.szi))   || 0;
@@ -8043,7 +8053,12 @@ function _diffWhaleSnapshot(address, newPositionsArr) {
     }
   }
   for (const [coin, p] of Object.entries(prev)) {
-    if (!next[coin]) events.push({ action: 'CLOSE', coin, position: p });
+    if (!next[coin]) {
+      events.push({ action: 'CLOSE', coin, position: p });
+      // Drop the openedAt — if the whale reopens this coin later, it gets a
+      // fresh tracking timestamp instead of inheriting the previous one.
+      _whalePositionOpens.delete(_whaleOpenKey(address, coin));
+    }
   }
   _whaleLastSnapshot[address] = next;
   return events;
@@ -8162,9 +8177,11 @@ app.get('/api/whales/positions', requireAuth, async (_req, res) => {
     if (!data) continue;
     for (const p of data.positions) {
       const szi = parseFloat(p.szi);
+      const openedAt = _whalePositionOpens.get(_whaleOpenKey(w.address, p.coin)) || null;
       out.push({
         address: w.address,
         alias: w.alias,
+        monthPnl: +w.monthPnl.toFixed(0),
         coin: p.coin,
         direction: szi >= 0 ? 'LONG' : 'SHORT',
         sizeCoin: +Math.abs(szi),
@@ -8176,11 +8193,19 @@ app.get('/api/whales/positions', requireAuth, async (_req, res) => {
         roe: +(parseFloat(p.returnOnEquity) || 0),
         liquidationPx: parseFloat(p.liquidationPx) || null,
         accountValue: +data.accountValue.toFixed(0),
+        openedAt,   // ms since epoch or null if before tracking started
         asOf: data.asOf,
       });
     }
   }
-  out.sort((a, b) => b.sizeUsd - a.sizeUsd);
+  // Default sort: newest opens first (positions with known openedAt first,
+  // then unknowns by sizeUsd desc as a stable fallback). Client can re-sort.
+  out.sort((a, b) => {
+    if (a.openedAt && b.openedAt) return b.openedAt - a.openedAt;
+    if (a.openedAt) return -1;
+    if (b.openedAt) return 1;
+    return b.sizeUsd - a.sizeUsd;
+  });
   res.json({ positions: out, count: out.length, generatedAt: new Date().toISOString() });
 });
 
