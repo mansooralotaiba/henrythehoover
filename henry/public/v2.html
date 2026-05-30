@@ -531,6 +531,18 @@
   .whale-tag-short{display:inline-block;background:rgba(255,85,119,0.15);color:var(--re);border:1px solid rgba(255,85,119,0.45);padding:1px 6px;border-radius:3px;font-size:9px;letter-spacing:0.1em;font-weight:700}
   .whale-card-empty{padding:14px;font-size:11px;color:var(--mu);text-align:center}
   .whales-feed-card{margin-bottom:14px}
+  .whales-treasury-card{margin-bottom:14px}
+  .treasury-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+  .treasury-table th{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--mu);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--border);text-align:left}
+  .treasury-table td{padding:8px 6px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
+  .treasury-table tr:hover td{background:rgba(255,255,255,0.02)}
+  .treasury-table td.r{text-align:right}
+  .chain-tag{display:inline-block;padding:2px 7px;border-radius:3px;font-size:9px;letter-spacing:0.1em;font-weight:700}
+  .chain-tag.btc{background:rgba(247,147,26,0.15);color:#f7931a;border:1px solid rgba(247,147,26,0.4)}
+  .chain-tag.eth{background:rgba(98,126,234,0.15);color:#627eea;border:1px solid rgba(98,126,234,0.4)}
+  .flow-pos{color:var(--gr);font-weight:700}
+  .flow-neg{color:var(--re);font-weight:700}
+  .flow-na{color:var(--mu)}
   .whale-feed-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,0.04);font-family:var(--mono);font-size:11px;flex-wrap:wrap}
   .whale-feed-row .act{font-size:9px;letter-spacing:0.1em;font-weight:700;padding:2px 6px;border-radius:3px;min-width:64px;text-align:center}
   .whale-feed-row .act.OPEN{background:rgba(0,212,255,0.15);color:var(--cy);border:1px solid rgba(0,212,255,0.4)}
@@ -609,6 +621,9 @@
     .whales-cards { grid-template-columns: 1fr; gap: 10px; }
     .whale-card-hdr { padding: 10px 12px; }
     .whale-pos { padding: 9px 12px; }
+    .treasury-table { font-size: 10px; }
+    .treasury-table th, .treasury-table td { padding: 6px 5px; }
+    .whales-treasury-card { overflow-x: auto; }
     .perf-overall { grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
     .stats-grid > .stats-overview-row { grid-template-columns: 1fr 1fr; gap: 10px; }
     .stats-overview-row .ov-card .v { font-size: 24px; }
@@ -941,6 +956,13 @@
       </div>
     </div>
     <div id="whales-cards" class="whales-cards"><div class="loading">Loading positions…</div></div>
+    <div class="stat-card whales-treasury-card">
+      <div class="stat-card-hdr">
+        <h3>Treasury Watch · On-chain</h3>
+        <span class="src" id="whales-treasury-meta">curated exchange + stable issuer wallets · refresh 10m</span>
+      </div>
+      <div id="whales-treasury"><div class="loading">Loading balances…</div></div>
+    </div>
     <div class="stat-card whales-feed-card">
       <div class="stat-card-hdr"><h3>Activity Feed</h3><span class="src">opens, closes, size changes · last 80</span></div>
       <div id="whales-events"><div class="loading">Loading activity…</div></div>
@@ -3611,9 +3633,11 @@ function refreshWhales(){
     fetch('/api/whales/list',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
     fetch('/api/whales/positions',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
     fetch('/api/whales/events?limit=80',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
+    fetch('/api/whales/treasury',{credentials:'same-origin'}).then(function(r){return r.ok?r.json():null;}),
   ]).then(function(all){
-    _whalesLastData = { list: all[0], pos: all[1], evs: all[2] };
+    _whalesLastData = { list: all[0], pos: all[1], evs: all[2], treasury: all[3] };
     renderWhaleCards(_whalesLastData);
+    renderTreasury(_whalesLastData.treasury);
     renderWhaleEvents(_whalesLastData.evs);
     var meta = el('whales-meta');
     if(meta) meta.textContent = 'updated ' + new Date().toUTCString().slice(17,22) + ' UTC';
@@ -3621,6 +3645,68 @@ function refreshWhales(){
     var meta = el('whales-meta');
     if(meta) meta.innerHTML = '<span style="color:var(--re)">Error: '+escapeHtml(e.message)+'</span>';
   });
+}
+function renderTreasury(d){
+  var box = el('whales-treasury');
+  var meta = el('whales-treasury-meta');
+  if(!d || !d.rows || !d.rows.length){
+    box.innerHTML = '<div class="loading">No balances yet — first poll runs ~10s after server start, may take up to a minute.</div>';
+    return;
+  }
+  if(meta){
+    var btc = d.prices && d.prices.btc ? '$'+_whaleFmtUsd(d.prices.btc) : '—';
+    var eth = d.prices && d.prices.eth ? '$'+_whaleFmtUsd(d.prices.eth) : '—';
+    meta.textContent = 'BTC ' + btc + ' · ETH ' + eth + ' · refresh 10m';
+  }
+  // Roll up totals
+  var totalUsd = d.rows.reduce(function(s,r){return s + (r.balanceUsd||0);}, 0);
+  var totalFlow = d.rows.reduce(function(s,r){return s + (r.flow24hUsd||0);}, 0);
+  var flowCls = totalFlow > 0 ? 'flow-pos' : totalFlow < 0 ? 'flow-neg' : 'flow-na';
+  var flowSign = totalFlow > 0 ? '+' : totalFlow < 0 ? '−' : '';
+  var summary = '<div style="display:flex;justify-content:space-between;padding:8px 4px 14px;font-family:var(--mono);font-size:11px;flex-wrap:wrap;gap:8px">'
+    + '<span style="color:var(--mu)">'+d.rows.length+' wallets tracked · combined balance '
+    +   '<strong style="color:var(--cy)">$'+_whaleFmtUsd(totalUsd)+'</strong></span>'
+    + '<span style="color:var(--mu)">net 24h flow '
+    +   '<span class="'+flowCls+'">'+flowSign+'$'+_whaleFmtUsd(Math.abs(totalFlow))+'</span></span>'
+    + '</div>';
+  // Table
+  var html = summary + '<table class="treasury-table"><thead><tr>'
+    + '<th>Entity · Wallet</th>'
+    + '<th>Chain</th>'
+    + '<th class="r">Balance</th>'
+    + '<th class="r">USD value</th>'
+    + '<th class="r">24h flow</th>'
+    + '</tr></thead><tbody>';
+  d.rows.forEach(function(r){
+    var coin = r.chain === 'btc' ? 'BTC' : 'ETH';
+    var balFmt = (r.balance != null)
+      ? r.balance.toLocaleString(undefined,{maximumFractionDigits: r.balance >= 100 ? 2 : 4}) + ' ' + coin
+      : '—';
+    var flow = r.flow24h;
+    var flowCls, flowFmt;
+    if(flow == null){
+      flowCls = 'flow-na'; flowFmt = '<span title="Need a snapshot ≥12h old">pending</span>';
+    } else if(flow === 0){
+      flowCls = 'flow-na'; flowFmt = '0 ' + coin;
+    } else {
+      flowCls = flow > 0 ? 'flow-pos' : 'flow-neg';
+      var s = flow > 0 ? '+' : '−';
+      flowFmt = s + Math.abs(flow).toLocaleString(undefined,{maximumFractionDigits:2}) + ' ' + coin;
+      if(r.flow24hUsd != null){
+        flowFmt += ' <span style="color:var(--mu);font-weight:400">· '+s+'$'+_whaleFmtUsd(Math.abs(r.flow24hUsd))+'</span>';
+      }
+    }
+    html += '<tr>'
+      + '<td><strong>'+escapeHtml(r.entity)+'</strong>'
+      +   ' <span style="color:var(--mu);font-size:10px">· '+escapeHtml(r.name.replace(r.entity+' · ',''))+'</span></td>'
+      + '<td><span class="chain-tag '+r.chain+'">'+coin+'</span></td>'
+      + '<td class="r">'+balFmt+'</td>'
+      + '<td class="r"><strong>$'+_whaleFmtUsd(r.balanceUsd)+'</strong></td>'
+      + '<td class="r '+flowCls+'">'+flowFmt+'</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  box.innerHTML = html;
 }
 function renderWhaleCards(data){
   var pos = data.pos, list = data.list;

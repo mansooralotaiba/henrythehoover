@@ -8230,6 +8230,163 @@ app.get('/api/whales/events', requireAuth, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// TREASURY WATCH — public on-chain balances of curated institutional wallets
+// ════════════════════════════════════════════════════════════════════════════
+// Watch-only sentiment layer. Big inflows to exchange wallets often precede
+// selling pressure; big outflows often precede holding / withdrawal-to-cold.
+// NOT trading signals — caveats in the UI.
+//
+// Address attribution is the hard part. The defaults here are HIGH-confidence
+// publicly-known exchange and stable issuer wallets. The set is extensible
+// via HENRY_TREASURY_ADDRESSES env JSON without a redeploy.
+//
+// BTC balances: blockstream.info free API.
+//   GET /address/{addr} → chain_stats.funded_txo_sum − spent_txo_sum (sats)
+// ETH balances: blockchair.com free API (30 rpm unauthenticated).
+//   GET /ethereum/dashboards/address/{addr}?limit=0 → data.{addr}.address.balance (wei)
+// Prices: Binance public ticker for BTCUSDT / ETHUSDT each cycle.
+
+const TREASURY_POLL_INTERVAL_MS = 10 * 60 * 1000; // 10 min — slow movers
+const TREASURY_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // keep last week
+
+const TREASURY_ADDRESSES = (() => {
+  const base = [
+    { addr: '34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo',        name: 'Binance · Cold BTC',   chain: 'btc', entity: 'Binance'  },
+    { addr: 'bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h',name: 'Binance · Cold BTC 2', chain: 'btc', entity: 'Binance'  },
+    { addr: '0x28C6c06298d514Db089934071355E5743bf21d60',name: 'Binance · Hot 14',     chain: 'eth', entity: 'Binance'  },
+    { addr: '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549',name: 'Binance · Hot 7',      chain: 'eth', entity: 'Binance'  },
+    { addr: '0x71660c4005ba85c37ccec55d0c4493e66fe775d3',name: 'Coinbase · 1',         chain: 'eth', entity: 'Coinbase' },
+    { addr: '0x503828976D22510aad0201ac7EC88293211D23Da',name: 'Coinbase · 2',         chain: 'eth', entity: 'Coinbase' },
+    { addr: '0x5754284f345afc66a98fbB0a0Afe71e0F007B949',name: 'Tether · Treasury',    chain: 'eth', entity: 'Tether'   },
+    { addr: '0x5041ed759Dd4aFc3a72b8192C143F72f4724081A',name: 'OKX · Hot',            chain: 'eth', entity: 'OKX'      },
+  ];
+  const raw = process.env.HENRY_TREASURY_ADDRESSES;
+  if (raw) {
+    try {
+      const extra = JSON.parse(raw);
+      if (Array.isArray(extra)) return base.concat(extra.filter(e => e.addr && e.chain && e.name));
+    } catch (err) {
+      console.warn('[treasury] HENRY_TREASURY_ADDRESSES not valid JSON:', err.message);
+    }
+  }
+  return base;
+})();
+
+const _treasury = {};  // addr -> { name, entity, chain, balance, balanceUsd, history[], asOf }
+const _treasuryPrices = { btc: 0, eth: 0, asOf: 0 };
+
+async function _fetchSpotPrice(symbol) {
+  try {
+    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + symbol);
+    if (!r.ok) return null;
+    const d = await r.json();
+    return parseFloat(d.price) || null;
+  } catch { return null; }
+}
+
+async function _fetchBtcBalance(addr) {
+  try {
+    const r = await fetch('https://blockstream.info/api/address/' + addr);
+    if (!r.ok) return null;
+    const d = await r.json();
+    const cs = d.chain_stats || {};
+    const sats = (cs.funded_txo_sum || 0) - (cs.spent_txo_sum || 0);
+    return sats / 1e8;
+  } catch { return null; }
+}
+
+async function _fetchEthBalance(addr) {
+  try {
+    const r = await fetch('https://api.blockchair.com/ethereum/dashboards/address/' + addr + '?limit=0');
+    if (!r.ok) return null;
+    const d = await r.json();
+    const key = Object.keys(d.data || {})[0];
+    if (!key) return null;
+    const weiStr = d.data[key]?.address?.balance;
+    if (!weiStr) return null;
+    return parseFloat(weiStr) / 1e18;
+  } catch { return null; }
+}
+
+async function _treasuryPollOne(entry) {
+  let balance = null;
+  if (entry.chain === 'btc') balance = await _fetchBtcBalance(entry.addr);
+  else if (entry.chain === 'eth') balance = await _fetchEthBalance(entry.addr);
+  if (balance == null) return;
+  const px = entry.chain === 'btc' ? _treasuryPrices.btc : _treasuryPrices.eth;
+  const balanceUsd = px ? balance * px : null;
+  const slot = _treasury[entry.addr] || {
+    addr: entry.addr, name: entry.name, entity: entry.entity, chain: entry.chain, history: []
+  };
+  slot.balance = balance;
+  slot.balanceUsd = balanceUsd;
+  slot.asOf = new Date().toISOString();
+  slot.history.push({ ts: Date.now(), balance });
+  const cutoff = Date.now() - TREASURY_HISTORY_WINDOW_MS;
+  slot.history = slot.history.filter(h => h.ts >= cutoff);
+  _treasury[entry.addr] = slot;
+}
+
+async function _treasuryPollAll() {
+  const [btc, eth] = await Promise.all([_fetchSpotPrice('BTCUSDT'), _fetchSpotPrice('ETHUSDT')]);
+  if (btc) _treasuryPrices.btc = btc;
+  if (eth) _treasuryPrices.eth = eth;
+  _treasuryPrices.asOf = Date.now();
+  // Sequential with 300ms stagger so we don't hammer blockchair's 30 rpm limit
+  for (const e of TREASURY_ADDRESSES) {
+    await _treasuryPollOne(e).catch(() => null);
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+
+async function _treasuryBoot() {
+  try { await _treasuryPollAll(); }
+  catch (err) { console.warn('[treasury] boot failed:', err.message); }
+  setInterval(_treasuryPollAll, TREASURY_POLL_INTERVAL_MS);
+}
+setTimeout(() => { _treasuryBoot(); }, 10000); // 10s after server boot
+
+// ── /api/whales/treasury ── current balances + 24h net flow
+app.get('/api/whales/treasury', requireAuth, async (_req, res) => {
+  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const rows = Object.values(_treasury).map(s => {
+    // Snapshot closest to 24h ago for delta (handles missed polls gracefully)
+    let prev = null, bestDelta = Infinity;
+    for (const h of s.history) {
+      const d = Math.abs(h.ts - oneDayAgo);
+      if (d < bestDelta) { bestDelta = d; prev = h; }
+    }
+    // Only count it as a "24h flow" if the prev snapshot is at least 12h old
+    // — otherwise we're comparing today to today and the delta is noise.
+    const validPrev = prev && (Date.now() - prev.ts) >= 12 * 60 * 60 * 1000;
+    const flow24h = validPrev ? (s.balance - prev.balance) : null;
+    const px = s.chain === 'btc' ? _treasuryPrices.btc : _treasuryPrices.eth;
+    const flow24hUsd = (flow24h != null && px) ? flow24h * px : null;
+    return {
+      name: s.name,
+      entity: s.entity,
+      chain: s.chain,
+      addr: s.addr,
+      balance: s.balance,
+      balanceUsd: s.balanceUsd,
+      flow24h,
+      flow24hUsd,
+      asOf: s.asOf,
+    };
+  });
+  rows.sort((a, b) => (b.balanceUsd || 0) - (a.balanceUsd || 0));
+  res.json({
+    rows,
+    prices: {
+      btc: _treasuryPrices.btc,
+      eth: _treasuryPrices.eth,
+      asOf: _treasuryPrices.asOf ? new Date(_treasuryPrices.asOf).toISOString() : null,
+    },
+    generatedAt: new Date().toISOString(),
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 
 app.listen(PORT, () => {
   console.log(`Henry The Hoover listening on :${PORT}`);
