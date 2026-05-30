@@ -2288,12 +2288,24 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
       return fetchCandlesServer(coin, pairTf, 80, pairBroker).catch(() => []);
     }));
 
+    // Live last-trade ticker per pair — runs in parallel with the candle fetch.
+    // Candle-close lags by up to 10s (the panel poll cycle) and on illiquid
+    // perps like XAUT that can mean $1+ drift vs the exchange's own UI.
+    // getCurrentPriceServer hits the broker's ticker endpoint directly which
+    // returns the real-time `last` field. Fails-soft: null = fall back to
+    // candle close so we never blank the price.
+    const livePrices = await Promise.all(watchlist.map(coin => {
+      const pairBroker = brokerForPair(coin, broker);
+      return getCurrentPriceServer(coin, pairBroker).catch(() => null);
+    }));
+
     // Map each pair into a panel-ready shape
     const now = Date.now();
     const pairs = watchlist.map((coin, i) => {
       const candles = candleArrays[i] || [];
       const ps = sub.pairs && sub.pairs[coin];
-      const lastPrice = candles.length ? candles[candles.length - 1].c : (ps?.lastPrice || null);
+      const candleClose = candles.length ? candles[candles.length - 1].c : null;
+      const lastPrice = livePrices[i] != null ? livePrices[i] : (candleClose != null ? candleClose : (ps?.lastPrice || null));
       const firstPrice = candles.length ? candles[0].c : null;
       const pctChange = (firstPrice && lastPrice) ? ((lastPrice - firstPrice) / firstPrice) * 100 : null;
       // State derivation
