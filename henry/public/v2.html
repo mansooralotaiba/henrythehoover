@@ -2463,6 +2463,27 @@ function toggleMulti(){
 _applyMultiUI();
 
 function runAnalyse(force){
+  // Per-pair gate: if THIS pair already has an active tracked signal pinned
+  // to the chart, refuse to overwrite it. Re-analysing would replace the
+  // entry/SL/TP being monitored and break the auto-monitor that fires the
+  // Entry/BE/TP/SL alerts. Other pairs are still free to analyse — the gate
+  // is per-pair, not global.
+  var act = _activeChartSignal;
+  if(act && act.pair === t_pair && (act.state === 'waiting' || act.state === 'in-trade')){
+    openAiModal();
+    var pCoin = String(t_pair).replace('USDT','').replace('1000','');
+    var pState = act.state === 'in-trade' ? 'IN TRADE' : 'WAITING';
+    el('ai-modal-title').innerHTML = pCoin + ' <span class="dir notrade">BLOCKED</span>';
+    el('ai-modal-body').innerHTML =
+      '<div class="modal-section block-card"><div class="label">⛔ Active signal on ' + escapeHtml(pCoin) + '</div>'
+    + '<div class="text">You already have a <strong>' + act.direction + '</strong> signal pinned to this chart (state <strong>' + pState + '</strong>, entry ' + formatPrice(act.entry) + ' / SL ' + formatPrice(act.sl) + ' / TP ' + formatPrice(act.tp) + '). Discard it before running a fresh analysis, or switch to a different pair.</div></div>'
+    + '<div class="modal-section"><div class="label">Why this gate exists</div><div class="text">Re-analysing the same pair would overwrite the entry/SL/TP being tracked and break the auto-monitor that fires Entry/BE/TP/SL alerts. Different pairs are unaffected — you can analyse ETH while BTC is tracked.</div></div>';
+    el('ai-modal-actions').innerHTML =
+      '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Cancel</button>'
+    + '<button class="btn-modal btn-sl" onclick="discardChartSignalAndReanalyse()">Discard ' + escapeHtml(pCoin) + ' & Re-analyse</button>';
+    return;
+  }
+
   var btn = el('t-analyse');
   btn.disabled = true; btn.textContent = '⏳ Analysing…';
   openAiModal();
@@ -2824,6 +2845,21 @@ function discardChartSignal(){
   if(_activeChartUiTick){ clearInterval(_activeChartUiTick); _activeChartUiTick = null; }
   drawActiveSignalOnChart();
   renderActiveSignalBar();
+}
+
+// Called from the per-pair re-analyse block. Drops the active signal for
+// this pair (without the confirm prompt — the user already confirmed by
+// clicking this button) and immediately kicks off a new analysis.
+function discardChartSignalAndReanalyse(){
+  _activeChartSignal = null;
+  persistActiveChartSignal();
+  if(_activeChartPoll){ clearInterval(_activeChartPoll); _activeChartPoll = null; }
+  if(_activeChartUiTick){ clearInterval(_activeChartUiTick); _activeChartUiTick = null; }
+  drawActiveSignalOnChart();
+  renderActiveSignalBar();
+  closeAiModal();
+  // Defer slightly so the modal closes cleanly before the next one opens
+  setTimeout(function(){ runAnalyse(); }, 100);
 }
 
 // Restore tracking on page load
