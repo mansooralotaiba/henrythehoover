@@ -340,7 +340,7 @@
 
   /* Terminal controls + chart */
   .term-controls{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;flex-wrap:wrap}
-  .term-controls label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
+  .term-controls label,.term-controls .ctrl-label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
   .term-controls select{background:var(--bg3);border:1px solid var(--border-strong);color:var(--fg);padding:6px 10px;border-radius:5px;font-family:var(--mono);font-size:13px;outline:none}
   .term-controls select:hover{border-color:var(--cy)}
   .term-controls .tf-row{display:flex;gap:4px}
@@ -628,7 +628,7 @@
 
     /* Terminal: chart on top, right column below */
     .term-controls { padding: 8px 10px; gap: 6px; }
-    .term-controls label { font-size: 9px; letter-spacing: 0.08em; }
+    .term-controls label,.term-controls .ctrl-label { font-size: 9px; letter-spacing: 0.08em; }
     .term-controls select { font-size: 12px; padding: 5px 7px; }
     .term-controls .tf-btn { padding: 4px 8px; font-size: 10px; }
     .term-controls .price-display { font-size: 14px; padding: 0 6px; }
@@ -780,14 +780,14 @@
   <!-- ── Terminal: full interactive ─────────────────────────────────── -->
   <div class="panel" id="panel-terminal">
     <div class="term-controls">
-      <label>Broker</label>
+      <label for="t-broker">Broker</label>
       <select id="t-broker">
         <option value="weex">WEEX</option>
         <option value="binance">Binance</option>
         <option value="hyperliquid">Hyperliquid</option>
         <option value="massive">Massive · Gold</option>
       </select>
-      <label style="margin-left:8px">Pair</label>
+      <label for="t-pair" style="margin-left:8px">Pair</label>
       <select id="t-pair">
         <option>BTCUSDT</option><option>ETHUSDT</option><option>SOLUSDT</option>
         <option>LINKUSDT</option><option>AAVEUSDT</option><option>XAUTUSDT</option>
@@ -795,7 +795,7 @@
         <option>SUIUSDT</option><option>AVAXUSDT</option><option>XRPUSDT</option>
         <option>GOLD</option>
       </select>
-      <label style="margin-left:8px">TF</label>
+      <span class="ctrl-label" style="margin-left:8px">TF</span>
       <div class="tf-row" id="t-tf-row">
         <button class="tf-btn" data-tf="1m">1m</button>
         <button class="tf-btn" data-tf="5m">5m</button>
@@ -812,7 +812,7 @@
       <div class="au-hdr">
         <button class="au-toggle off" id="au-toggle">⚡ AUTO SCAN OFF</button>
         <div class="au-row">
-          <label>Cooldown</label>
+          <label for="au-cooldown">Cooldown</label>
           <select id="au-cooldown">
             <option value="60000">1 min</option>
             <option value="180000" selected>3 min</option>
@@ -822,7 +822,7 @@
           </select>
         </div>
         <div class="au-row">
-          <label>Discord status</label>
+          <label for="au-status-int">Discord status</label>
           <select id="au-status-int">
             <option value="0">OFF</option>
             <option value="15" selected>Every 15min</option>
@@ -1013,7 +1013,7 @@
           <div class="whales-toolbar">
             <span class="whales-summary" id="whales-pos-meta">Loading…</span>
             <div class="whales-sort">
-              <label>Sort by</label>
+              <label for="whales-sort">Sort by</label>
               <select id="whales-sort">
                 <option value="month" selected>30d PnL</option>
                 <option value="upnl">Live uPnL</option>
