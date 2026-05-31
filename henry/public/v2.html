@@ -1778,10 +1778,14 @@ function _wpUpdatePanel(entry, p){
       }
     }
   }
-  // Trade overlay (ENTRY/SL/TP) — refresh every poll
+  // Trade overlay (ENTRY/SL/TP) — refresh every poll.
+  // Legacy parity: an autoscan signal that is still waiting for its LTF
+  // entry confirmation (state 'waiting-confirm') must NOT draw trade levels
+  // on the Kingdom chart. Lines only appear once the confirmation card is
+  // out (i.e. the server has confirmed + executed the trade).
   entry.lines.forEach(function(ln){ try{ entry.series.removePriceLine(ln); }catch(e){} });
   entry.lines = [];
-  if(p.signal){
+  if(p.signal && p.state !== 'waiting-confirm'){
     var e = parseFloat(p.signal.entry), sl = parseFloat(p.signal.sl), tp = parseFloat(p.signal.tp);
     if(isFinite(e))  entry.lines.push(entry.series.createPriceLine({ price: e,  color: '#9aa0a6', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: 'ENTRY' }));
     if(isFinite(sl)) entry.lines.push(entry.series.createPriceLine({ price: sl, color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
@@ -2741,8 +2745,12 @@ function auRenderMonitor(data){
       cell.appendChild(pr);
     }
 
-    // Signal levels
-    if(p.hasSignal && p.signal){
+    // Signal levels.
+    // Legacy parity: while a signal is still awaiting its LTF entry
+    // confirmation, hide the full DIR/entry/SL/TP/R card. Only show a
+    // light "awaiting confirmation" status line — the levels appear once
+    // the server confirms + executes (awaitingConfirmation flips false).
+    if(p.hasSignal && p.signal && !p.awaitingConfirmation){
       var d = document.createElement('div');
       d.className = 'au-cell-line dir-' + (p.signal.direction === 'LONG' ? 'long' : 'short');
       d.textContent = p.signal.direction + ' @ ' + p.signal.entry;
@@ -2755,6 +2763,11 @@ function auRenderMonitor(data){
         be.textContent = '⚑ Move SL → BE';
         cell.appendChild(be);
       }
+    } else if(p.hasSignal && p.awaitingConfirmation){
+      var aw = document.createElement('div'); aw.className = 'au-cell-line';
+      aw.style.fontStyle = 'italic'; aw.style.color = 'var(--am)';
+      aw.textContent = '⏳ Awaiting LTF confirmation — no trade yet';
+      cell.appendChild(aw);
     } else if(p.lastTrigger){
       var trig = document.createElement('div'); trig.className = 'au-cell-line';
       trig.style.fontStyle = 'italic';
@@ -3003,37 +3016,324 @@ function runAnalyse(force){
     return r.json();
   }).then(function(d){
     btn.disabled = false; btn.textContent = '⚡ Analyse';
-    renderAnalyseResult(d);
-    // Persist real LONG/SHORT signals so the user can log an outcome later.
-    // NO TRADE skips persistence (nothing to log).
     var s = d.signal || {};
     var dir = (s.direction || '').toUpperCase();
+    // Legacy parity: a LONG/SHORT signal is NOT finalised/persisted on the
+    // spot. It first arms a 1m/5m lower-timeframe entry-confirmation watch
+    // (startManualEntryWatch) and only renders the full card + persists once a
+    // confirmation pattern prints inside the entry zone — or the user clicks
+    // "use original entry now". NO TRADE has nothing to confirm, so it
+    // finalises immediately.
     if(dir === 'LONG' || dir === 'SHORT'){
-      // Server's /api/signals expects { signal, trigger, broker, tf } shape with
-      // signal.pair populated. Inject pair from t_pair if missing.
-      var payload = {
-        signal: Object.assign({}, s, { pair: s.pair || t_pair }),
-        broker: t_broker,
-        tf: t_tf,
-        // No trigger → trigger_type stays NULL → counts as manual on /api/performance/me?source=manual
-      };
-      fetch('/api/signals', {
-        method:'POST', credentials:'same-origin',
-        headers:{ 'Content-Type':'application/json' },
-        body: JSON.stringify(payload)
-      }).then(function(r){ return r.ok ? r.json() : null; })
-        .then(function(out){
-          if(out && out.id){
-            window._lastManualSignal = { id: out.id, signal: payload.signal };
-            renderOutcomeButtons();
-          }
-        }).catch(function(){});
+      startManualEntryWatch(d);
+    } else {
+      finalizeManualSignal(d);
     }
   }).catch(function(e){
     btn.disabled = false; btn.textContent = '⚡ Analyse';
     if(e && e.message === '__handled') return; // 409 path already rendered the blocked UI
     el('ai-modal-body').innerHTML = '<div class="modal-error">Error: ' + escapeHtml(e.message) + '</div>';
   });
+}
+
+// Finalise a manual signal: render the result card, persist it (LONG/SHORT
+// only) so an outcome can be logged later, then show the outcome/track
+// buttons. Called either immediately (NO TRADE) or once the LTF entry-
+// confirmation gate fires / the user opts to use the original entry — see
+// startManualEntryWatch.
+function finalizeManualSignal(d){
+  renderAnalyseResult(d);
+  var s = d.signal || {};
+  var dir = (s.direction || '').toUpperCase();
+  if(dir === 'LONG' || dir === 'SHORT'){
+    // Server's /api/signals expects { signal, broker, tf } with signal.pair set.
+    // No trigger → trigger_type stays NULL → counts as manual on /api/performance/me?source=manual
+    var payload = {
+      signal: Object.assign({}, s, { pair: s.pair || t_pair }),
+      broker: t_broker,
+      tf: t_tf,
+    };
+    fetch('/api/signals', {
+      method:'POST', credentials:'same-origin',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(out){
+        if(out && out.id){
+          window._lastManualSignal = { id: out.id, signal: payload.signal };
+          renderOutcomeButtons();
+        }
+      }).catch(function(){});
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MANUAL ENTRY-CONFIRMATION WATCH  (restored from legacy index.html)
+// After ANALYSE produces a LONG/SHORT setup we don't draw the card yet —
+// we watch 1m/5m candles and only finalise once an ICT/S&D confirmation
+// pattern (MSS+disp / FVG retest / sweep-reclaim / engulfing / pin / micro-BOS)
+// prints inside ±0.3% of the planned entry. Mirrors the original
+// startEntryWatch / checkEntryConfirmation flow, adapted to the v2 modal.
+//   • "Use original entry now"  → finalise immediately at the planned entry
+//   • 2h expiry                 → stop watching, offer log-at-original
+// ════════════════════════════════════════════════════════════════════════════
+var _manualWatch = null;          // active watch state, or null
+var MANUAL_WATCH_ZONE_PCT = 0.003;
+var MANUAL_WATCH_INTERVAL_MS = 30000;
+var MANUAL_WATCH_EXPIRY_MS = 7200000; // 2h
+
+function startManualEntryWatch(d){
+  stopManualEntryWatch();
+  var s = d.signal || {};
+  var entry = parseFloat(s.entry);
+  _manualWatch = {
+    d: d, signal: s,
+    isLong: (s.direction || '').toUpperCase() === 'LONG',
+    pair: t_pair, broker: t_broker, tf: t_tf,
+    entry: entry, sl: parseFloat(s.sl), tp: parseFloat(s.tp),
+    startedAt: Date.now(),
+    lastStatus: 'Fetching 1m/5m candles…',
+    timer: null, expiryTimer: null,
+  };
+  renderManualWatchPanel();
+  _manualWatch.timer = setInterval(manualEntryWatchTick, MANUAL_WATCH_INTERVAL_MS);
+  _manualWatch.expiryTimer = setTimeout(manualEntryWatchExpire, MANUAL_WATCH_EXPIRY_MS);
+  manualEntryWatchTick(); // immediate first check
+}
+
+function stopManualEntryWatch(){
+  if(_manualWatch){
+    if(_manualWatch.timer) clearInterval(_manualWatch.timer);
+    if(_manualWatch.expiryTimer) clearTimeout(_manualWatch.expiryTimer);
+  }
+  _manualWatch = null;
+}
+
+function renderManualWatchPanel(){
+  if(!_manualWatch) return;
+  var w = _manualWatch, s = w.signal;
+  var coin = String(w.pair).replace('USDT','').replace('1000','');
+  var dir = (s.direction || '').toUpperCase();
+  var dirClass = dir === 'LONG' ? 'long' : 'short';
+  el('ai-modal-title').innerHTML = coin + ' <span class="dir ' + dirClass + '">' + dir + ' · AWAITING CONFIRMATION</span>';
+  var zoneBot = w.entry * (1 - MANUAL_WATCH_ZONE_PCT);
+  var zoneTop = w.entry * (1 + MANUAL_WATCH_ZONE_PCT);
+  el('ai-modal-body').innerHTML =
+    '<div class="modal-section block-card"><div class="label">⏳ Waiting for entry confirmation</div>'
+    + '<div class="text">Setup found, but Henry is waiting for a 1m/5m lower-timeframe pattern (MSS / FVG retest / sweep-reclaim / engulfing) to print inside the entry zone before committing the card. This mirrors the legacy confirmation step.</div></div>'
+    + '<div class="levels-grid">'
+    + '<div class="level-card entry"><div class="l">Planned Entry</div><div class="v">' + formatPrice(w.entry) + '</div></div>'
+    + '<div class="level-card sl"><div class="l">Stop Loss</div><div class="v">' + formatPrice(w.sl) + '</div></div>'
+    + '<div class="level-card tp"><div class="l">Take Profit</div><div class="v">' + formatPrice(w.tp) + '</div></div>'
+    + '</div>'
+    + section('Entry Zone (±0.3%)', formatPrice(zoneBot) + ' — ' + formatPrice(zoneTop))
+    + '<div class="modal-section"><div class="label">Live watch</div><div class="text" id="manual-watch-status">' + escapeHtml(w.lastStatus) + '</div></div>';
+  el('ai-modal-actions').innerHTML =
+    '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close (keeps watching)</button>'
+    + '<button class="btn-modal btn-sl" onclick="discardManualEntryWatch()">Stop &amp; discard</button>'
+    + '<button class="btn-modal btn-tp" onclick="useOriginalEntryNow()">Use original entry now →</button>';
+}
+
+function _setManualWatchStatus(txt){
+  if(_manualWatch) _manualWatch.lastStatus = txt;
+  var n = el('manual-watch-status'); if(n) n.textContent = txt;
+}
+
+function manualEntryWatchTick(){
+  var w = _manualWatch; if(!w) return;
+  Promise.all([
+    _fetchLtfCandles(w.pair, w.broker, '1m'),
+    _fetchLtfCandles(w.pair, w.broker, '5m'),
+  ]).then(function(res){
+    if(!_manualWatch) return; // cancelled mid-flight
+    var c1m = res[0] || [], c5m = res[1] || [];
+    var cp = c1m.length ? c1m[c1m.length - 1].c : (c5m.length ? c5m[c5m.length - 1].c : null);
+    if(cp == null){ _setManualWatchStatus('Waiting for price data…'); return; }
+    var zoneBot = w.entry * (1 - MANUAL_WATCH_ZONE_PCT);
+    var zoneTop = w.entry * (1 + MANUAL_WATCH_ZONE_PCT);
+    if(cp < zoneBot || cp > zoneTop){
+      _setManualWatchStatus('Price ' + formatPrice(cp) + ' — waiting to reach zone (' + formatPrice(zoneBot) + '–' + formatPrice(zoneTop) + ')');
+      return;
+    }
+    var r1m = detectICTSDConfirmation(c1m, w.isLong);
+    var r5m = detectICTSDConfirmation(c5m, w.isLong);
+    var picked = r1m.confirmed ? { r: r1m, tf: '1m' } : (r5m.confirmed ? { r: r5m, tf: '5m' } : null);
+    _setManualWatchStatus('In zone @ ' + formatPrice(cp) + ' · 1m[' + r1m.score + ']: ' + r1m.summary + '  |  5m[' + r5m.score + ']: ' + r5m.summary);
+    if(picked) manualEntryConfirmed(cp, picked);
+  }).catch(function(){ _setManualWatchStatus('Candle fetch failed — retrying…'); });
+}
+
+function manualEntryConfirmed(cp, picked){
+  var w = _manualWatch; if(!w) return;
+  var s = Object.assign({}, w.signal);
+  var decimals = (String(w.pair).indexOf('XAU') !== -1 || cp > 1000) ? 2 : 4;
+  // Refine entry to the confirmation price; recompute RR off the new entry.
+  s.entry = parseFloat(cp.toFixed(decimals));
+  if(w.isLong && w.sl < cp && w.tp > cp)       s.rr = parseFloat(((w.tp - cp) / (cp - w.sl)).toFixed(2));
+  else if(!w.isLong && w.sl > cp && w.tp < cp) s.rr = parseFloat(((cp - w.tp) / (w.sl - cp)).toFixed(2));
+  var label = picked.r.summary + ' (score ' + picked.r.score + ', ' + picked.tf + ')';
+  s.entry_reason = ((s.entry_reason || '').split(' | CONFIRMED:')[0]) + ' | CONFIRMED: ' + label + ' @ ' + formatPrice(cp);
+  s._confirmed = true;
+  var d2 = Object.assign({}, w.d, { signal: s });
+  var coin = String(w.pair).replace('USDT','').replace('1000','');
+  stopManualEntryWatch();
+  _toast('✅ ENTRY CONFIRMED', coin + ' ' + (s.direction || '') + ' — ' + label, 'signal');
+  openAiModal();
+  finalizeManualSignal(d2);
+}
+
+function useOriginalEntryNow(){
+  var w = _manualWatch; if(!w) return;
+  var s = Object.assign({}, w.signal);
+  s.entry_reason = ((s.entry_reason || '').split(' | CONFIRMED:')[0]) + ' | MANUAL: used planned entry (no LTF confirmation)';
+  var d2 = Object.assign({}, w.d, { signal: s });
+  stopManualEntryWatch();
+  openAiModal();
+  finalizeManualSignal(d2);
+}
+
+function discardManualEntryWatch(){
+  stopManualEntryWatch();
+  closeAiModal();
+}
+
+function manualEntryWatchExpire(){
+  var w = _manualWatch; if(!w) return;
+  var coin = String(w.pair).replace('USDT','').replace('1000','');
+  _toast('⏱ ENTRY WATCH EXPIRED', coin + ' ' + (w.signal.direction || '') + ' — no LTF confirmation in 2h', 'info');
+  // Stop the polling but keep _manualWatch so "log at original" still works.
+  if(_manualWatch.timer){ clearInterval(_manualWatch.timer); _manualWatch.timer = null; }
+  if(_manualWatch.expiryTimer){ clearTimeout(_manualWatch.expiryTimer); _manualWatch.expiryTimer = null; }
+  el('ai-modal-title').innerHTML = coin + ' <span class="dir notrade">WATCH EXPIRED</span>';
+  el('ai-modal-body').innerHTML =
+    '<div class="modal-section block-card"><div class="label">⏱ Entry watch expired</div>'
+    + '<div class="text">No 1m/5m confirmation printed within 2 hours — the setup may be stale. You can still log it at the original planned entry, or discard.</div></div>';
+  el('ai-modal-actions').innerHTML =
+    '<button class="btn-modal btn-ghost" onclick="discardManualEntryWatch()">Discard</button>'
+    + '<button class="btn-modal btn-tp" onclick="useOriginalEntryNow()">Log at original entry →</button>';
+}
+
+// Fetch up to 30 recent candles as {o,h,l,c,v} for the LTF confirmation
+// detector. Parameterised by pair/broker/tf (the watch captures these at
+// arm time so a later pair switch doesn't poll the wrong symbol). Mirrors
+// the Terminal broker routing.
+function _fetchLtfCandles(pair, broker, tf){
+  var isGold = (broker === 'massive' || pair === 'GOLD' || pair === 'XAUUSD');
+  if(isGold){
+    return fetch('/api/gold/candles?interval=' + encodeURIComponent(tf) + '&limit=30', {credentials:'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ return (d && d.candles || []).map(function(k){ return { o:+k.o, h:+k.h, l:+k.l, c:+k.c, v:+(k.v||0) }; }); })
+      .catch(function(){ return []; });
+  }
+  if(broker === 'binance'){
+    var bsym = tBinanceSymMap(pair);
+    return fetch('https://fapi.binance.com/fapi/v1/klines?symbol=' + bsym + '&interval=' + tf + '&limit=30')
+      .then(function(r){ if(!r.ok) throw new Error('binance'); return r.json(); })
+      .then(function(data){ return (data || []).map(function(k){ return { o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }; }); })
+      .catch(function(){
+        return fetch('/api/v2/candles?coin=' + encodeURIComponent(bsym) + '&tf=' + encodeURIComponent(tf) + '&broker=binance&limit=30', {credentials:'same-origin'})
+          .then(function(r){ return r.json(); })
+          .then(function(d){ return (d.candles || []).map(function(c){ return { o:c.open, h:c.high, l:c.low, c:c.close, v:(c.volume||0) }; }); })
+          .catch(function(){ return []; });
+      });
+  }
+  if(broker === 'hyperliquid'){
+    var hcoin = tHlSym(pair);
+    var startTime = Date.now() - 30 * tTfToMs(tf) * 1.5;
+    return fetch('https://api.hyperliquid.xyz/info', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ type:'candleSnapshot', req:{ coin: hcoin, interval: tf, startTime: Math.floor(startTime) } })
+    }).then(function(r){ return r.json(); })
+      .then(function(data){ return (Array.isArray(data) ? data : []).slice(-30).map(function(k){ return { o:+k.o, h:+k.h, l:+k.l, c:+k.c, v:+(k.v||0) }; }); })
+      .catch(function(){ return []; });
+  }
+  // WEEX default — historyCandles, fall back to candles.
+  var fsym = tWeexSym(pair);
+  function tryU(u){
+    return fetch(u, {credentials:'same-origin'}).then(function(r){ if(!r.ok) throw new Error('weex'); return r.json(); })
+      .then(function(data){
+        if(!Array.isArray(data) || !data.length) return [];
+        return data.map(function(c){ return { t:+c[0], o:+c[1], h:+c[2], l:+c[3], c:+c[4], v:+(c[5]||0) }; })
+                   .sort(function(a,b){ return a.t - b.t; });
+      });
+  }
+  var urlH = '/weex-futures/capi/v2/market/historyCandles?symbol=' + fsym + '&granularity=' + tf + '&limit=30';
+  var urlC = '/weex-futures/capi/v2/market/candles?symbol=' + fsym + '&granularity=' + tf + '&limit=30';
+  return tryU(urlH).catch(function(){ return tryU(urlC); }).catch(function(){ return []; });
+}
+
+// ICT + S/D entry-confirmation detector (ported verbatim from legacy
+// index.html). Returns { confirmed, score, hits, summary, sideOk }. Confirmed
+// when a trade-correct close + score >= 4 (primaries weight 4/3/3/2/2,
+// secondaries 2, confluence 1). Candles are {o,h,l,c,v}, oldest → newest.
+function detectICTSDConfirmation(candles, isLong){
+  var EMPTY = { confirmed:false, score:0, hits:[], summary:'no pattern', sideOk:false };
+  if(!candles || candles.length < 6) return EMPTY;
+  var n = candles.length;
+  var last = candles[n-1], prev = candles[n-2];
+  var lastBull = last.c > last.o, prevBull = prev.c > prev.o;
+  var lastBody = Math.abs(last.c - last.o);
+  var prevBody = Math.abs(prev.c - prev.o);
+  var lastRange = Math.max(last.h - last.l, 1e-9);
+  var upWick = last.h - Math.max(last.c, last.o);
+  var dnWick = Math.min(last.c, last.o) - last.l;
+  var medRange = (function(){
+    var sl = candles.slice(-Math.min(20, n)).map(function(c){ return c.h - c.l; }).sort(function(a,b){ return a - b; });
+    return sl[Math.floor(sl.length/2)] || lastRange;
+  })();
+  var avgVol5 = candles.slice(-5).reduce(function(s,c){ return s + (c.v||0); }, 0) / 5 || 1;
+  var hits = [];
+  function add(name, weight){ hits.push({ name:name, weight:weight }); }
+  var sideOk = isLong ? last.c >= prev.c : last.c <= prev.c;
+  // 1. LTF MSS + Displacement (PRIMARY, w=4)
+  var prev5 = candles.slice(-6, -1);
+  var swingHi = Math.max.apply(null, prev5.map(function(c){ return c.h; }));
+  var swingLo = Math.min.apply(null, prev5.map(function(c){ return c.l; }));
+  var bodyPct = lastBody / lastRange;
+  var rangeMul = lastRange / medRange;
+  if(isLong && last.c > swingHi && bodyPct >= 0.6 && rangeMul >= 1.3) add('LTF MSS+disp', 4);
+  else if(!isLong && last.c < swingLo && bodyPct >= 0.6 && rangeMul >= 1.3) add('LTF MSS+disp', 4);
+  // 2. FVG retest in last 6 bars (PRIMARY, w=3)
+  for(var i = n-1; i >= Math.max(2, n-6); i--){
+    var a = candles[i-2], b = candles[i];
+    if(isLong && a.h < b.l){ if(last.l <= b.l && lastBull){ add('FVG retest', 3); break; } }
+    else if(!isLong && a.l > b.h){ if(last.h >= b.h && !lastBull){ add('FVG retest', 3); break; } }
+  }
+  // 3. Liquidity sweep + reclaim (PRIMARY, w=3)
+  var prev8 = candles.slice(-9, -1);
+  if(prev8.length){
+    var sLo = Math.min.apply(null, prev8.map(function(c){ return c.l; }));
+    var sHi = Math.max.apply(null, prev8.map(function(c){ return c.h; }));
+    if(isLong && last.l < sLo && last.c > sLo && lastBull) add('Sweep+reclaim', 3);
+    else if(!isLong && last.h > sHi && last.c < sHi && !lastBull) add('Sweep+reclaim', 3);
+  }
+  // 4. Engulfing (PRIMARY, w=2)
+  if(isLong && lastBull && !prevBull && last.c > prev.o && last.o < prev.c && lastBody > prevBody) add('Bullish engulfing', 2);
+  else if(!isLong && !lastBull && prevBull && last.c < prev.o && last.o > prev.c && lastBody > prevBody) add('Bearish engulfing', 2);
+  // 5. Pin bar / hammer (PRIMARY, w=2)
+  if(isLong && dnWick >= 2*lastBody && upWick < lastBody && dnWick >= 0.5*lastRange) add('Hammer/pin', 2);
+  else if(!isLong && upWick >= 2*lastBody && dnWick < lastBody && upWick >= 0.5*lastRange) add('Shooting star', 2);
+  // 6. Micro BOS w/ volume (SECONDARY, w=2) — only if MSS hasn't already fired
+  var hasMSS = hits.some(function(h){ return h.name === 'LTF MSS+disp'; });
+  if(!hasMSS){
+    if(isLong && last.c > prev.h && (last.v||0) > avgVol5*1.2) add('Micro BOS', 2);
+    else if(!isLong && last.c < prev.l && (last.v||0) > avgVol5*1.2) add('Micro BOS', 2);
+  }
+  // 7. OTE confluence (CONFLUENCE, w=1) — last 20-bar impulse leg
+  var win = candles.slice(-20);
+  if(win.length >= 10){
+    var hi = Math.max.apply(null, win.map(function(c){ return c.h; }));
+    var lo = Math.min.apply(null, win.map(function(c){ return c.l; }));
+    if(hi > lo){
+      var pos = (last.c - lo) / (hi - lo);
+      if(isLong && pos >= 0.21 && pos <= 0.38) add('OTE 62-79%', 1);
+      else if(!isLong && pos >= 0.62 && pos <= 0.79) add('OTE 62-79%', 1);
+    }
+  }
+  var score = hits.reduce(function(s,h){ return s + h.weight; }, 0);
+  var confirmed = sideOk && score >= 4;
+  var summary = hits.length ? hits.map(function(h){ return h.name; }).join(' + ') : 'no pattern';
+  return { confirmed:confirmed, score:score, hits:hits, summary:summary, sideOk:sideOk };
 }
 
 // Renders the TP/SL/BE/EXPIRED/OPEN/DISCARD row in the modal footer.
