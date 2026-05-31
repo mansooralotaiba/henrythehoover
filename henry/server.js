@@ -1919,30 +1919,10 @@ app.get('/api/performance/me', requireAuth, async (req, res) => {
       });
 
     // By setup tag — regex-extracted from the AI `reasoning` text plus the
-    // shorter `entry_reason` field. No schema column for setup yet; this is
-    // a zero-migration v1 that works on every historical row. A signal can
-    // belong to multiple buckets (e.g., "FVG + Sweep retest") and counts as
-    // 1 trade in each.
-    function extractSetupTags(s) {
-      const text = String((s.reasoning || '') + ' ' + (s.entry_reason || '')).toUpperCase();
-      if (!text.trim()) return [];
-      const tags = [];
-      if (/\bFVG\b|FAIR VALUE GAP/.test(text)) tags.push('FVG');
-      if (/\bOB\b|ORDER BLOCK|ORDER-BLOCK/.test(text)) tags.push('OB');
-      if (/\bBOS\b|BREAK OF STRUCTURE/.test(text)) tags.push('BOS');
-      if (/\bCHOCH\b|CHANGE OF CHARACTER/.test(text)) tags.push('CHoCH');
-      if (/SWEEP|LIQUIDITY GRAB|STOP HUNT|LIQ GRAB/.test(text)) tags.push('Sweep');
-      if (/\bEQH\b|EQUAL HIGH/.test(text)) tags.push('EQH');
-      if (/\bEQL\b|EQUAL LOW/.test(text)) tags.push('EQL');
-      if (/RETEST/.test(text)) tags.push('Retest');
-      if (/DISPLACEMENT|IMPULSE LEG/.test(text)) tags.push('Displacement');
-      if (/SUPPORT|RESISTANCE|\bS\/R\b/.test(text)) tags.push('S/R');
-      if (/PREMIUM|DISCOUNT/.test(text)) tags.push('Premium/Discount');
-      if (/TRENDLINE|TREND LINE/.test(text)) tags.push('Trendline');
-      if (/\bRANGE\b/.test(text)) tags.push('Range');
-      if (/\bMSS\b|MARKET STRUCTURE SHIFT/.test(text)) tags.push('MSS');
-      return tags;
-    }
+    // shorter `entry_reason` field (see module-level extractSetupTags). No
+    // schema column for setup yet; this works on every historical row. A
+    // signal can belong to multiple buckets (e.g. "FVG + Sweep retest") and
+    // counts as 1 trade in each.
     const bySetup = {};
     for (const s of closed) {
       const tags = extractSetupTags(s);
@@ -2164,18 +2144,23 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
       return res.status(503).json({ error: `Insufficient candle data for ${coin} on ${tf} (${pairBroker})` });
     }
     const btcBroker = (pairBroker === 'massive') ? 'binance' : pairBroker;
-    const [mtfH1, mtfH4, btcCandles, funding, oi, trades, newsCtx, calCtx, dxyData, crossBrokerCtx] = await Promise.all([
+    const [mtfH1, mtfH4, btcCandles, funding, trades, newsCtx, calCtx, dxyData, crossBrokerCtx,
+           oiDeltaCtx, fundingTrendCtx, lsRatioCtx, perfFeedbackCtx] = await Promise.all([
       fetchCandlesServer(coin, '1h', 50, pairBroker).catch(() => []),
       fetchCandlesServer(coin, '4h', 30, pairBroker).catch(() => []),
       (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
       fetchFundingRateServer(coin).catch(() => null),
-      fetchOpenInterestServer(coin).catch(() => null),
       // ORDER FLOW — recent trades for the footprint + CVD context strings
       fetchTradesServer(coin, pairBroker).catch(() => []),
       fetchNewsContext().catch(() => ''),
       fetchCalendarContext().catch(() => ''),
       isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
       useMulti ? buildCrossBrokerContextServer(coin, tf, pairBroker).catch(() => '') : Promise.resolve(''),
+      // Positioning / OI / funding-trend / self-performance — all graceful-empty on failure
+      buildOIDeltaContextServer(coin, tf, baseCandles).catch(() => ''),
+      buildFundingTrendContextServer(coin).catch(() => ''),
+      buildLongShortRatioContextServer(coin, tf).catch(() => ''),
+      buildPerfFeedbackContextServer(coin).catch(() => ''),
     ]);
 
     // Full indicator set — matches autoscan exactly so the diagnostic readouts
@@ -2197,10 +2182,11 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
     const liquidityCtx = buildLiquidityContextServer(baseCandles, tf);
     const footprintCtx = buildFootprintContextServer(trades, baseCandles);
     const cvdCtx       = buildCVDContextServer(trades);
+    const liqCtx       = buildLiquidationContextServer(coin, baseCandles);
     const dxyCtx       = isMetalOrOilPair && dxyData ? buildDXYContextString(dxyData) : '';
 
-    const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators });
-    const contextStr = [baseCtx, dxyCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
+    const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, trigger, indicators });
+    const contextStr = [baseCtx, dxyCtx, oiDeltaCtx, fundingTrendCtx, lsRatioCtx, liquidityCtx, footprintCtx, cvdCtx, liqCtx, crossBrokerCtx, newsCtx, calCtx, perfFeedbackCtx]
       .filter(s => s && s.length).join('\n');
 
     const lastClose = last.c;
@@ -6032,6 +6018,295 @@ async function fetchOpenInterestServer(coin) {
   } catch { return null; }
 }
 
+// Binance futures/data endpoints (openInterestHist, long/short ratio) only
+// accept a fixed set of periods. Map the trigger TF to the nearest valid one.
+function binanceStatsPeriod(tf) {
+  const valid = { '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '12h': '12h', '1d': '1d' };
+  if (valid[tf]) return tf;
+  if (tf === '1m') return '5m';
+  return '15m';
+}
+const _STATS_TF_MS = { '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000, '12h': 43200000, '1d': 86400000 };
+
+// ── OI DELTA — open-interest CHANGE paired with price change. A static OI
+// number is meaningless; what matters is whether a move is fueled by NEW
+// positions (trend has gas) or by POSITION UNWIND (short-covering / long
+// capitulation = weak move). Replaces the old dead OI snapshot line.
+async function buildOIDeltaContextServer(coin, tf, baseCandles) {
+  try {
+    const period = binanceStatsPeriod(tf);
+    const r = await fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${coin}&period=${period}&limit=16`);
+    if (!r.ok) return '';
+    const arr = await r.json();
+    if (!Array.isArray(arr) || arr.length < 4) return '';
+    const first = parseFloat(arr[0].sumOpenInterest);
+    const last = parseFloat(arr[arr.length - 1].sumOpenInterest);
+    const lastUsd = parseFloat(arr[arr.length - 1].sumOpenInterestValue);
+    if (!(first > 0) || !(last > 0)) return '';
+    const oiChangePct = (last - first) / first * 100;
+    // Align price change to the SAME wall-clock window via the OI timestamps.
+    const windowMs = (+arr[arr.length - 1].timestamp) - (+arr[0].timestamp);
+    const tfMs = _STATS_TF_MS[tf] || 900000;
+    let priceChangePct = null;
+    if (baseCandles && baseCandles.length >= 3 && windowMs > 0) {
+      const nBack = Math.max(1, Math.min(baseCandles.length - 1, Math.round(windowMs / tfMs)));
+      const startC = baseCandles[baseCandles.length - 1 - nBack].c;
+      const endC = baseCandles[baseCandles.length - 1].c;
+      if (startC > 0) priceChangePct = (endC - startC) / startC * 100;
+    }
+    const oiUp = oiChangePct > 0.5, oiDown = oiChangePct < -0.5;
+    let interp;
+    if (priceChangePct != null) {
+      const pUp = priceChangePct > 0.1, pDown = priceChangePct < -0.1;
+      if (pUp && oiUp)        interp = 'price UP + OI UP = new longs opening — uptrend has fuel (continuation favoured)';
+      else if (pUp && oiDown) interp = 'price UP + OI DOWN = short covering — rally lacks new conviction (fade risk on exhaustion)';
+      else if (pDown && oiUp) interp = 'price DOWN + OI UP = new shorts opening — downtrend has fuel (continuation favoured)';
+      else if (pDown && oiDown) interp = 'price DOWN + OI DOWN = longs unwinding/capitulating — selloff may be exhausting (reversal watch)';
+      else interp = 'price flat — OI ' + (oiUp ? 'rising (positions building, expansion likely)' : oiDown ? 'falling (positions closing)' : 'flat (no conviction)');
+    } else {
+      interp = oiUp ? 'OI rising (positions building)' : oiDown ? 'OI falling (positions closing)' : 'OI flat';
+    }
+    const usdLbl = lastUsd ? ` ($${(lastUsd / 1e6).toFixed(1)}M notional)` : '';
+    return `\nOPEN INTEREST (${period}×${arr.length}): ${oiChangePct >= 0 ? '+' : ''}${oiChangePct.toFixed(1)}% over window${usdLbl}` +
+      (priceChangePct != null ? `, price ${priceChangePct >= 0 ? '+' : ''}${priceChangePct.toFixed(2)}%` : '') +
+      ` — ${interp}.`;
+  } catch { return ''; }
+}
+
+// ── FUNDING TREND — the live pipeline already shows the current snapshot;
+// this adds the recent trajectory (rising / falling / sign-flip) so the model
+// can see crowding BUILDING vs EASING, not just the instantaneous value.
+async function buildFundingTrendContextServer(coin) {
+  try {
+    const hist = await fetchHistoricalFunding(coin, 4 * 24 * 3600 * 1000); // ~4d → up to ~12 settlements
+    if (!hist || hist.length < 3) return '';
+    const recent = hist.slice(-9);
+    const rates = recent.map(h => h.rate);
+    const cur = rates[rates.length - 1];
+    const half = Math.floor(rates.length / 2);
+    const avg = a => a.reduce((s, x) => s + x, 0) / a.length;
+    const older = avg(rates.slice(0, half || 1));
+    const newer = avg(rates.slice(half));
+    const delta = newer - older;
+    const pct = v => (v * 100).toFixed(4) + '%';
+    const flipped = (older < 0 && newer > 0) || (older > 0 && newer < 0);
+    let trend;
+    if (flipped) trend = older < 0
+      ? 'FLIPPED negative→positive (shorts→longs paying; sentiment turning bullish-crowded)'
+      : 'FLIPPED positive→negative (longs→shorts paying; sentiment turning bearish-crowded)';
+    else if (Math.abs(delta) < 0.00003) trend = 'flat (stable positioning)';
+    else if (delta > 0) trend = cur > 0 ? 'rising & positive (longs increasingly crowded — fade-short bias strengthening)' : 'rising toward zero (short crowding easing)';
+    else trend = cur < 0 ? 'falling & negative (shorts increasingly crowded — fade-long bias strengthening)' : 'falling toward zero (long crowding easing)';
+    return `\nFUNDING TREND (last ${recent.length} settlements): ${pct(older)} → ${pct(cur)} — ${trend}.`;
+  } catch { return ''; }
+}
+
+// ── LONG/SHORT RATIO — retail accounts vs top traders by position. The edge
+// is the DIVERGENCE: when retail is crowded long but the top cohort is net
+// short, smart money is fading the crowd. Distinct from funding (positioning
+// split, not cost of carry).
+async function buildLongShortRatioContextServer(coin, tf) {
+  try {
+    const period = binanceStatsPeriod(tf);
+    const [globalR, topR] = await Promise.all([
+      fetch(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${coin}&period=${period}&limit=3`).then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${coin}&period=${period}&limit=3`).then(r => r.ok ? r.json() : []).catch(() => []),
+    ]);
+    const lines = [];
+    let retailRatio = null, topRatio = null;
+    if (Array.isArray(globalR) && globalR.length) {
+      const c = globalR[globalR.length - 1];
+      retailRatio = parseFloat(c.longShortRatio);
+      const prev = globalR.length > 1 ? parseFloat(globalR[0].longShortRatio) : null;
+      const dir = (prev != null && isFinite(prev)) ? (retailRatio > prev + 0.02 ? 'rising' : retailRatio < prev - 0.02 ? 'falling' : 'flat') : '';
+      if (isFinite(retailRatio)) lines.push(`retail accounts ${retailRatio.toFixed(2)}:1 ${retailRatio > 1 ? 'long' : 'short'}${dir ? ' (' + dir + ')' : ''}`);
+    }
+    if (Array.isArray(topR) && topR.length) {
+      const c = topR[topR.length - 1];
+      topRatio = parseFloat(c.longShortRatio);
+      if (isFinite(topRatio)) lines.push(`top traders ${topRatio.toFixed(2)}:1 ${topRatio > 1 ? 'long' : 'short'}`);
+    }
+    if (!lines.length) return '';
+    let interp = '';
+    if (retailRatio != null && topRatio != null && isFinite(retailRatio) && isFinite(topRatio)) {
+      const rL = retailRatio > 1, tL = topRatio > 1;
+      if (rL && !tL) interp = ' — smart money SHORT vs crowd LONG (bearish divergence — favour shorts / fade longs)';
+      else if (!rL && tL) interp = ' — smart money LONG vs crowd SHORT (bullish divergence — favour longs / fade shorts)';
+      else if (rL && tL) interp = ' — both long (consensus long; watch for crowded-long flush)';
+      else interp = ' — both short (consensus short; watch for short squeeze)';
+      if (retailRatio >= 2.5) interp += '. Retail extremely long (>2.5:1) — contrarian short tilt';
+      else if (retailRatio <= 0.5) interp += '. Retail extremely short (<0.5:1) — contrarian long tilt';
+    }
+    return `\nLONG/SHORT RATIO (${period}): ${lines.join('; ')}${interp}.`;
+  } catch { return ''; }
+}
+
+// ── SELF-PERFORMANCE FEEDBACK — Henry's own realized track record on THIS
+// pair, summarized so the model can lean into setups with proven edge and be
+// selective on ones that have lost money. Cached per-coin (15 min) to avoid
+// hammering the DB on every scan. Queries the admin/bot's signal history.
+const _perfFeedbackCache = new Map(); // coin → { ts, str }
+const PERF_FEEDBACK_TTL_MS = 15 * 60 * 1000;
+async function buildPerfFeedbackContextServer(coin) {
+  try {
+    const cached = _perfFeedbackCache.get(coin);
+    if (cached && Date.now() - cached.ts < PERF_FEEDBACK_TTL_MS) return cached.str;
+    const adminId = await getAdminUserId();
+    if (!adminId) return '';
+    const since = new Date(Date.now() - 120 * 24 * 3600 * 1000).toISOString();
+    const { data: rows, error } = await supaAdmin
+      .from('signals')
+      .select('outcome, outcome_rr, confidence, reasoning, entry_reason')
+      .eq('user_id', adminId)
+      .eq('pair', coin)
+      .gte('created_at', since)
+      .in('outcome', ['TP', 'SL', 'BE', 'EXPIRED'])
+      .order('created_at', { ascending: false })
+      .limit(120);
+    if (error || !rows || rows.length < 8) {
+      _perfFeedbackCache.set(coin, { ts: Date.now(), str: '' });
+      return '';
+    }
+    const closed = rows;
+    const effR = r => {
+      if (r.outcome === 'EXPIRED') return 0;
+      const rr = parseFloat(r.outcome_rr);
+      if (isFinite(rr)) return rr;
+      if (r.outcome === 'SL') return -1;
+      return 0;
+    };
+    const tp = closed.filter(r => r.outcome === 'TP').length;
+    const be = closed.filter(r => r.outcome === 'BE').length;
+    const sl = closed.filter(r => r.outcome === 'SL').length;
+    const cN = tp + sl + be;
+    const totalR = closed.reduce((a, b) => a + effR(b), 0);
+    const winRate = cN ? ((tp + be * 0.5) / cN * 100) : 0;
+    const bySetup = {};
+    for (const s of closed) {
+      for (const tag of extractSetupTags(s)) {
+        const b = bySetup[tag] || (bySetup[tag] = { n: 0, tp: 0, sl: 0, be: 0, r: 0 });
+        b.n++; b.r += effR(s);
+        if (s.outcome === 'TP') b.tp++; else if (s.outcome === 'SL') b.sl++; else if (s.outcome === 'BE') b.be++;
+      }
+    }
+    const setups = Object.entries(bySetup)
+      .map(([k, v]) => { const c = v.tp + v.sl + v.be; return { k, n: v.n, wr: c ? (v.tp + v.be * 0.5) / c * 100 : 0, r: v.r }; })
+      .filter(s => s.n >= 5)
+      .sort((a, b) => b.r - a.r);
+    const best = setups.slice(0, 2);
+    const worst = setups.filter(s => s.wr < 45).slice(-2);
+    const bucket = (lo, hi) => {
+      const sub = closed.filter(r => { const c = parseFloat(r.confidence); return isFinite(c) && c >= lo && c <= hi; });
+      const c = sub.filter(r => ['TP', 'SL', 'BE'].includes(r.outcome)).length;
+      const w = sub.filter(r => r.outcome === 'TP').length + sub.filter(r => r.outcome === 'BE').length * 0.5;
+      return { n: sub.length, wr: c ? w / c * 100 : null };
+    };
+    const hi = bucket(85, 100), mid = bucket(50, 84);
+    const parts = [`HENRY TRACK RECORD on ${coin} (last ${closed.length} closed): ${winRate.toFixed(0)}% win, ${totalR >= 0 ? '+' : ''}${totalR.toFixed(1)}R.`];
+    if (best.length) parts.push('Strong setups: ' + best.map(s => `${s.k} ${s.wr.toFixed(0)}% (n${s.n}, ${s.r >= 0 ? '+' : ''}${s.r.toFixed(1)}R)`).join(', ') + '.');
+    if (worst.length) parts.push('Weak setups (demand extra confluence): ' + worst.map(s => `${s.k} ${s.wr.toFixed(0)}% (n${s.n}, ${s.r >= 0 ? '+' : ''}${s.r.toFixed(1)}R)`).join(', ') + '.');
+    if (hi.wr != null && mid.wr != null && hi.n >= 4 && mid.n >= 4) {
+      const cal = hi.wr >= mid.wr + 5 ? 'well-calibrated' : hi.wr <= mid.wr - 5 ? 'OVERCONFIDENT (high-conf calls underperform — discount your confidence)' : 'flat (confidence not predictive — rely on setup quality not conviction)';
+      parts.push(`Confidence: 85+ win ${hi.wr.toFixed(0)}% (n${hi.n}) vs 50-84 win ${mid.wr.toFixed(0)}% (n${mid.n}) — ${cal}.`);
+    }
+    const str = '\n' + parts.join(' ');
+    _perfFeedbackCache.set(coin, { ts: Date.now(), str });
+    return str;
+  } catch { return ''; }
+}
+
+// ── LIQUIDATIONS — real market-wide liquidation prints from Binance's
+// !forceOrder@arr stream. One global socket buffers the last 30 min per
+// symbol. forceOrder side semantics: SELL = a LONG was force-closed (forced
+// selling); BUY = a SHORT was force-closed (forced buying / squeeze).
+const _liqBuffer = new Map(); // symbol → [{ ts, side:'LONG'|'SHORT', notional, price }]
+const LIQ_WINDOW_MS = 30 * 60 * 1000;
+let _liqWs = null;
+function _liqBoot() {
+  const open = () => {
+    try {
+      const ws = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
+      _liqWs = ws;
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data);
+          const o = msg.o; if (!o || !o.s) return;
+          const price = parseFloat(o.ap || o.p) || 0;
+          const qty = parseFloat(o.q) || 0;
+          const notional = price * qty;
+          if (!notional) return;
+          const side = o.S === 'SELL' ? 'LONG' : 'SHORT';
+          let arr = _liqBuffer.get(o.s);
+          if (!arr) { arr = []; _liqBuffer.set(o.s, arr); }
+          arr.push({ ts: Date.now(), side, notional, price });
+        } catch {}
+      });
+      ws.on('close', () => setTimeout(open, 5000));
+      ws.on('error', () => { try { ws.close(); } catch {} });
+    } catch { setTimeout(open, 5000); }
+  };
+  open();
+  setInterval(() => {
+    const cutoff = Date.now() - LIQ_WINDOW_MS;
+    for (const [sym, arr] of _liqBuffer) {
+      const kept = arr.filter(e => e.ts >= cutoff);
+      if (kept.length) _liqBuffer.set(sym, kept); else _liqBuffer.delete(sym);
+    }
+  }, 2 * 60 * 1000);
+}
+
+function buildLiquidationContextServer(coin, baseCandles) {
+  const arr = _liqBuffer.get(coin);
+  if (!arr || !arr.length) return '';
+  const cutoff = Date.now() - LIQ_WINDOW_MS;
+  const recent = arr.filter(e => e.ts >= cutoff);
+  if (recent.length < 2) return '';
+  let longLiq = 0, shortLiq = 0, biggest = null;
+  for (const e of recent) {
+    if (e.side === 'LONG') longLiq += e.notional; else shortLiq += e.notional;
+    if (!biggest || e.notional > biggest.notional) biggest = e;
+  }
+  const total = longLiq + shortLiq;
+  if (total < 1000) return '';
+  const fmt = v => v >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : '$' + (v / 1e3).toFixed(0) + 'K';
+  const dom = longLiq > shortLiq * 1.3 ? 'LONG' : shortLiq > longLiq * 1.3 ? 'SHORT' : 'BALANCED';
+  let interp;
+  if (dom === 'LONG') interp = 'longs being liquidated = forced selling / cascade lower; watch for a capitulation low + reversal once it dries up';
+  else if (dom === 'SHORT') interp = 'shorts being liquidated = forced buying / short squeeze fuelling the move up';
+  else interp = 'two-sided liquidations = volatile chop, no clean cascade';
+  const cp = baseCandles && baseCandles.length ? baseCandles[baseCandles.length - 1].c : null;
+  let near = '';
+  if (biggest && cp) {
+    const dp = cp >= 1000 ? 1 : 4;
+    near = ` Largest: ${fmt(biggest.notional)} ${biggest.side} @ ${biggest.price.toFixed(dp)} (${((biggest.price - cp) / cp * 100).toFixed(2)}% from price).`;
+  }
+  return `\nLIQUIDATIONS (last 30m): longs ${fmt(longLiq)} vs shorts ${fmt(shortLiq)} across ${recent.length} events — ${dom}-dominant: ${interp}.${near}`;
+}
+
+// Setup-tag extraction — regex over the AI `reasoning` + `entry_reason` text.
+// Lifted to module scope so /api/performance/me and the signal-generation
+// feedback loop (buildPerfFeedbackContextServer) share one definition.
+function extractSetupTags(s) {
+  const text = String((s.reasoning || '') + ' ' + (s.entry_reason || '')).toUpperCase();
+  if (!text.trim()) return [];
+  const tags = [];
+  if (/\bFVG\b|FAIR VALUE GAP/.test(text)) tags.push('FVG');
+  if (/\bOB\b|ORDER BLOCK|ORDER-BLOCK/.test(text)) tags.push('OB');
+  if (/\bBOS\b|BREAK OF STRUCTURE/.test(text)) tags.push('BOS');
+  if (/\bCHOCH\b|CHANGE OF CHARACTER/.test(text)) tags.push('CHoCH');
+  if (/SWEEP|LIQUIDITY GRAB|STOP HUNT|LIQ GRAB/.test(text)) tags.push('Sweep');
+  if (/\bEQH\b|EQUAL HIGH/.test(text)) tags.push('EQH');
+  if (/\bEQL\b|EQUAL LOW/.test(text)) tags.push('EQL');
+  if (/RETEST/.test(text)) tags.push('Retest');
+  if (/DISPLACEMENT|IMPULSE LEG/.test(text)) tags.push('Displacement');
+  if (/SUPPORT|RESISTANCE|\bS\/R\b/.test(text)) tags.push('S/R');
+  if (/PREMIUM|DISCOUNT/.test(text)) tags.push('Premium/Discount');
+  if (/TRENDLINE|TREND LINE/.test(text)) tags.push('Trendline');
+  if (/\bRANGE\b/.test(text)) tags.push('Range');
+  if (/\bMSS\b|MARKET STRUCTURE SHIFT/.test(text)) tags.push('MSS');
+  return tags;
+}
+
 // Anthropic returns HTTP 529 + {"error":{"type":"overloaded_error"}} when their
 // infra is saturated. It's transient — retry with backoff. Also covers 503 and
 // rate-limit 429. Non-transient errors (4xx other than 429) fail immediately.
@@ -6192,7 +6467,7 @@ function validateAndFixBEServer(sig) {
   return sig;
 }
 
-function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators }) {
+function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, trigger, indicators }) {
   const lines = [];
   lines.push(`AUTO TRIGGER: ${trigger.type.toUpperCase()} — ${trigger.desc}`);
 
@@ -6271,9 +6546,8 @@ function buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCand
     lines.push(`FUNDING RATE: ${fpct}% — ${fbias}.`);
   }
 
-  if (oi != null && !Number.isNaN(oi)) {
-    lines.push(`OPEN INTEREST: ${(oi / 1e6).toFixed(2)}M contracts.`);
-  }
+  // OPEN INTEREST is no longer a static snapshot here — buildOIDeltaContextServer
+  // appends a richer "OI change vs price change" line to the combined context.
 
   return lines.join('\n');
 }
@@ -6298,14 +6572,17 @@ function buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose) {
     '1. Trigger detection — what fired the scan. ICT/S&D types: MSS+DISP (market structure shift with displacement), SWEEP+DISP (liquidity grab + close-in-opposite-half), OB MITIGATION (price retesting an unmitigated order block), S/D ZONE (first retest of a base+drop or base+rally pattern), FVG-OTE (fair value gap inside the 62-79% retracement). Legacy fallback: BOS, SWEEP, REJECTION, ATR, FVG.',
     '2. Multi-timeframe (1H, 4H) — HTF bias and structure',
     '3. Macro correlation — BTC for crypto pairs, DXY for gold/metals (gold has INVERSE correlation with DXY — DXY up = gold down). Use whichever is in the context block.',
-    '4. Funding rate — positioning, fade extremes',
-    '5. Open interest — directional conviction',
+    '4. Funding rate + FUNDING TREND — positioning and whether crowding is BUILDING or EASING; fade extremes.',
+    '5. Open interest DELTA vs price — new-money fuel (price+OI same direction) vs position unwind (short-covering / long capitulation = weak move). Read the OI line, not a raw number.',
     '6. Liquidity heatmap — swing levels, equal highs/lows, sweep targets',
     '7. Order flow / footprint — buy/sell delta, POC, imbalances, absorption',
     '8. CVD trend — cumulative volume delta momentum across 5 windows',
-    '9. Cross-broker check — agreement across Weex/Binance/Hyperliquid',
-    '10. News headlines — sentiment + impact tagged',
-    '11. Economic calendar — high-impact events in next 4 hours',
+    '9. Long/short ratio — retail accounts vs top traders; the DIVERGENCE (smart money fading the crowd) is the signal.',
+    '10. Liquidations — real force-close prints; one-sided cascades mark capitulation/squeeze zones.',
+    '11. Cross-broker check — agreement across Weex/Binance/Hyperliquid',
+    '12. News headlines — sentiment + impact tagged',
+    '13. Economic calendar — high-impact events in next 4 hours',
+    '14. HENRY TRACK RECORD (if present) — your OWN realized results on THIS pair. This is the highest-signal block: lean into setups with proven edge, demand extra confluence on setups that have lost money, and respect the confidence-calibration note (if you are flagged OVERCONFIDENT, discount your stated confidence).',
     '',
     'CONTEXT FROM SERVER-SIDE SCAN:',
     contextStr,
@@ -6473,27 +6750,33 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
 
   // Fetch all extra context in parallel — failures are isolated, AI gets whatever lands.
   const [
-    mtfH1, mtfH4, btcCandles, funding, oi,
+    mtfH1, mtfH4, btcCandles, funding,
     trades, newsCtx, calCtx, crossBrokerCtx, dxyData,
+    oiDeltaCtx, fundingTrendCtx, lsRatioCtx, perfFeedbackCtx,
   ] = await Promise.all([
     fetchCandlesServer(coin, '1h', 50, broker).catch(() => []),
     fetchCandlesServer(coin, '4h', 30, broker).catch(() => []),
     // BTC correlation only for non-gold + non-BTC pairs
     (!isMetalOrOilPair && coin !== 'BTCUSDT') ? fetchCandlesServer('BTCUSDT', tf, 30, btcBroker).catch(() => []) : Promise.resolve([]),
     fetchFundingRateServer(coin).catch(() => null),
-    fetchOpenInterestServer(coin).catch(() => null),
     fetchTradesServer(coin, broker).catch(() => []),
     fetchNewsContext().catch(() => ''),
     fetchCalendarContext().catch(() => ''),
     buildCrossBrokerContextServer(coin, tf, broker).catch(() => ''),
     // DXY context for gold pairs only — replaces BTC correlation
     isMetalOrOilPair ? fetchDXYContextServer().catch(() => null) : Promise.resolve(null),
+    // Positioning / OI-delta / funding-trend / self-performance — graceful-empty on failure
+    buildOIDeltaContextServer(coin, tf, baseCandles).catch(() => ''),
+    buildFundingTrendContextServer(coin).catch(() => ''),
+    buildLongShortRatioContextServer(coin, tf).catch(() => ''),
+    buildPerfFeedbackContextServer(coin).catch(() => ''),
   ]);
 
   // Derived contexts from data we already fetched (synchronous, no extra fetches)
   const liquidityCtx = buildLiquidityContextServer(baseCandles, tf);
   const footprintCtx = buildFootprintContextServer(trades, baseCandles);
   const cvdCtx       = buildCVDContextServer(trades);
+  const liqCtx       = buildLiquidationContextServer(coin, baseCandles);
 
   // Combine everything into one context block
   // For gold: DXY context replaces the BTC correlation block (which is empty for gold anyway)
@@ -6508,9 +6791,9 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
     })(),
     divergence: detectDivergence(baseCandles, 30),
   };
-  const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, oi, trigger, indicators });
+  const baseCtx = buildServerContextString({ coin, tf, baseCandles, mtfH1, mtfH4, btcCandles, funding, trigger, indicators });
   const dxyCtx = isMetalOrOilPair ? buildDXYContextString(dxyData) : '';
-  const contextStr = [baseCtx, dxyCtx, liquidityCtx, footprintCtx, cvdCtx, crossBrokerCtx, newsCtx, calCtx]
+  const contextStr = [baseCtx, dxyCtx, oiDeltaCtx, fundingTrendCtx, lsRatioCtx, liquidityCtx, footprintCtx, cvdCtx, liqCtx, crossBrokerCtx, newsCtx, calCtx, perfFeedbackCtx]
     .filter(s => s && s.length).join('\n');
 
   const systemPrompt = buildServerSystemPrompt(coin, tf, broker, contextStr, lastClose);
@@ -8159,6 +8442,10 @@ async function _whaleBoot() {
 // Don't block server startup; warm up after a short delay so other init
 // (DB, env, executor) gets to log first.
 setTimeout(() => { _whaleBoot(); }, 5000);
+
+// Open the market-wide liquidation socket. It buffers prints so the signal
+// engine can read recent long/short liquidation flow at scan time.
+setTimeout(() => { try { _liqBoot(); } catch (e) { console.warn('[liq] boot failed:', e.message || e); } }, 6000);
 
 // ── /api/whales/list ── tracked whales + summary
 app.get('/api/whales/list', requireAuth, async (_req, res) => {
