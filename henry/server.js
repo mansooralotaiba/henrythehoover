@@ -4803,42 +4803,69 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
     }
   }
 
-  // SL hit — original stop-loss breached
-  // SL — wick-aware. Uses recentLow (LONG) / recentHigh (SHORT) so a wick
-  // through SL between polls still closes the trade.
-  const slHit = isLong ? recentLow <= slP : recentHigh >= slP;
-  // BE-stop hit — fires when:
-  //   • BE alert already fired (user should have moved SL to entry)
-  //   • Price returned to entry (LONG: cp <= e; SHORT: cp >= e)
-  //   • Price hasn't yet reached original SL (otherwise slHit handles it)
-  // Wick-aware so a fast revisit of entry between polls still closes BE.
-  const beStopHit = ps._beAlerted && (isLong
-    ? (recentLow <= e && recentLow > slP)
-    : (recentHigh >= e && recentHigh < slP));
-  if (slHit || beStopHit) {
-    const wasBE = ps._beAlerted; // true if BE-stop OR (slHit while _beAlerted is set)
-    const reason = beStopHit ? 'BE-stop' : (wasBE ? 'SL-after-BE' : 'SL');
-    const slPrice = beStopHit
-      ? (isLong ? Math.min(price, recentLow) : Math.max(price, recentHigh))
-      : (isLong ? Math.min(price, recentLow) : Math.max(price, recentHigh));
-    console.log('[monitor]', coin, reason, 'hit at', slPrice, '(price=' + price + ', wickExt=' + (isLong ? recentLow : recentHigh) + ')', 'signalId=' + ps.signalId);
-    if (!ps._outcomeLogged) {
-      ps._outcomeLogged = true;
-      await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1, pendSignal, broker, tf)
-        .catch(e => console.error('[server SL outcome]', e.message));
+  // SL hit — original stop-loss breached.
+  // GATED on _entryAlerted (matching the TP/BE blocks above): a signal that
+  // never confirmed entry must NEVER log a realized SL loss. Before entry the
+  // "SL" level is just an invalidation marker, not a stop on a live position.
+  if (ps._entryAlerted) {
+    // SL — wick-aware. Uses recentLow (LONG) / recentHigh (SHORT) so a wick
+    // through SL between polls still closes the trade.
+    const slHit = isLong ? recentLow <= slP : recentHigh >= slP;
+    // BE-stop hit — fires when:
+    //   • BE alert already fired (user should have moved SL to entry)
+    //   • Price returned to entry (LONG: cp <= e; SHORT: cp >= e)
+    //   • Price hasn't yet reached original SL (otherwise slHit handles it)
+    // Wick-aware so a fast revisit of entry between polls still closes BE.
+    const beStopHit = ps._beAlerted && (isLong
+      ? (recentLow <= e && recentLow > slP)
+      : (recentHigh >= e && recentHigh < slP));
+    if (slHit || beStopHit) {
+      const wasBE = ps._beAlerted; // true if BE-stop OR (slHit while _beAlerted is set)
+      const reason = beStopHit ? 'BE-stop' : (wasBE ? 'SL-after-BE' : 'SL');
+      const slPrice = beStopHit
+        ? (isLong ? Math.min(price, recentLow) : Math.max(price, recentHigh))
+        : (isLong ? Math.min(price, recentLow) : Math.max(price, recentHigh));
+      console.log('[monitor]', coin, reason, 'hit at', slPrice, '(price=' + price + ', wickExt=' + (isLong ? recentLow : recentHigh) + ')', 'signalId=' + ps.signalId);
+      if (!ps._outcomeLogged) {
+        ps._outcomeLogged = true;
+        await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1, pendSignal, broker, tf)
+          .catch(e => console.error('[server SL outcome]', e.message));
+      }
+      await notifyUser(userId, isAdmin, {
+        title: `${wasBE ? '⚑ STOPPED AT BE' : '🛑 SL HIT'}: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+        body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${slPrice.toFixed(2)}. Logged automatically.`,
+        color: wasBE ? 'am' : 're',
+      });
+      // WEEX auto-trade hook 5/6: record SL/BE closure (WEEX plan already closed it).
+      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+        ps._weexClosed = true;
+        fireExecutor('handleSlHit', { signalId: ps.signalId, exitPrice: slPrice }, 'slHit');
+      }
+      clearPairState(ps);
+      return;
     }
-    await notifyUser(userId, isAdmin, {
-      title: `${wasBE ? '⚑ STOPPED AT BE' : '🛑 SL HIT'}: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-      body: `${wasBE ? 'Closed at breakeven' : 'Stop loss breached'} @ ${slPrice.toFixed(2)}. Logged automatically.`,
-      color: wasBE ? 'am' : 're',
-    });
-    // WEEX auto-trade hook 5/6: record SL/BE closure (WEEX plan already closed it).
-    if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
-      ps._weexClosed = true;
-      fireExecutor('handleSlHit', { signalId: ps.signalId, exitPrice: slPrice }, 'slHit');
+  } else {
+    // Pre-entry invalidation (THE PHANTOM-SL FIX).
+    // The signal is still "waiting LTF confirmation" — no order was placed and
+    // no DB outcome row exists. If price reaches the planned SL before we ever
+    // confirmed entry, the setup is dead: drop it with a light note. CRITICALLY
+    // we do NOT call logSignalOutcomeAndJournal (that would write a phantom
+    // outcome='SL', rr=-1 loss for a trade that never happened — the AAVE/ETH
+    // bug) and do NOT fireExecutor (no WEEX position exists to close).
+    // recentHigh/recentLow == price here because their wick-expansion (above)
+    // is itself _entryAlerted-gated, so the point-in-time price is the check.
+    const invalidated = isLong ? price <= slP : price >= slP;
+    if (invalidated && !ps._expiryAlerted) {
+      ps._expiryAlerted = true; // reuse the "done — stop monitoring" guard
+      console.log('[monitor]', coin, 'INVALIDATED pre-entry — price hit planned SL before confirmation', 'price=' + price, 'plannedSL=' + slP, 'signalId=' + ps.signalId);
+      await notifyUser(userId, isAdmin, {
+        title: `✖ Setup invalidated: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
+        body: `Price reached the planned stop (${slP}) before entry confirmed — no trade taken.`,
+        color: 'am',
+      });
+      clearPairState(ps);
+      return;
     }
-    clearPairState(ps);
-    return;
   }
 
   // Expiry — only if entry never hit, fires once, clears the trade.
