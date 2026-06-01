@@ -4806,7 +4806,11 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
   // SL hit — original stop-loss breached.
   // GATED on _entryAlerted (matching the TP/BE blocks above): a signal that
   // never confirmed entry must NEVER log a realized SL loss. Before entry the
-  // "SL" level is just an invalidation marker, not a stop on a live position.
+  // "SL" level is just a planned marker, not a stop on a live position — so we
+  // do nothing here when unconfirmed. Whether a never-entered setup is still
+  // valid is left to the LTF confirmation gate; if it never confirms it drops
+  // via the 2h confirm-timeout or the expiry path below, not a mechanical
+  // price-touched-SL rule.
   if (ps._entryAlerted) {
     // SL — wick-aware. Uses recentLow (LONG) / recentHigh (SHORT) so a wick
     // through SL between polls still closes the trade.
@@ -4841,28 +4845,6 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         ps._weexClosed = true;
         fireExecutor('handleSlHit', { signalId: ps.signalId, exitPrice: slPrice }, 'slHit');
       }
-      clearPairState(ps);
-      return;
-    }
-  } else {
-    // Pre-entry invalidation (THE PHANTOM-SL FIX).
-    // The signal is still "waiting LTF confirmation" — no order was placed and
-    // no DB outcome row exists. If price reaches the planned SL before we ever
-    // confirmed entry, the setup is dead: drop it with a light note. CRITICALLY
-    // we do NOT call logSignalOutcomeAndJournal (that would write a phantom
-    // outcome='SL', rr=-1 loss for a trade that never happened — the AAVE/ETH
-    // bug) and do NOT fireExecutor (no WEEX position exists to close).
-    // recentHigh/recentLow == price here because their wick-expansion (above)
-    // is itself _entryAlerted-gated, so the point-in-time price is the check.
-    const invalidated = isLong ? price <= slP : price >= slP;
-    if (invalidated && !ps._expiryAlerted) {
-      ps._expiryAlerted = true; // reuse the "done — stop monitoring" guard
-      console.log('[monitor]', coin, 'INVALIDATED pre-entry — price hit planned SL before confirmation', 'price=' + price, 'plannedSL=' + slP, 'signalId=' + ps.signalId);
-      await notifyUser(userId, isAdmin, {
-        title: `✖ Setup invalidated: ${coin.replace('USDT', '')} ${pendSignal.direction}`,
-        body: `Price reached the planned stop (${slP}) before entry confirmed — no trade taken.`,
-        color: 'am',
-      });
       clearPairState(ps);
       return;
     }
