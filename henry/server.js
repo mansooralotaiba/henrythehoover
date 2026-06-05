@@ -7007,6 +7007,43 @@ async function _confirmAndExecuteSignal(userId, sub, ps, coin, currentPrice, con
     rr: rrSafe,
   };
 
+  // ── Re-validate AFTER locking the entry to the fill price ──────────────────
+  // During the LTF wait the market can move enough that the refined entry
+  // crosses its own SL/TP (wrong-side geometry → instant stop, e.g. the 54R
+  // XAUT short) or the RR collapses below the floor (e.g. a 0.3R long) — even
+  // while staying inside the drift cap. rrSafe above uses Math.abs so it cannot
+  // see broken geometry; recompute SIGNED here and skip rather than enter a
+  // degenerate trade. Mirrors the generation-time RR floor.
+  {
+    const dir = pendSignal.direction;
+    const RR_FLOOR = 1.3;
+    const MIN_SL_PCT = parseFloat(process.env.HENRY_MIN_SL_PCT) || 0.08; // reject near-zero-risk stops
+    const geomOk = (dir === 'LONG') ? (slP < currentPrice && tpP > currentPrice)
+                                     : (slP > currentPrice && tpP < currentPrice);
+    const signedRR = (dir === 'LONG') ? (tpP - currentPrice) / (currentPrice - slP)
+                                       : (currentPrice - tpP) / (slP - currentPrice);
+    const slDistPct = currentPrice > 0 ? Math.abs(currentPrice - slP) / currentPrice * 100 : 0;
+    let bad = null;
+    if (!geomOk) bad = `entry ${currentPrice} crossed its stop/target after the LTF wait (SL ${slP} / TP ${tpP})`;
+    else if (slDistPct < MIN_SL_PCT) bad = `stop only ${slDistPct.toFixed(3)}% away (< ${MIN_SL_PCT}%) — degenerate risk`;
+    else if (!isFinite(signedRR) || signedRR < RR_FLOOR) bad = `RR collapsed to ${isFinite(signedRR) ? signedRR.toFixed(2) : 'n/a'} (< ${RR_FLOOR}) at the confirmed entry`;
+    if (bad) {
+      console.log('[confirm]', coin, dir, 'invalid at confirmation —', bad, '— skipping');
+      await notifyUser(userId, isAdmin, {
+        title: `❌ Signal skipped: ${coin.replace('USDT', '')} ${dir}`,
+        body: `${bad}. Planned ${plannedEntry} → confirm ${currentPrice}. Skipping.`,
+        color: 're',
+      });
+      if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
+        await postSkippedToDiscord(pendSignal, currentPrice, drift, broker, tf).catch(e => console.error('[discord skipped]', e.message));
+      }
+      clearPairState(ps);
+      ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+      return;
+    }
+    confirmedSignal.rr = +signedRR.toFixed(2); // signed == abs here (geometry validated), keep it honest
+  }
+
   // Persist with the confirmed entry
   const signalId = await saveServerSignal(userId, confirmedSignal, trigger, broker, tf);
   ps.signalId = signalId;
