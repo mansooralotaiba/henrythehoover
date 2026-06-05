@@ -65,6 +65,20 @@ function computePositionSize({ entry, sl, riskUsd, quantityPrecision, minOrderSi
   return { qty, reject: null };
 }
 
+// Best-effort read of a symbol's max leverage from WEEX exchangeInfo. The exact
+// field name varies across WEEX API versions, so probe the common candidates.
+// Returns 0 when none is found (caller then relies on the global levMax cap +
+// WEEX's own rejection of out-of-range leverage).
+function symbolMaxLeverage(info) {
+  if (!info || typeof info !== 'object') return 0;
+  const lr = info.leverageRange || info.leverageFilter || null;
+  const cand = info.maxLeverage ?? info.maxLever ?? info.leverageMax ?? info.maxLeverageLevel
+    ?? (lr && (lr.max ?? lr.maxLeverage ?? (Array.isArray(lr) ? lr[lr.length - 1] : undefined)))
+    ?? (Array.isArray(info.leverages) ? info.leverages[info.leverages.length - 1] : undefined);
+  const n = parseFloat(cand);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function beWithFeeBuffer(price, side, bufferBps) {
   if (bufferBps <= 0) return price;
   const delta = price * (bufferBps / 10000);
@@ -88,10 +102,21 @@ function toWeexSymbol(pair) {
 }
 
 export class Executor {
-  constructor({ client, riskUsd, leverage, leverageOverrides = {}, riskOverrides = {}, beFeeBufferBps, beFeeBufferOverrides = {}, notifier, onTradeClosed, logger = console }) {
+  constructor({ client, riskUsd, leverage, leverageOverrides = {}, riskOverrides = {}, beFeeBufferBps, beFeeBufferOverrides = {}, dynamicLeverage = true, levMin, levMax, levSafetyFactor, notifier, onTradeClosed, logger = console }) {
     this.client = client;
     this.riskUsd = riskUsd;
     this.leverage = leverage;
+    // ── Dynamic per-trade leverage ────────────────────────────────────────
+    // When enabled (default), leverage is computed per trade from the stop
+    // distance rather than a fixed value. Risk ($) is UNCHANGED — it's set
+    // purely by position size (computePositionSize) — but leverage is raised
+    // as high as is SAFE so the $-risk position stays affordable on margin,
+    // while keeping the liquidation price beyond the stop. See
+    // _dynamicLeverageFor. Set dynamicLeverage:false to revert to fixed.
+    this.dynamicLeverage = dynamicLeverage !== false;
+    this.levMin = Number(levMin) > 0 ? Number(levMin) : 5;
+    this.levMax = Number(levMax) > 0 ? Number(levMax) : 50;
+    this.levSafetyFactor = Number(levSafetyFactor) > 0 ? Number(levSafetyFactor) : 0.5;
     // Per-symbol leverage override map (e.g. {ETHUSDT: 100, BNBUSDT: 25}).
     // Falls back to `this.leverage` for symbols not in the map.
     this.leverageOverrides = leverageOverrides || {};
@@ -124,6 +149,28 @@ export class Executor {
     const sym = String(symbol || '').toUpperCase();
     const override = this.leverageOverrides[sym];
     return (override && override > 0) ? override : this.leverage;
+  }
+
+  // Highest leverage that keeps liquidation safely BEYOND the stop. Liquidation
+  // sits ~1/leverage away from entry, so capping leverage at safetyFactor/slFrac
+  // guarantees the stop (at slFrac from entry) triggers first, leaving a
+  // (1 - safetyFactor) buffer. Picking the highest safe leverage also minimises
+  // the margin the position locks, so a $-risk position is affordable. Result is
+  // clamped to [levMin, levMax] and the symbol's exchange max (when known), and
+  // can never exceed the liquidation-safe ceiling.
+  _dynamicLeverageFor(symbol, entry, sl, info) {
+    const e = parseFloat(entry), s = parseFloat(sl);
+    const dist = Math.abs(e - s);
+    if (!(e > 0) || !(dist > 0)) return this._leverageFor(symbol); // bad inputs → fixed fallback
+    const slFrac = dist / e;
+    const safeCeil = Math.max(1, Math.floor(this.levSafetyFactor / slFrac));
+    let lev = safeCeil;
+    const symMax = symbolMaxLeverage(info);
+    if (symMax > 0) lev = Math.min(lev, symMax);
+    lev = Math.min(lev, this.levMax);
+    lev = Math.max(lev, this.levMin);
+    if (lev > safeCeil) lev = safeCeil; // floor must never beat the safe ceiling
+    return lev;
   }
 
   _riskFor(symbol) {
@@ -254,7 +301,9 @@ export class Executor {
     const slPx = roundPrice(s.sl, pricePrecision);
     const tpPx = roundPrice(s.tp, pricePrecision);
 
-    const leverage = this._leverageFor(symbol);
+    const leverage = this.dynamicLeverage
+      ? this._dynamicLeverageFor(symbol, s.entry, s.sl, info)
+      : this._leverageFor(symbol);
     try {
       await this.client.setLeverage(symbol, leverage);
     } catch (err) {

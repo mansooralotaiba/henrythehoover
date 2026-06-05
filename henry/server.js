@@ -62,6 +62,18 @@ const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
 // if WEEX env vars are missing so the website still runs without keys.
 const HENRY_RISK_USD = parseFloat(process.env.HENRY_RISK_USD) || 10;
 const HENRY_LEVERAGE = parseInt(process.env.HENRY_LEVERAGE, 10) || 10;
+// ── Dynamic per-trade leverage ────────────────────────────────────────────
+// Risk ($) is fixed by position size; leverage only sets margin + how close
+// liquidation sits. When enabled (default), the executor sizes leverage per
+// trade from the stop distance: as high as is safe so the $-risk position is
+// affordable, but always below the point where price would liquidate before
+// the stop. HENRY_LEV_SAFETY is the fraction of the liquidation distance the
+// stop is allowed to sit at (0.5 = stop at half the distance → 2× buffer).
+// Set HENRY_DYNAMIC_LEVERAGE=false to revert to fixed HENRY_LEVERAGE/overrides.
+const HENRY_DYNAMIC_LEVERAGE = (process.env.HENRY_DYNAMIC_LEVERAGE || 'true').toLowerCase() !== 'false';
+const HENRY_LEV_MIN = parseInt(process.env.HENRY_LEV_MIN, 10) || 5;
+const HENRY_LEV_MAX = parseInt(process.env.HENRY_LEV_MAX, 10) || 50;
+const HENRY_LEV_SAFETY = parseFloat(process.env.HENRY_LEV_SAFETY) || 0.5;
 // Per-symbol leverage overrides. JSON map like {"ETHUSDT":100,"BNBUSDT":50}.
 // Symbols not in the map use HENRY_LEVERAGE. Set via Railway env var.
 const HENRY_LEVERAGE_OVERRIDES = (() => {
@@ -120,12 +132,19 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     leverage: HENRY_LEVERAGE,
     leverageOverrides: HENRY_LEVERAGE_OVERRIDES,
     riskOverrides: HENRY_RISK_OVERRIDES,
+    dynamicLeverage: HENRY_DYNAMIC_LEVERAGE,
+    levMin: HENRY_LEV_MIN,
+    levMax: HENRY_LEV_MAX,
+    levSafetyFactor: HENRY_LEV_SAFETY,
     beFeeBufferBps: HENRY_BE_FEE_BUFFER_BPS,
     beFeeBufferOverrides: HENRY_BE_FEE_BUFFER_OVERRIDES,
     notifier: async (msg) => {
-      if (process.env.DISCORD_JOURNAL_WEBHOOK) {
+      // WEEX auto-trade execution alerts go to their OWN dedicated webhook —
+      // NOT the journal channel (that's signal outcomes) and NOT the signal
+      // channels. Keeps the execution log isolated.
+      if (process.env.DISCORD_WEEX_WEBHOOK) {
         try {
-          await fetch(process.env.DISCORD_JOURNAL_WEBHOOK, {
+          await fetch(process.env.DISCORD_WEEX_WEBHOOK, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: msg }),
           });
@@ -164,7 +183,11 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
       }
     },
   });
-  console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD + ' lev=' + HENRY_LEVERAGE + 'x' + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
+  console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD
+    + (HENRY_DYNAMIC_LEVERAGE
+        ? ' lev=DYNAMIC(safety=' + HENRY_LEV_SAFETY + ' min=' + HENRY_LEV_MIN + 'x max=' + HENRY_LEV_MAX + 'x)'
+        : ' lev=' + HENRY_LEVERAGE + 'x')
+    + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
   console.log('[weex] leverageOverrides:', JSON.stringify(HENRY_LEVERAGE_OVERRIDES));
   console.log('[weex] riskOverrides:', JSON.stringify(HENRY_RISK_OVERRIDES));
   console.log('[weex] beFeeBufferOverrides:', JSON.stringify(HENRY_BE_FEE_BUFFER_OVERRIDES));
@@ -2810,9 +2833,19 @@ async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr, 
   // but circuit-breaker recording stays gated to TP/SL/BE only (expiry isn't
   // a P/L event — should never contribute to a "losing streak" pause).
   if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE' || outcome === 'EXPIRED')) {
-    const stats = await getUserStats(userId).catch(() => null);
-    postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
-      .catch(e => console.error('[journal post]', e.message));
+    // Manual ANALYSE outcomes must NOT post to the Discord journal — that
+    // channel is Henry's own autoscan track record only. Manual signals carry
+    // a NULL trigger_type and are logged from the browser PATCH with no
+    // fallbackSignal; the server-side autoscan monitor ALWAYS passes a
+    // fallbackSignal (and autoscan rows carry a non-null trigger_type), so both
+    // autoscan paths still post. Same manual-vs-auto rule used by
+    // /api/performance/me (autoscan ⇔ trigger_type set).
+    const isManual = !fallbackSignal && !(existing && existing.trigger_type);
+    if (!isManual) {
+      const stats = await getUserStats(userId).catch(() => null);
+      postJournalToDiscord(signalForJournal, outcome, outcomeRr, stats)
+        .catch(e => console.error('[journal post]', e.message));
+    }
     // Record into circuit breaker history (only on first outcome) so losing
     // streaks pause future scans automatically.
     if (signalForJournal && signalForJournal.pair && outcome !== 'EXPIRED') {
@@ -2840,10 +2873,31 @@ async function getUserStats(userId) {
   } catch { return null; }
 }
 
+// ── Discord webhook fan-out ──────────────────────────────────────────────
+// Post the SAME JSON payload to one or more webhook URLs. Per-URL failures are
+// swallowed so one dead / rate-limited webhook never blocks the others. Used
+// to MIRROR autoscan signals + signal outcomes to two Discords each.
+async function postJsonToWebhooks(urls, payload, label = 'discord') {
+  const list = (Array.isArray(urls) ? urls : [urls]).filter(Boolean);
+  if (!list.length) return;
+  const body = JSON.stringify(payload);
+  await Promise.all(list.map(u =>
+    fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      .then(async r => { if (!r.ok) console.error(`[${label}]`, r.status, (await r.text().catch(() => '')).slice(0, 200)); })
+      .catch(e => console.error(`[${label}]`, e.message || e))
+  ));
+}
+// Autoscan SIGNAL posts mirror to the auto channel + the dedicated signals
+// Discord. Signal OUTCOMES mirror to the journal channel + the outcome Discord.
+// (WEEX execution alerts have their own webhook — see the executor notifier.)
+function signalWebhooks()  { return [process.env.DISCORD_AUTO_WEBHOOK, process.env.DISCORD_SIGNALS_WEBHOOK]; }
+function outcomeWebhooks() { return [process.env.DISCORD_JOURNAL_WEBHOOK, process.env.DISCORD_OUTCOME_WEBHOOK]; }
+
 // ── Journal Discord posting ──
 async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
-  if (!process.env.DISCORD_JOURNAL_WEBHOOK) {
-    console.warn('[journal] DISCORD_JOURNAL_WEBHOOK env var not set — skipping post');
+  const urls = outcomeWebhooks().filter(Boolean);
+  if (!urls.length) {
+    console.warn('[journal] no outcome webhook configured (DISCORD_JOURNAL_WEBHOOK / DISCORD_OUTCOME_WEBHOOK) — skipping post');
     return;
   }
   if (!signal) {
@@ -2886,21 +2940,8 @@ async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
     },
     timestamp: new Date().toISOString(),
   };
-  try {
-    const r = await fetch(process.env.DISCORD_JOURNAL_WEBHOOK, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ embeds: [embed], username: 'Henry Journal' }),
-    });
-    if (!r.ok) {
-      const t = await r.text().catch(() => '');
-      console.error('[journal webhook]', r.status, t.slice(0, 200));
-    } else {
-      console.log('[journal] posted', outcome, signal.pair, signal.direction);
-    }
-  } catch (e) {
-    console.error('[journal webhook]', e.message);
-  }
+  await postJsonToWebhooks(urls, { embeds: [embed], username: 'Henry Journal' }, 'journal webhook');
+  console.log('[journal] posted', outcome, signal.pair, signal.direction, '→', urls.length, 'webhook(s)');
 }
 
 app.get('/api/signals/history', requireAuth, async (req, res) => {
@@ -4437,23 +4478,17 @@ async function getCurrentPriceServer(coin, broker) {
 
 async function postAlertToDiscord(title, msg, color, isAdmin) {
   if (!isAdmin) return; // user requirement: only admin sessions post to Discord
-  const url = process.env.DISCORD_AUTO_WEBHOOK;
-  if (!url) return;
+  const urls = signalWebhooks().filter(Boolean); // auto channel + signals mirror
+  if (!urls.length) return;
   const colorMap = { gr: 3066993, re: 15548997, am: 16750848, cy: 6535167, pu: 9699539 };
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        username: 'Henry Auto Monitor',
-        embeds: [{
-          title, description: msg, color: colorMap[color] || colorMap.cy,
-          footer: { text: 'Henry server-side monitor' },
-          timestamp: new Date().toISOString(),
-        }],
-      }),
-    });
-  } catch (e) { console.error('[discord auto]', e.message); }
+  await postJsonToWebhooks(urls, {
+    username: 'Henry Auto Monitor',
+    embeds: [{
+      title, description: msg, color: colorMap[color] || colorMap.cy,
+      footer: { text: 'Henry server-side monitor' },
+      timestamp: new Date().toISOString(),
+    }],
+  }, 'discord auto');
 }
 
 async function notifyUser(userId, isAdmin, { title, body, color, data }) {
@@ -6666,8 +6701,8 @@ async function saveServerSignal(userId, signal, trigger, broker, tf) {
 }
 
 async function postServerSignalToDiscord(signal, trigger, broker, tf) {
-  const url = process.env.DISCORD_AUTO_WEBHOOK;
-  if (!url || !signal || signal.direction === 'NO TRADE') return;
+  const urls = signalWebhooks().filter(Boolean); // auto channel + signals mirror
+  if (!urls.length || !signal || signal.direction === 'NO TRADE') return;
   const isLong = signal.direction === 'LONG';
   const triggerLabel = trigger ? `[AUTO ${trigger.type.toUpperCase()}] ${trigger.desc}` : 'Auto-generated';
   const fields = [
@@ -6692,13 +6727,7 @@ async function postServerSignalToDiscord(signal, trigger, broker, tf) {
     footer: { text: 'Henry Server Auto-Scan | ' + new Date().toUTCString() },
     timestamp: new Date().toISOString(),
   };
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ embeds: [embed], username: 'Henry Auto' }),
-    });
-  } catch (e) { console.error('[server signal discord]', e.message); }
+  await postJsonToWebhooks(urls, { embeds: [embed], username: 'Henry Auto' }, 'server signal discord');
 }
 
 // Light "setup pending" Discord alert — fires at signal generation, BEFORE
@@ -6706,38 +6735,26 @@ async function postServerSignalToDiscord(signal, trigger, broker, tf) {
 // posts later via postServerSignalToDiscord() once confirmation arrives
 // and the entry price is locked in.
 async function postPendingSetupToDiscord(signal, trigger, broker, tf) {
-  const url = process.env.DISCORD_AUTO_WEBHOOK;
-  if (!url || !signal || signal.direction === 'NO TRADE') return;
+  const urls = signalWebhooks().filter(Boolean); // auto channel + signals mirror
+  if (!urls.length || !signal || signal.direction === 'NO TRADE') return;
   const dir = signal.direction;
   const emoji = dir === 'LONG' ? '🟢' : '🔴';
   const coin = String(signal.pair || '').replace('USDT', '');
   const content = `🔍 ${emoji} **${coin} ${dir} SETUP** — waiting LTF confirmation\n`
     + `Planned entry \`${signal.entry}\` · SL \`${signal.sl}\` · TP \`${signal.tp}\` · ${signal.rr || '—'}R @ ${signal.confidence || '—'}% · ${broker || '—'}/${tf || '—'}`;
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content, username: 'Henry Auto' }),
-    });
-  } catch (e) { console.error('[server pending discord]', e.message); }
+  await postJsonToWebhooks(urls, { content, username: 'Henry Auto' }, 'server pending discord');
 }
 
 // Light "signal skipped — drift" Discord alert. Fires when LTF confirmation
 // arrives but the market has drifted further than HENRY_MAX_CONFIRM_DRIFT_PCT
 // from the planned entry, so we refuse to take the trade.
 async function postSkippedToDiscord(signal, confirmPrice, driftPct, broker, tf) {
-  const url = process.env.DISCORD_AUTO_WEBHOOK;
-  if (!url || !signal) return;
+  const urls = signalWebhooks().filter(Boolean); // auto channel + signals mirror
+  if (!urls.length || !signal) return;
   const dir = signal.direction;
   const coin = String(signal.pair || '').replace('USDT', '');
   const content = `❌ **${coin} ${dir} SKIPPED** — confirmation arrived at \`${confirmPrice}\` but planned entry was \`${signal.entry}\` (drift ${(driftPct * 100).toFixed(2)}%)`;
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content, username: 'Henry Auto' }),
-    });
-  } catch (e) { console.error('[server skipped discord]', e.message); }
+  await postJsonToWebhooks(urls, { content, username: 'Henry Auto' }, 'server skipped discord');
 }
 
 // Main entry — runs the full AI flow on the server when a trigger fires for a pair.
@@ -6885,16 +6902,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
         icon: '/manifest.json',
       });
       if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
-        // Post a compact veto card to the auto-scan webhook so it's auditable
-        try {
-          const url = process.env.DISCORD_AUTO_WEBHOOK;
-          if (url) await fetch(url, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              content: `🚫 **Oppdir Veto** · ${coin} ${signal.direction}\n${conflict.reason}`,
-            }),
-          });
-        } catch (e) { console.error('[discord oppdir]', e.message); }
+        // Post a compact veto card to the auto-scan + signals webhooks so it's auditable
+        await postJsonToWebhooks(signalWebhooks(), {
+          content: `🚫 **Oppdir Veto** · ${coin} ${signal.direction}\n${conflict.reason}`,
+        }, 'discord oppdir');
       }
       // Cooldown so we don't immediately retrigger on the next scan tick
       ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
@@ -8803,7 +8814,11 @@ app.listen(PORT, () => {
   if (!process.env.DISCORD_WEBHOOK) console.warn('[warn] DISCORD_WEBHOOK not set');
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');
   if (!process.env.DISCORD_STATUS_WEBHOOK) console.warn('[warn] DISCORD_STATUS_WEBHOOK not set — periodic status posts disabled');
-  if (!process.env.DISCORD_JOURNAL_WEBHOOK) console.warn('[warn] DISCORD_JOURNAL_WEBHOOK not set — trade journal posts disabled');
+  if (!process.env.DISCORD_JOURNAL_WEBHOOK) console.warn('[warn] DISCORD_JOURNAL_WEBHOOK not set — outcome cards skip the journal channel');
+  // New routing (mirror signals + outcomes, dedicated WEEX channel):
+  if (!process.env.DISCORD_SIGNALS_WEBHOOK) console.warn('[warn] DISCORD_SIGNALS_WEBHOOK not set — autoscan signals post to the auto channel only (no mirror)');
+  if (!process.env.DISCORD_OUTCOME_WEBHOOK) console.warn('[warn] DISCORD_OUTCOME_WEBHOOK not set — signal outcomes post to the journal channel only (no mirror)');
+  if (!process.env.DISCORD_WEEX_WEBHOOK) console.warn('[warn] DISCORD_WEEX_WEBHOOK not set — WEEX auto-trade execution alerts disabled');
   if (!POLYGON_API_KEY) console.warn('[warn] POLYGON_API_KEY not set — DXY and Gold endpoints will 502');
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) console.warn('[warn] VAPID keys not set — push notifications disabled');
   if (!process.env.WHOP_CHECKOUT_URL) console.warn('[warn] WHOP_CHECKOUT_URL not set — Whop subscriptions disabled');
