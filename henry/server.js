@@ -2829,10 +2829,11 @@ async function logSignalOutcomeAndJournal(userId, signalId, outcome, outcomeRr, 
   }
 
   // Post journal on first outcome assignment OR when we just backfilled.
-  // EXPIRED is included so unfilled signals show up in the journal feed,
-  // but circuit-breaker recording stays gated to TP/SL/BE only (expiry isn't
-  // a P/L event — should never contribute to a "losing streak" pause).
-  if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE' || outcome === 'EXPIRED')) {
+  // EXPIRED is intentionally EXCLUDED here — an unfilled/expired signal is not
+  // a P/L event, so it must NOT post an outcome card to the journal / outcome
+  // (mirror) Discord channels. The DB outcome is still written above so
+  // /performance and history reflect it; circuit-breaker stays TP/SL/BE only.
+  if (wasUnset && (outcome === 'TP' || outcome === 'SL' || outcome === 'BE')) {
     // Manual ANALYSE outcomes must NOT post to the Discord journal — that
     // channel is Henry's own autoscan track record only. Manual signals carry
     // a NULL trigger_type and are logged from the browser PATCH with no
