@@ -429,6 +429,8 @@ export class Executor {
   async _handleMoveSlBeInner(s) {
     const trade = this.trades.get(s.signalId);
     if (!trade) { this.log.warn('[executor] moveSlBe for unknown signalId', s.signalId); return; }
+    // SAFETY: never adjust the stop on an external/manual position the bot adopted.
+    if (trade.external) { this.log.warn(`[executor] moveSlBe: ${trade.symbol} is external/manual — leaving its stop untouched`); return; }
     if (trade.state !== TradeState.PENDING && trade.state !== TradeState.ACTIVE) {
       this.log.info(`[executor] moveSlBe ignored — trade ${s.signalId} in state ${trade.state}`);
       return;
@@ -507,15 +509,27 @@ export class Executor {
   // Catches the case where the plan order didn't fire — without this, the
   // next signal for the same pair would DCA into the still-open position.
   async _forceCloseIfOpen(trade, label) {
+    // SAFETY: never touch a position the executor did not open. Positions adopted
+    // from WEEX by reconcile() with no Henry SL/TP plan are external/manual (a
+    // hand-opened trade on the shared account) — leave them completely alone.
+    if (trade.external) {
+      this.log.warn(`[executor] ${label}: ${trade.symbol} is external/manual (bot didn't open it) — NOT force-closing`);
+      return;
+    }
     try {
       const pos = await this.client.getPosition(trade.symbol);
       const size = parseFloat(
         pos?.size ?? pos?.total ?? pos?.qty ?? pos?.quantity ?? pos?.holdSize ?? 0
       ) || 0;
       if (size <= 0) return;
+      // SAFETY: close only OUR quantity, never the entire symbol position. In WEEX
+      // one-way/netting mode a human (or another strategy) may hold extra size on
+      // the same pair; closing the whole `size` would wipe their portion too.
+      const ourQty = parseFloat(trade.quantity) || 0;
+      const closeQty = ourQty > 0 ? Math.min(ourQty, size) : size;
       const positionSide = trade.side === 'long' ? 'LONG' : 'SHORT';
-      this.log.warn(`[executor] ${label} but WEEX position still open for ${trade.symbol} (size=${size}) — force-closing market`);
-      await this.client.closePositionMarket({ symbol: trade.symbol, positionSide, quantity: size });
+      this.log.warn(`[executor] ${label} but WEEX position still open for ${trade.symbol} (size=${size}, closing our ${closeQty}) — force-closing market`);
+      await this.client.closePositionMarket({ symbol: trade.symbol, positionSide, quantity: closeQty });
       // Also try to cancel lingering SL/TP plans so they don't fire on a closed pair.
       for (const oid of [trade.slOrderId, trade.tpOrderId]) {
         if (!oid) continue;
@@ -539,6 +553,13 @@ export class Executor {
   async _terminate(signalId, newState, label) {
     const trade = this.trades.get(signalId);
     if (!trade) { this.log.warn(`[executor] ${label} for unknown signalId`, signalId); return; }
+    // SAFETY: never cancel orders or close a position the bot adopted but did
+    // not open (external/manual). Just drop our tracking of it.
+    if (trade.external) {
+      this.log.warn(`[executor] ${label}: ${trade.symbol} is external/manual — dropping tracking, leaving the WEEX position untouched`);
+      trade.state = newState; trade.updatedAt = Date.now();
+      return;
+    }
 
     for (const [oid, kind] of [
       [trade.entryOrderId, 'entry'],
@@ -694,11 +715,16 @@ export class Executor {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         recovered: true,
+        // External/manual: the bot ALWAYS places both an SL and TP plan on its own
+        // trades, so an adopted position carrying NEITHER is a hand-opened trade on
+        // the shared WEEX account. Track it for the dashboard only — never manage,
+        // BE-move, or force-close it (see _forceCloseIfOpen / _terminate guards).
+        external: (!slPlan && !tpPlan),
       };
       this.trades.set(signalId, trade);
       result.recovered++;
       if (!slPlan && !tpPlan) {
-        result.warnings.push(`${symbol} ${side}: no SL/TP plans found — BE management disabled`);
+        result.warnings.push(`${symbol} ${side}: no SL/TP plans — treated as EXTERNAL/manual (display-only; bot will not manage or close it)`);
       } else if (!slPlan) {
         result.warnings.push(`${symbol} ${side}: no SL plan — BE move-to-entry won't work`);
       } else if (!tpPlan) {
