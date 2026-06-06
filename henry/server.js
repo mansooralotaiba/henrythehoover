@@ -2138,9 +2138,9 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
   const { coin, tf: reqTf = '15m', broker = 'weex', notes, mode, force } = req.body || {};
   if (!coin) return res.status(400).json({ error: 'missing coin' });
   try {
-    // Per-pair TF override — gold/metals run on 5m even when the user picked
-    // 15m. Matches autoscan's tfForCoin routing. ?force=true on the body will
-    // skip the override (user can force-fire a 15m gold analyse if they want).
+    // Per-pair TF override via tfForCoin (gold is back on 15m as of 2026-06-06;
+    // HENRY_TF_OVERRIDES env var can still remap any pair without a redeploy).
+    // ?force=true skips the override so the exact requested TF is used.
     const tf = (force ? reqTf : tfForCoin(coin, reqTf));
     const tfOverridden = (tf !== reqTf);
     const isMetalOrOilPair = /^(GOLD|XAU|XAG|XTI|XBR)/.test(coin);
@@ -3590,16 +3590,18 @@ function inferTriggerDirection(trigger) {
 // ════════════════════════════════════════════════════════════════════════════
 // PER-PAIR TIMEFRAME OVERRIDE
 // ════════════════════════════════════════════════════════════════════════════
-// Gold lives on the 5-minute chart by request — its volatility profile makes
-// 15m too slow for the institutional-flow setups we're catching. Other pairs
-// keep whatever the scan subscription's default TF is. Env var
-// HENRY_TF_OVERRIDES lets us tune further without a redeploy.
+// Gold reverted to the 15-minute chart on 2026-06-06. The 5m experiment
+// (fbbf3e9, 2026-05-24) ~2.3x'd signal volume but win-rate fell 75% -> 48.5%
+// and avg R/trade dropped +0.82 -> +0.18 over the trial window — too many
+// low-quality fills, and at $30/trade those stops hurt. Other pairs keep the
+// scan subscription's default TF. Env var HENRY_TF_OVERRIDES still tunes
+// per-pair without a code change (e.g. back to 5m if we ever retry the test).
 const HENRY_TF_OVERRIDES = (() => {
   const raw = process.env.HENRY_TF_OVERRIDES;
-  if (!raw) return { XAUTUSDT: '5m', GOLD: '5m', XAUUSD: '5m' };
+  if (!raw) return { XAUTUSDT: '15m', GOLD: '15m', XAUUSD: '15m' };
   try { return JSON.parse(raw); } catch (err) {
     console.warn('[scan] HENRY_TF_OVERRIDES not valid JSON:', err.message);
-    return { XAUTUSDT: '5m', GOLD: '5m', XAUUSD: '5m' };
+    return { XAUTUSDT: '15m', GOLD: '15m', XAUUSD: '15m' };
   }
 })();
 function tfForCoin(coin, defaultTf) {
