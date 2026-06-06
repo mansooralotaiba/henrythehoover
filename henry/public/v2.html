@@ -1812,7 +1812,13 @@ function _wpResizeAll(){
 }
 
 function loadWatchlist(){
-  fetch('/api/v2/watchlist',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+  fetch('/api/v2/watchlist',{credentials:'same-origin'}).then(function(r){
+    // Guard against non-JSON bodies (e.g. a 502 "upstream error" from the edge
+    // proxy during a redeploy/restart). Throwing here routes to the resilient
+    // catch below instead of blowing up on JSON.parse.
+    if(!r.ok) throw new Error('http ' + r.status);
+    return r.json();
+  }).then(function(d){
     var grid = el('k-wp-grid');
     var pairs = (d.pairs || []).slice(0, 6);
     el('k-pair-count').textContent = pairs.length + ' / 6 max';
@@ -1852,7 +1858,14 @@ function loadWatchlist(){
     // Reflow after any DOM additions in case panel sizes changed
     requestAnimationFrame(_wpResizeAll);
   }).catch(function(e){
-    el('k-wp-grid').innerHTML = '<div class="error-banner">' + e.message + '</div>';
+    // Transient proxy/upstream hiccup (a 502 "upstream error" during a redeploy,
+    // or a momentary candle-feed blip). loadWatchlist re-polls every 10s, so keep
+    // whatever panels are already drawn and just wait for the next cycle instead
+    // of replacing the whole grid with a raw parse error. Only show a soft notice
+    // on a cold first load when there is nothing to keep.
+    if(Object.keys(_wpCharts).length) return;
+    var grid = el('k-wp-grid');
+    if(grid) grid.innerHTML = '<div class="wp-panel" style="text-align:center;justify-content:center;color:var(--di);font-family:var(--mono);font-size:11px">Reconnecting…</div>';
   });
 }
 function formatPrice(p){
