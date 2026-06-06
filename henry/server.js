@@ -4080,6 +4080,7 @@ function clearPairState(ps) {
   ps._expiryAlerted = false;
   ps._outcomeLogged = false;
   ps._confirmationPending = false;
+  ps._autoExec = false;
   ps._trigger = null;
   ps._broker = null;
   ps._zoneFirstTouchAt = 0;
@@ -4428,6 +4429,9 @@ app.post('/api/scan/signal', requireAuth, express.json({ limit: '512kb' }), (req
   ps.pendSignal = req.body?.signal || null;
   ps.signalId = req.body?.signalId || null;
   ps.signalTimestamp = Date.now();
+  // Browser-registered (manual ANALYSE / track-on-chart) — NEVER WEEX-eligible.
+  // Only the autoscan staging path (runServerAIForPair) sets _autoExec = true.
+  ps._autoExec = false;
   ps._entryAlerted = false;
   ps._beAlerted = false;
   ps._tpAlerted = false;
@@ -4761,7 +4765,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
   // before firing handleSetup at MARKET). Kept for safety in case some code
   // path flips _entryAlerted without going through _confirmAndExecuteSignal
   // (e.g. browser-side scan_signal endpoint with a different state machine).
-  if (ps._entryAlerted && !ps._weexEntryFired && autoTradeAllowed(isAdmin) && ps.signalId) {
+  if (ps._entryAlerted && !ps._weexEntryFired && autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
     ps._weexEntryFired = true;
     fireExecutor('handleEntryHit', { signalId: ps.signalId, fillPrice: price }, 'entryHit');
   }
@@ -4784,7 +4788,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         body: `${coin.replace('USDT', '')} in profit before NY open — moving SL to ${e} to survive the sweep window.`,
         color: 'am',
       });
-      if (!ps._weexBeFired && autoTradeAllowed(isAdmin) && ps.signalId) {
+      if (!ps._weexBeFired && autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
         ps._weexBeFired = true;
         fireExecutor('handleMoveSlBe', { signalId: ps.signalId, newSl: e }, 'moveSlBe-preNY');
       }
@@ -4804,7 +4808,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         color: 'am',
       });
       // WEEX auto-trade hook 3/6: move SL on WEEX to entry, fee-buffered.
-      if (!ps._weexBeFired && autoTradeAllowed(isAdmin) && ps.signalId) {
+      if (!ps._weexBeFired && autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
         ps._weexBeFired = true;
         fireExecutor('handleMoveSlBe', { signalId: ps.signalId, newSl: e }, 'moveSlBe');
       }
@@ -4832,7 +4836,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
           .catch(e => console.error('[server TP outcome]', e.message));
       }
       // WEEX auto-trade hook 4/6: record TP closure (WEEX TP plan already closed the position).
-      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
         ps._weexClosed = true;
         fireExecutor('handleTpHit', { signalId: ps.signalId, exitPrice: tpPrice }, 'tpHit');
       }
@@ -4879,7 +4883,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
         color: wasBE ? 'am' : 're',
       });
       // WEEX auto-trade hook 5/6: record SL/BE closure (WEEX plan already closed it).
-      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
         ps._weexClosed = true;
         fireExecutor('handleSlHit', { signalId: ps.signalId, exitPrice: slPrice }, 'slHit');
       }
@@ -4913,7 +4917,7 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
           .catch(e => console.error('[server EXPIRED outcome]', e.message));
       }
       // WEEX auto-trade hook 6/6: cancel the unfilled entry + SL/TP plans.
-      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps.signalId) {
+      if (!ps._weexClosed && autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
         ps._weexClosed = true;
         fireExecutor('handleExpired', { signalId: ps.signalId }, 'expired');
       }
@@ -6958,6 +6962,12 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   ps._weexEntryFired = false;
   ps._weexBeFired = false;
   ps._weexClosed = false;
+  // AUTOSCAN-ONLY WEEX GATE: this staging path is reached ONLY from the scan
+  // loop (runServerAIForPair, the sole caller). Mark the pair-state as
+  // auto-executable so the WEEX hooks may fire. Manual ANALYSE never sets this,
+  // so a hand-taken signal can never open/manage/close a WEEX position — even
+  // on the admin account. Auto-trade is exclusively an autoscan feature.
+  ps._autoExec = true;
 
   return signal;
 }
@@ -7070,7 +7080,8 @@ async function _confirmAndExecuteSignal(userId, sub, ps, coin, currentPrice, con
   ps.lastStatus = 'in-trade';
 
   // Fire the WEEX MARKET order. _weexEntryFired set so the entry-hit hook is a no-op.
-  if (autoTradeAllowed(isAdmin) && signalId) {
+  // ps._autoExec guarantees this is an autoscan-originated signal (manual ANALYSE never sets it).
+  if (autoTradeAllowed(isAdmin) && ps._autoExec && signalId) {
     ps._weexEntryFired = true;
     fireExecutor('handleSetup', {
       signalId, pair: confirmedSignal.pair,
