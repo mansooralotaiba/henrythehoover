@@ -6923,12 +6923,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
         body: conflict.reason,
         icon: '/manifest.json',
       });
-      if (isAdmin || (sub.email && sub.email === ADMIN_EMAIL)) {
-        // Post a compact veto card to the auto-scan + signals webhooks so it's auditable
-        await postJsonToWebhooks(signalWebhooks(), {
-          content: `🚫 **Oppdir Veto** · ${coin} ${signal.direction}\n${conflict.reason}`,
-        }, 'discord oppdir');
-      }
+      // Discord veto card removed 2026-06-07 — too noisy. The veto still fires:
+      // it's logged server-side (above) and pushed to the user. Re-add a
+      // postJsonToWebhooks(signalWebhooks(), {content: …}) call here if the audit
+      // card is ever wanted back.
       // Cooldown so we don't immediately retrigger on the next scan tick
       ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
       ps.lastVetoReason = conflict.reason;
