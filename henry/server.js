@@ -47,6 +47,21 @@ const SL_ATR_BUFFER = parseFloat(process.env.HENRY_SL_ATR_BUFFER) || 2.0;
 const HENRY_BLOCK_NY_OPEN = (process.env.HENRY_BLOCK_NY_OPEN ?? 'true').toLowerCase() === 'true';
 const NY_OPEN_BLOCK_START_MIN = 13 * 60;        // 13:00 UTC (1h before US cash open)
 const NY_OPEN_BLOCK_END_MIN   = 14 * 60 + 30;   // 14:30 UTC (30m after US cash open)
+// Gold weekend block. The real gold market closes ~Fri 21:00 UTC (NY close) and
+// reopens Sun ~22:00 UTC, so over Fri-Sun XAUT only chops on thin crypto-only
+// liquidity. Autoscan gold went 29% WR / -2.43R Fri-Sun vs 57% / +17R Mon-Thu
+// (2026-06-07 analysis), so skip NEW gold autoscan entries Fri 21:00 UTC → Mon
+// 00:00 UTC. Existing trades stay monitored; crypto pairs are untouched. Toggle
+// via HENRY_BLOCK_GOLD_WEEKEND. Autoscan-only (manual ANALYSE never trades).
+const HENRY_BLOCK_GOLD_WEEKEND = (process.env.HENRY_BLOCK_GOLD_WEEKEND ?? 'true').toLowerCase() === 'true';
+const GOLD_WEEKEND_FRI_START_MIN = 21 * 60;     // Fri 21:00 UTC
+function isGoldCoin(coin) { return /^(GOLD|XAU)/i.test(String(coin || '')); } // GOLD, XAUUSD, XAUTUSDT
+function isGoldWeekendBlocked(now) {
+  const day = now.getUTCDay();                   // 0=Sun, 1=Mon … 5=Fri, 6=Sat
+  if (day === 6 || day === 0) return true;       // all of Sat + Sun
+  if (day === 5 && (now.getUTCHours() * 60 + now.getUTCMinutes()) >= GOLD_WEEKEND_FRI_START_MIN) return true; // Fri from 21:00 UTC
+  return false;
+}
 // Pre-NY-open SL→BE protection window (UTC minutes). Auto-move SL to BE for
 // any in-profit trade when we enter the 5min window before NY open. Trades
 // not in profit yet stay at original SL.
@@ -7233,6 +7248,16 @@ async function processPair(userId, sub, coin) {
       ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
       return;
     }
+  }
+
+  // Gold weekend block — the real gold market is shut Fri 21:00 UTC → Sun close,
+  // so skip NEW gold autoscan entries in that window (existing trades stay
+  // monitored; crypto pairs untouched). Toggle via HENRY_BLOCK_GOLD_WEEKEND.
+  if (HENRY_BLOCK_GOLD_WEEKEND && isGoldCoin(coin) && isGoldWeekendBlocked(new Date())) {
+    ps.lastStatus = 'gold-weekend-block';
+    ps.lastVetoReason = 'Gold weekend block (Fri 21:00 UTC -> Mon, market closed)';
+    ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+    return;
   }
 
   try {
