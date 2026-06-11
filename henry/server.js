@@ -6445,7 +6445,7 @@ async function _anthropicFetchWithRetry(payload) {
 // Defaults to AUTOSCAN_AI_MODEL (typically Opus 4.8) for autonomous scan
 // decisions. Pass `model` explicitly to use a different model — manual ANALYSE
 // passes AI_MODEL (typically Sonnet 4.6) for speed.
-async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800, model = AUTOSCAN_AI_MODEL) {
+async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 1500, model = AUTOSCAN_AI_MODEL) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
   const d = await _anthropicFetchWithRetry({
     model,
@@ -6453,7 +6453,15 @@ async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 800, m
     system: systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
   });
-  return (d.content && d.content[0] && d.content[0].text) || '';
+  // Find the text block explicitly — newer models (Fable 5 / Opus 4.7+) can put a
+  // thinking block first in `content`, so content[0].text is not safe. Also note
+  // Fable 5 400s on temperature/top_p/thinking:{disabled} — this body (model +
+  // max_tokens + system + messages only) is the compatible shape; don't add
+  // sampling params here. max_tokens default raised 800→1500: Fable without
+  // thinking writes more visible reasoning before the JSON, and the cap is a
+  // ceiling, not a spend — unused headroom costs nothing.
+  const textBlock = (d.content || []).find(b => b && b.type === 'text');
+  return (textBlock && textBlock.text) || '';
 }
 
 // Robust JSON parser: strips markdown fences and tries to repair truncated JSON.
