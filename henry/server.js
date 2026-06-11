@@ -75,7 +75,7 @@ const PADDLE_API_HOST = process.env.PADDLE_ENV === 'sandbox'
 // Wires the scan-loop signals → WEEX orders. Kill switch defaults OFF on every
 // boot — must be explicitly turned on via /api/bot/state. Falls back to no-op
 // if WEEX env vars are missing so the website still runs without keys.
-const HENRY_RISK_USD = parseFloat(process.env.HENRY_RISK_USD) || 10;
+const HENRY_RISK_USD = parseFloat(process.env.HENRY_RISK_USD) || 50; // $50/trade since 2026-06-11 (was 30, before that 10)
 const HENRY_LEVERAGE = parseInt(process.env.HENRY_LEVERAGE, 10) || 10;
 // ── Dynamic per-trade leverage ────────────────────────────────────────────
 // Risk ($) is fixed by position size; leverage only sets margin + how close
@@ -104,14 +104,15 @@ const HENRY_LEVERAGE_OVERRIDES = (() => {
   }
 })();
 const HENRY_BE_FEE_BUFFER_BPS = parseFloat(process.env.HENRY_BE_FEE_BUFFER_BPS) || 12;
-// Per-symbol risk-$ overrides. Gold has 4× the per-trade R historically so we
-// risk-weight it. Env var override JSON like {"XAUTUSDT":30}.
+// Per-symbol risk-$ overrides. Flat risk across all pairs since 2026-06-11
+// ("risk on every trade = $50") — the old XAUTUSDT:30 default is gone. Env var
+// override JSON like {"XAUTUSDT":30} still works for future per-pair tuning.
 const HENRY_RISK_OVERRIDES = (() => {
   const raw = process.env.HENRY_RISK_OVERRIDES;
-  if (!raw) return { XAUTUSDT: 30 };
+  if (!raw) return {};
   try { return JSON.parse(raw); } catch (err) {
     console.warn('[weex] HENRY_RISK_OVERRIDES not valid JSON:', err.message);
-    return { XAUTUSDT: 30 };
+    return {};
   }
 })();
 // Per-symbol BE fee-buffer overrides. WEEX charges 0% fees on XAUT futures
@@ -3647,6 +3648,8 @@ function displayTfForCoin(coin, defaultTf) {
 function getClusterFor(coin) {
   const u = coin.toUpperCase();
   if (/^BTC/.test(u))                                            return 'btc';
+  if (/^MSTR/.test(u))                                           return 'btc';      // MSTR = leveraged-BTC proxy stock perp
+  if (/^(OPENAI|ANTHROPIC)/.test(u))                             return 'preipo';   // pre-IPO valuation perps, decorrelated
   if (/^(ETH|BNB|SOL|XRP)/.test(u))                              return 'largeCap';
   if (/^(AAVE|LINK|UNI)/.test(u))                                return 'defi';
   if (/^(DOGE|PEPE|1000PEPE)/.test(u))                           return 'meme';
