@@ -6889,6 +6889,38 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
     return null;
   }
 
+  // ── fvg_ote exit normalization ──────────────────────────────────────────────
+  // TP-vs-SL autopsy on the 28 resolved fvg_ote trades (May 11 – Jun 3): 10 of
+  // 16 SLs reached their planned TP within 48h of stopping out — the stop sat
+  // inside the OTE zone's probe range. And all 8 trades that aimed ≥2R lost;
+  // no loser ever ran past 1.52R favorable. Entering inside a 62-79% retrace
+  // needs room for the sweep, and the setup's natural reach is ~1.5R.
+  // Floor the stop distance, then pull the target to maxRR of the (possibly
+  // widened) stop — never extending the AI's TP. Runs BEFORE the RR floor on
+  // purpose: if widening the stop leaves <1.3R to the target, the trade isn't
+  // worth taking and the floor below downgrades it. Set a var to 0 to disable.
+  if (signal.direction !== 'NO TRADE' && trigger.type === 'fvg_ote' && signal.entry && signal.sl && signal.tp) {
+    const envNum = (n, d) => { const v = parseFloat(process.env[n]); return Number.isFinite(v) ? v : d; };
+    const minSlPct = isGoldCoin(coin) ? envNum('HENRY_FVG_OTE_MIN_SL_PCT_GOLD', 0.25)
+                                      : envNum('HENRY_FVG_OTE_MIN_SL_PCT', 0.6);
+    const maxRR = envNum('HENRY_FVG_OTE_MAX_RR', 1.5);
+    const e = parseFloat(signal.entry);
+    const dirSign = signal.direction === 'LONG' ? 1 : -1;
+    let sl = parseFloat(signal.sl), tp = parseFloat(signal.tp);
+    if (minSlPct > 0 && e > 0 && Math.abs(e - sl) < e * minSlPct / 100) {
+      const widened = Number((e - dirSign * e * minSlPct / 100).toPrecision(8));
+      console.log(`[fvg_ote exits] ${coin} ${signal.direction} SL ${sl} → ${widened} (floor ${minSlPct}%)`);
+      sl = widened; signal.sl = widened;
+    }
+    const risk = Math.abs(e - sl);
+    if (maxRR > 0 && risk > 0 && Math.abs(tp - e) > maxRR * risk) {
+      const capped = Number((e + dirSign * maxRR * risk).toPrecision(8));
+      console.log(`[fvg_ote exits] ${coin} ${signal.direction} TP ${tp} → ${capped} (cap ${maxRR}R)`);
+      tp = capped; signal.tp = capped;
+    }
+    if (risk > 0) signal.rr = +(Math.abs(tp - e) / risk).toFixed(2);
+  }
+
   // ── RR floor: any signal with computed RR < 1.3 is downgraded to NO TRADE ──
   // Lowered from 1.5 → 1.3 (May 2026) so borderline-OK setups still surface to the
   // user — they were previously being silently auto-downgraded. 1.3 is still a
