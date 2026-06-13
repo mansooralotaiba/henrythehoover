@@ -2738,6 +2738,12 @@ app.get('/api/mt5/signals', requireMt5Token, async (req, res) => {
       confidence: s.confidence != null ? Number(s.confidence) : null,
       ts: s.created_at,
     }));
+    // CSV form for the EA (MQL5 has no JSON parser): one line per signal,
+    // `id,side,entry,sl,tp,ts`. The EA echoes the last ts back as ?since.
+    if (String(req.query.format || '').toLowerCase() === 'csv') {
+      const csv = signals.map(s => [s.id, s.side, s.entry, s.sl, s.tp, s.ts].join(',')).join('\n');
+      return res.set('Content-Type', 'text/csv').send(csv);
+    }
     res.json({ signals, serverTime: new Date().toISOString() });
   } catch (err) {
     console.error('[mt5/signals]', err.message || err);
