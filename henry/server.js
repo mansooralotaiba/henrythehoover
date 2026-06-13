@@ -33,6 +33,11 @@ const AUTOSCAN_AI_MODEL = process.env.HENRY_AUTOSCAN_AI_MODEL || AI_MODEL;
 // the ADMIN account gets the premium model. 2026-06-13: switched Fable 5 →
 // Opus 4.8 at Mansoor's request (autoscan stays Sonnet for signal volume).
 const ADMIN_MANUAL_AI_MODEL = process.env.HENRY_ADMIN_MANUAL_AI_MODEL || 'claude-opus-4-8';
+// MT5 EA bridge (Phase 1, admin-only). The Expert Advisor authenticates with
+// this bearer token to pull GOLD signals (/api/mt5/signals) and report fills
+// (/api/mt5/report). Empty = bridge disabled. Multi-user later validates
+// per-subscriber tokens against Whop instead of this single shared one.
+const HENRY_MT5_TOKEN = process.env.HENRY_MT5_TOKEN || '';
 // BE trigger: how far in profit before SL moves to breakeven. Default 50% of
 // the way to TP (was 70%, lowered 2026-05-30 after analyze_ny_sweep.py showed
 // ~45-48% of all SL hits would have recovered to entry within 4h — tighter BE
@@ -2689,6 +2694,91 @@ app.get('/api/gold/price', requireAuth, async (_req, res) => {
     console.error('[gold/price]', err);
     res.status(502).json({ error: 'gold_price_failed', detail: String(err.message || err) });
   }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PART 4B2 — MT5 EA BRIDGE (Phase 1 · admin-only · GOLD only)
+// The per-account Expert Advisor pulls confirmed gold setups and reports fills.
+// Signals carry absolute entry/SL/TP; the EA anchors the SL/TP *distances* to
+// its own broker fill, so the WEEX↔broker basis (~$12) doesn't matter.
+// ════════════════════════════════════════════════════════════════════════════
+
+function requireMt5Token(req, res, next) {
+  if (!HENRY_MT5_TOKEN) return res.status(503).json({ error: 'mt5_bridge_disabled' });
+  const hdr = req.get('authorization') || '';
+  const tok = hdr.startsWith('Bearer ') ? hdr.slice(7) : (req.query.token || '');
+  if (tok && tok.length === HENRY_MT5_TOKEN.length && tok === HENRY_MT5_TOKEN) return next();
+  return res.status(401).json({ error: 'unauthorized' });
+}
+
+// Pull confirmed GOLD autoscan signals newer than ?since (ISO timestamp).
+// Defaults to the last 6h so a fresh EA doesn't replay ancient signals.
+app.get('/api/mt5/signals', requireMt5Token, async (req, res) => {
+  try {
+    const parsed = req.query.since ? new Date(req.query.since) : null;
+    const sinceIso = (parsed && !isNaN(parsed.getTime()) ? parsed : new Date(Date.now() - 6 * 3600 * 1000)).toISOString();
+    const adminId = await getAdminUserId();
+    let q = supaAdmin.from('signals')
+      .select('id,pair,direction,entry,sl,tp,rr,confidence,created_at')
+      .in('pair', ['XAUTUSDT', 'GOLD', 'XAUUSD'])
+      .not('trigger_type', 'is', null)         // confirmed autoscan only (manual has null trigger_type)
+      .neq('direction', 'NO TRADE')
+      .gt('created_at', sinceIso)
+      .order('created_at', { ascending: true })
+      .limit(20);
+    if (adminId) q = q.eq('user_id', adminId);  // admin-only in Phase 1
+    const { data, error } = await q;
+    if (error) throw error;
+    const signals = (data || []).map(s => ({
+      id: s.id,
+      symbol: 'XAUUSD',                          // EA maps to its broker's gold symbol via input
+      side: s.direction === 'LONG' ? 'buy' : 'sell',
+      entry: Number(s.entry), sl: Number(s.sl), tp: Number(s.tp),
+      rr: s.rr != null ? Number(s.rr) : null,
+      confidence: s.confidence != null ? Number(s.confidence) : null,
+      ts: s.created_at,
+    }));
+    res.json({ signals, serverTime: new Date().toISOString() });
+  } catch (err) {
+    console.error('[mt5/signals]', err.message || err);
+    res.status(502).json({ error: 'mt5_signals_failed', detail: String(err.message || err) });
+  }
+});
+
+// EA reports an execution event. Idempotent on (signal_id, account_id, event).
+app.post('/api/mt5/report', requireMt5Token, express.json(), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const evt = String(b.event || '').toLowerCase();
+    if (!b.signalId || !evt) return res.status(400).json({ error: 'missing signalId/event' });
+    if (!['filled', 'be', 'tp', 'sl', 'closed'].includes(evt)) return res.status(400).json({ error: 'bad event' });
+    const row = {
+      signal_id: String(b.signalId),
+      account_id: b.accountId != null ? String(b.accountId) : null,
+      symbol: b.symbol ? String(b.symbol) : null,
+      side: b.side ? String(b.side).toLowerCase() : null,
+      event: evt,
+      price: b.price != null ? Number(b.price) : null,
+      lots: b.lots != null ? Number(b.lots) : null,
+      ticket: b.ticket != null ? String(b.ticket) : null,
+      pnl: b.pnl != null ? Number(b.pnl) : 0,
+      reported_at: new Date().toISOString(),
+    };
+    const { error } = await supaAdmin.from('mt5_trades').upsert(row, { onConflict: 'signal_id,account_id,event' });
+    if (error) throw error;
+    console.log('[mt5/report]', row.signal_id, evt, row.symbol, 'px', row.price, 'lots', row.lots, 'pnl', row.pnl);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[mt5/report]', err.message || err);
+    res.status(502).json({ error: 'mt5_report_failed', detail: String(err.message || err) });
+  }
+});
+
+// Management events (move SL→BE, close) for live MT5-served trades.
+// Phase 1 stub — EA places a hard SL+TP on the broker as the safety net.
+// Phase 1.5 wires Henry's gold BE/close logic to emit actions here.
+app.get('/api/mt5/manage', requireMt5Token, (_req, res) => {
+  res.json({ actions: [], note: 'manage channel stubbed — Phase 1.5' });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
