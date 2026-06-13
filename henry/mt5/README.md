@@ -2,9 +2,9 @@
 
 Two EAs live here:
 
-- **`HenryGoldHybridEA.mq5` (RECOMMENDED).** Self-contained: generates gold setups *locally* (ICT mechanical triggers), so it runs in the **MT5 Strategy Tester** and works even if Henry is down. When a setup fires it asks Henry's AI to **confirm or veto** (`POST /api/mt5/confirm`); if Henry's unreachable (e.g. inside the tester) it falls back to trading mechanically (or skips — `InpRequireConfirm`). Defaults bake in the 90-day backtest finding: **shorts-only, RR 2, run on a 15m chart.**
-  - Backtest it: MT5 → View → Strategy Tester → pick HenryGoldHybridEA on `XAUUSD`, `M15`, 90+ days. The tester runs the mechanical layer (no AI/WebRequest) — exactly the edge we measured.
-  - Inputs: `InpToken` (= HENRY_MT5_TOKEN, for confirm+report), `InpShortsOnly` (true), `InpRR` (2), `InpRiskPct`, `InpEnableTrading` (OFF to start — logs `[observe] would …`), `InpUseHenryConfirm` (true), `InpRequireConfirm` (false = trade mechanically if Henry's down).
+- **`HenryGoldHybridEA.mq5` (RECOMMENDED, v2).** Self-contained: generates gold setups *locally* using Henry's **full 5-trigger ICT set** (MSS+disp, sweep+disp, order-block, S&D zone, FVG-in-OTE), filtered by **higher-timeframe trend** (replaces the old blanket shorts-only), with **breakeven management** and an **ATR-floored stop**. Runs in the **MT5 Strategy Tester** standalone and works even if Henry's down. When a setup fires it asks Henry's AI to **confirm/veto** (`POST /api/mt5/confirm`); if Henry's unreachable (e.g. inside the tester) it falls back to mechanical (or skips — `InpRequireConfirm`).
+  - **Backtest it:** MT5 → View → Strategy Tester → pick HenryGoldHybridEA on `XAUUSD`, `M15`, 90+ days, "every tick based on real ticks". **Set `InpEnableTrading = true`** (the tester is simulated — it must be ON to place trades) and `InpUseHenryConfirm = false` (tester can't reach Henry). The tester runs the pure mechanical layer.
+  - Key inputs: `InpRR` (2), `InpStopATRmult` (1.0 — 0 = candle-extreme stop only), `InpUseHTFConfirm` (true) + `InpHTF` (H4), `InpUseBE` (true) + `InpBETriggerR` (1.0), `InpRiskPct`, `InpEnableTrading`, `InpUseHenryConfirm`, `InpToken` (= HENRY_MT5_TOKEN). No shorts-only — direction is governed by HTF confirmation; set `InpUseHTFConfirm=false` to take every signal both ways.
 - **`HenryGoldEA.mq5` (signal-pull variant).** Pulls Henry's confirmed gold signals via `/api/mt5/signals` instead of generating locally. Depends on Henry uptime, can't run in the tester. Kept as an alternative.
 
 ---
