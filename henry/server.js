@@ -3660,7 +3660,7 @@ function displayTfForCoin(coin, defaultTf) {
 function getClusterFor(coin) {
   const u = coin.toUpperCase();
   if (/^BTC/.test(u))                                            return 'btc';
-  if (/^MSTR/.test(u))                                           return 'btc';      // MSTR = leveraged-BTC proxy stock perp
+  if (/^MSTR/.test(u))                                           return 'equity';   // stock perp — own cluster, NOT lumped with BTC (cap 2, decoupled from the crypto supercluster veto)
   if (/^(OPENAI|ANTHROPIC)/.test(u))                             return 'preipo';   // pre-IPO valuation perps, decorrelated
   if (/^(ETH|BNB|SOL|XRP)/.test(u))                              return 'largeCap';
   if (/^(AAVE|LINK|UNI)/.test(u))                                return 'defi';
