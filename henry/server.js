@@ -2589,6 +2589,45 @@ app.get('/api/mt5/manage', requireMt5Token, (_req, res) => {
   res.json({ actions: [], note: 'manage channel stubbed — Phase 1.5' });
 });
 
+// AI confirm/veto for the HYBRID EA. The EA detects a gold setup locally and
+// asks Henry's AI to bless it before trading live. Returns plain text
+// "confirm" or "veto" (easy MQL5 parse). On any internal error we return 502
+// so the EA falls back to its mechanical decision (per its InpRequireConfirm).
+app.post('/api/mt5/confirm', requireMt5Token, express.json(), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const dir = String(b.direction || '').toUpperCase();
+    if (dir !== 'LONG' && dir !== 'SHORT') return res.status(400).send('veto bad-direction');
+    const entry = +b.entry, sl = +b.sl, tp = +b.tp;
+
+    // Gold context (multi-exchange feed) — 15m for structure/indicators, 4h for regime.
+    const c15 = await fetchGoldCandles('15m', 100);
+    const c4h = await fetchGoldCandles('4h', 60);
+    if (!c15.length) return res.status(502).send('veto no-data');
+    const atr = computeATR(c15, 14);
+    const adx = computeADX(c15, 14);
+    const regime = (c4h.length >= 50) ? detectRegimeFromCandles(c4h) : { regime: 'range', confidence: 'weak' };
+    const lastClose = c15[c15.length - 1].c;
+
+    const ctx = `Gold now ${lastClose}. 4H regime: ${regime.regime} (${regime.confidence}). 15m ADX ${adx != null ? adx.toFixed(1) : '?'}, ATR ${atr != null ? atr.toFixed(2) : '?'}. Proposed ${dir} — entry ${entry}, SL ${sl}, TP ${tp}.`;
+    const sys = 'You are the final risk filter before a mechanical GOLD setup is sent to a LIVE MetaTrader account. ' +
+      'Reply with exactly one word first — CONFIRM or VETO — then a short reason. ' +
+      'VETO if: the setup fights a strong opposing 4H trend, the 4H regime is a clear up-trend for a SHORT (or down-trend for a LONG), conditions look choppy/low-conviction (weak ADX, no clear structure), or anything looks off. Bias to VETO when uncertain — capital preservation first.';
+    let text = '';
+    try { text = await callAnthropicServer(sys, ctx + '\n\nCONFIRM or VETO?', 150, AI_MODEL); }
+    catch (e) { console.error('[mt5/confirm] AI error', e.message); return res.status(502).send('veto ai-error'); }
+
+    const t = String(text || '').toLowerCase();
+    const verdict = (t.indexOf('veto') >= 0 && t.indexOf('confirm') < 0) ? 'veto'
+                  : (t.indexOf('confirm') >= 0 ? 'confirm' : 'veto'); // ambiguous → veto (safe)
+    console.log('[mt5/confirm]', dir, b.symbol || 'XAUUSD', '→', verdict, '|', String(text).slice(0, 80).replace(/\n/g, ' '));
+    res.type('text/plain').send(verdict + ' ' + String(text).slice(0, 160).replace(/\n/g, ' '));
+  } catch (err) {
+    console.error('[mt5/confirm]', err.message || err);
+    res.status(502).send('veto server-error');
+  }
+});
+
 // ── Public legal & pricing pages (no auth — Paddle/Stripe must crawl these) ──
 app.get('/pricing', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pricing.html')));
 app.get('/terms',   (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'terms.html')));

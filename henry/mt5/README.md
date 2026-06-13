@@ -1,4 +1,15 @@
-# HenryGoldEA — MT5 gold executor (Phase 1)
+# MT5 gold EAs
+
+Two EAs live here:
+
+- **`HenryGoldHybridEA.mq5` (RECOMMENDED).** Self-contained: generates gold setups *locally* (ICT mechanical triggers), so it runs in the **MT5 Strategy Tester** and works even if Henry is down. When a setup fires it asks Henry's AI to **confirm or veto** (`POST /api/mt5/confirm`); if Henry's unreachable (e.g. inside the tester) it falls back to trading mechanically (or skips — `InpRequireConfirm`). Defaults bake in the 90-day backtest finding: **shorts-only, RR 2, run on a 15m chart.**
+  - Backtest it: MT5 → View → Strategy Tester → pick HenryGoldHybridEA on `XAUUSD`, `M15`, 90+ days. The tester runs the mechanical layer (no AI/WebRequest) — exactly the edge we measured.
+  - Inputs: `InpToken` (= HENRY_MT5_TOKEN, for confirm+report), `InpShortsOnly` (true), `InpRR` (2), `InpRiskPct`, `InpEnableTrading` (OFF to start — logs `[observe] would …`), `InpUseHenryConfirm` (true), `InpRequireConfirm` (false = trade mechanically if Henry's down).
+- **`HenryGoldEA.mq5` (signal-pull variant).** Pulls Henry's confirmed gold signals via `/api/mt5/signals` instead of generating locally. Depends on Henry uptime, can't run in the tester. Kept as an alternative.
+
+---
+
+## HenryGoldEA — signal-pull variant (Phase 1)
 
 Pulls Henry's confirmed **gold** signals and trades them on a MetaTrader 5 account, then reports every fill / TP / SL / close back to Henry. Phase 1 = **admin account only**; subscriber distribution comes later.
 
