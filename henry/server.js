@@ -51,6 +51,16 @@ const SL_ATR_BUFFER = parseFloat(process.env.HENRY_SL_ATR_BUFFER) || 2.0;
 const HENRY_BLOCK_NY_OPEN = (process.env.HENRY_BLOCK_NY_OPEN ?? 'true').toLowerCase() === 'true';
 const NY_OPEN_BLOCK_START_MIN = 13 * 60;        // 13:00 UTC (1h before US cash open)
 const NY_OPEN_BLOCK_END_MIN   = 14 * 60 + 30;   // 14:30 UTC (30m after US cash open)
+// Pairs hard-skipped by autoscan regardless of any saved watchlist selection.
+// MSTRUSDT + OPENAIUSDT default-disabled 2026-06-13: WEEX rejects their orders
+// (-1058 "no permission for this trading pair"), so scanning them only logs
+// untradeable signals that pollute the live record. Re-enable once WEEX access
+// is sorted by setting HENRY_DISABLED_AUTOSCAN_PAIRS='' on Railway (and re-adding
+// them to AU_PAIRS in v2.html so they show in the watchlist UI again).
+const DISABLED_AUTOSCAN_PAIRS = new Set(
+  (process.env.HENRY_DISABLED_AUTOSCAN_PAIRS ?? 'MSTRUSDT,OPENAIUSDT')
+    .split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+);
 // Gold weekend block. The real gold market closes ~Fri 21:00 UTC (NY close) and
 // reopens Sun ~22:00 UTC, so over Fri-Sun XAUT only chops on thin crypto-only
 // liquidity. Autoscan gold went 29% WR / -2.43R Fri-Sun vs 57% / +17R Mon-Thu
@@ -7164,10 +7174,10 @@ async function _confirmAndExecuteSignal(userId, sub, ps, coin, currentPrice, con
 async function runServerScan(userId, sub) {
   if (!sub.active) return;
 
-  // Determine pairs to process: custom watchlist if set, else fall back to current coin
-  const pairs = (sub.watchlist && sub.watchlist.length)
-    ? sub.watchlist
-    : [sub.coin];
+  // Determine pairs to process: custom watchlist if set, else fall back to current coin.
+  // Hard-skip DISABLED_AUTOSCAN_PAIRS even if a stale saved watchlist still lists them.
+  const pairs = ((sub.watchlist && sub.watchlist.length) ? sub.watchlist : [sub.coin])
+    .filter(c => c && !DISABLED_AUTOSCAN_PAIRS.has(String(c).toUpperCase()));
 
   // Process each pair INDEPENDENTLY in parallel.
   // Pairs in active trade are monitored. Pairs idle + past cooldown get scanned + analysed.
