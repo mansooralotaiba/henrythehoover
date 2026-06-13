@@ -30,10 +30,9 @@ const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-6';
 // set so single-env-var setups still work unchanged.
 const AUTOSCAN_AI_MODEL = process.env.HENRY_AUTOSCAN_AI_MODEL || AI_MODEL;
 // Manual ANALYSE: subscribers stay on AI_MODEL (Sonnet — interactive latency);
-// the ADMIN account gets the premium model (2026-06-12, Mansoor's call after
-// the Fable 5 autoscan experiment: autoscan back on Sonnet for signal volume,
-// Fable reserved for his own manual reads where latency doesn't matter).
-const ADMIN_MANUAL_AI_MODEL = process.env.HENRY_ADMIN_MANUAL_AI_MODEL || 'claude-fable-5';
+// the ADMIN account gets the premium model. 2026-06-13: switched Fable 5 →
+// Opus 4.8 at Mansoor's request (autoscan stays Sonnet for signal volume).
+const ADMIN_MANUAL_AI_MODEL = process.env.HENRY_ADMIN_MANUAL_AI_MODEL || 'claude-opus-4-8';
 // BE trigger: how far in profit before SL moves to breakeven. Default 50% of
 // the way to TP (was 70%, lowered 2026-05-30 after analyze_ny_sweep.py showed
 // ~45-48% of all SL hits would have recovered to entry within 4h — tighter BE
@@ -661,7 +660,7 @@ app.get('/api/me', requireSession, (req, res) => {
     plan:                req.profile?.plan || 'none',
     subscription_status: req.profile?.subscription_status || 'inactive',
     current_period_end:  req.profile?.current_period_end || null,
-    ai_model:            AI_MODEL,
+    ai_model:            (!!req.profile?.is_admin || req.user.email.toLowerCase() === ADMIN_EMAIL) ? ADMIN_MANUAL_AI_MODEL : AI_MODEL,
     autoscan_ai_model:   AUTOSCAN_AI_MODEL,
     strategy_mode:       STRATEGY_MODE,
   });
@@ -1802,7 +1801,7 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
       riskUsd: HENRY_RISK_USD,
       leverage: HENRY_LEVERAGE,
       autoscanModel: AUTOSCAN_AI_MODEL,
-      manualModel: AI_MODEL,
+      manualModel: ADMIN_MANUAL_AI_MODEL, // /api/admin/stats is admin-only → report the admin's actual manual model
     };
 
     // 6. Veto report — last 7 days (placeholder until we wire a veto-log table)
@@ -2249,7 +2248,7 @@ app.post('/api/v2/analyse', requireAuth, express.json(), async (req, res) => {
       `\n\nLast close: ${lastClose}. Output the JSON signal only.`;
     // Manual ANALYSE model routing: subscribers get AI_MODEL (Sonnet — the
     // user is actively waiting); the ADMIN account gets ADMIN_MANUAL_AI_MODEL
-    // (Fable 5). Autoscan's model is independent (HENRY_AUTOSCAN_AI_MODEL via
+    // (Opus 4.8). Autoscan's model is independent (HENRY_AUTOSCAN_AI_MODEL via
     // the callAnthropicServer default).
     const isAdminUser = !!req.profile?.is_admin || (req.user.email || '').toLowerCase() === ADMIN_EMAIL;
     const manualModel = isAdminUser ? ADMIN_MANUAL_AI_MODEL : AI_MODEL;
@@ -2466,7 +2465,7 @@ app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req
     // Normalize model: ALWAYS use the server-side model regardless of what the
     // browser sends. This prevents stale cached values in old browser tabs from
     // hitting the API with deprecated/incorrect model IDs after a model bump.
-    // Admin routes to ADMIN_MANUAL_AI_MODEL (Fable 5) — same rule as /api/v2/analyse.
+    // Admin routes to ADMIN_MANUAL_AI_MODEL (Opus 4.8) — same rule as /api/v2/analyse.
     const isAdminUser = !!req.profile?.is_admin || ((req.user && req.user.email) || '').toLowerCase() === ADMIN_EMAIL;
     const body = { ...req.body, model: isAdminUser ? ADMIN_MANUAL_AI_MODEL : AI_MODEL };
     if (isAdminUser) {
@@ -6466,7 +6465,7 @@ async function _anthropicFetchWithRetry(payload) {
 // Direct Anthropic API call (bypasses /api/claude proxy — no cookie auth needed server-side).
 // Defaults to AUTOSCAN_AI_MODEL for autonomous scan decisions. Pass `model`
 // explicitly to use a different one — manual ANALYSE passes AI_MODEL (Sonnet)
-// for subscribers or ADMIN_MANUAL_AI_MODEL (Fable 5) for the admin account.
+// for subscribers or ADMIN_MANUAL_AI_MODEL (Opus 4.8) for the admin account.
 async function callAnthropicServer(systemPrompt, userMessage, maxTokens = 1500, model = AUTOSCAN_AI_MODEL) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
   const d = await _anthropicFetchWithRetry({

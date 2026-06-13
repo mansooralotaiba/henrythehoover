@@ -1070,7 +1070,7 @@
       <button class="modal-close" onclick="closeAiModal()">×</button>
     </div>
     <div class="modal-body" id="ai-modal-body">
-      <div class="modal-loading">⚡ Running Claude analysis · this takes 8-15s on Sonnet</div>
+      <div class="modal-loading">⚡ Running Claude analysis · this takes 8-15s</div>
     </div>
     <div class="modal-actions" id="ai-modal-actions">
       <button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>
@@ -1083,7 +1083,8 @@
 // V2 SHELL — fetches from Phase 1 endpoints, populates the DOM, role-gates UI
 // ───────────────────────────────────────────────────────────────────────────
 
-var state = { isAdmin: false, userId: null, email: null };
+var state = { isAdmin: false, userId: null, email: null, manualModel: null };
+function prettyModel(m){ var map={'claude-opus-4-8':'Opus 4.8','claude-opus-4-7':'Opus 4.7','claude-sonnet-4-6':'Sonnet 4.6','claude-fable-5':'Fable 5','claude-haiku-4-5':'Haiku 4.5'}; return map[m] || m || 'Claude'; }
 
 function fmtUsd(n){ if(n==null||!isFinite(n))return '—'; var s=n>=0?'+':''; return s+'$'+Math.abs(n).toFixed(2); }
 function fmtR(n){ if(n==null||!isFinite(n))return '—'; var s=n>=0?'+':''; return s+n.toFixed(2)+'R'; }
@@ -1095,6 +1096,7 @@ fetch('/api/me',{credentials:'same-origin'}).then(function(r){return r.json();})
   state.isAdmin = !!d.is_admin;
   state.userId = d.email; // approximation; server scopes by req.user.id
   state.email = d.email;
+  state.manualModel = d.ai_model || null; // admin → Opus 4.8, subscribers → Sonnet 4.6
   state.subscriptionStatus = d.subscription_status;
   state.currentPeriodEnd = d.current_period_end;
   if(!state.isAdmin) document.body.classList.add('view-public');
@@ -3009,7 +3011,7 @@ function runAnalyse(force){
   window._lastManualSignal = null;
   var modeLabel = _t_multi ? ' · MULTI-BROKER' : '';
   el('ai-modal-title').textContent = 'Analysing ' + t_pair + ' · ' + t_tf + modeLabel + (force ? ' · FORCED' : '');
-  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 8-15s on Sonnet 4.6' + (_t_multi ? ' · cross-venue compare' : '') + '</div>';
+  el('ai-modal-body').innerHTML = '<div class="modal-loading">⚡ Running Claude analysis · 8-15s on ' + prettyModel(state.manualModel) + (_t_multi ? ' · cross-venue compare' : '') + '</div>';
   el('ai-modal-actions').innerHTML = '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
   fetch('/api/v2/analyse', {
     method:'POST', credentials:'same-origin',
