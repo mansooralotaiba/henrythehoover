@@ -2610,21 +2610,10 @@ app.get('/api/gold/candles', requireAuth, async (req, res) => {
   try {
     const interval = String(req.query.interval || '15m');
     const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
-    // Binance spot PAXG/USDT — see getGoldSpot() for the rationale.
-    const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d' };
-    const ival = tfMap[interval] || '15m';
-    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${ival}&limit=${limit}`);
-    if (!r.ok) {
-      console.warn('[gold/candles] PAXG fetch failed:', interval, r.status);
-      return res.json({ candles: [], reason: 'paxg_unavailable' });
-    }
-    const arr = await r.json();
-    if (!Array.isArray(arr)) return res.json({ candles: [], reason: 'paxg_empty' });
-    const candles = arr.map(c => ({
-      time: Math.floor(+c[0] / 1000),
-      o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5],
-    }));
-    console.log('[gold/candles]', interval, 'returned', candles.length, 'PAXG bars');
+    // Multi-exchange gold (Binance PAXG → Kraken PAXG → OKX XAUT).
+    const norm = await fetchGoldCandles(interval, limit);
+    if (!norm.length) return res.json({ candles: [], reason: 'gold_unavailable' });
+    const candles = norm.map(c => ({ time: Math.floor(c.t / 1000), o: c.o, h: c.h, l: c.l, c: c.c, v: c.v }));
     res.json({ candles });
   } catch (err) {
     console.error('[gold/candles]', err);
@@ -2632,34 +2621,64 @@ app.get('/api/gold/candles', requireAuth, async (req, res) => {
   }
 });
 
-// Gold spot price — uses Binance PAXG/USDT spot.
-// Polygon's /v2/snapshot/locale/global/markets/forex/tickers was returning
-// stale data (e.g. 4764 when real gold was 4683 — $80 off) on the user's
-// plan. Pax Gold (PAXG) is a 1:1 tokenised gold contract trading on
-// Binance with real-time ticker and full intraday data, tracks XAUUSD
-// within ~$5. Falls back to Polygon only if Binance is unreachable.
+// Gold spot price — multi-exchange tokenised gold (PAXG/XAUT), 24/7 + real-time,
+// tracks XAUUSD within ~0.1-0.3%. Binance PAXG is primary; Kraken PAXG and OKX
+// XAUT are fallbacks so a Binance/Railway geo-block can't blank out gold.
+// Polygon is the last resort (stale prevDay close only on the current tier).
 async function getGoldSpot() {
+  // 1) Binance PAXGUSDT
   try {
     const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT');
-    if (r.ok) {
-      const d = await r.json();
-      const p = parseFloat(d.price);
-      if (isFinite(p) && p > 0) return p;
-    }
-  } catch (e) {
-    console.warn('[getGoldSpot] PAXG fetch failed, falling back to Polygon:', e.message);
-  }
-  // Fallback: Polygon snapshot. Less accurate on the user's tier but better
-  // than nothing if Binance is down.
+    if (r.ok) { const p = parseFloat((await r.json()).price); if (isFinite(p) && p > 0) return p; }
+  } catch (e) { console.warn('[getGoldSpot] binance PAXG failed:', e.message); }
+  // 2) Kraken PAXGUSD
+  try {
+    const r = await fetch('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD');
+    if (r.ok) { const d = await r.json(); const k = d.result && Object.keys(d.result)[0]; const p = k && parseFloat(d.result[k].c[0]); if (isFinite(p) && p > 0) return p; }
+  } catch (e) { console.warn('[getGoldSpot] kraken PAXG failed:', e.message); }
+  // 3) OKX XAUT-USDT (slight basis vs PAXG, but real gold)
+  try {
+    const r = await fetch('https://www.okx.com/api/v5/market/ticker?instId=XAUT-USDT');
+    if (r.ok) { const d = await r.json(); const p = d.data && d.data[0] && parseFloat(d.data[0].last); if (isFinite(p) && p > 0) return p; }
+  } catch (e) { console.warn('[getGoldSpot] okx XAUT failed:', e.message); }
+  // 4) Polygon snapshot (last resort — stale on the current tier)
   try {
     const data = await polyFetch('/v2/snapshot/locale/global/markets/forex/tickers', { tickers: 'C:XAUUSD' });
     const t = data.tickers && data.tickers[0];
     if (!t) return null;
-    const ask = t.lastQuote?.a;
-    const bid = t.lastQuote?.b;
+    const ask = t.lastQuote?.a, bid = t.lastQuote?.b;
     if (ask && bid) return (ask + bid) / 2;
     return ask || bid || t.day?.c || t.prevDay?.c || null;
   } catch { return null; }
+}
+
+// Multi-exchange gold candles — same fallback chain as getGoldSpot. Returns
+// [{ t(ms), o, h, l, c, v }] oldest→newest, or [] if every source fails.
+// Fallbacks only fire when the primary is down, so Kraken/OKX rate limits are
+// never hit under normal operation.
+async function fetchGoldCandles(interval, limit = 200) {
+  const lim = Math.min(limit, 1000);
+  // 1) Binance PAXGUSDT
+  try {
+    const m = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','4h':'4h','1d':'1d' };
+    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${m[interval]||'15m'}&limit=${lim}`);
+    if (r.ok) { const a = await r.json(); if (Array.isArray(a) && a.length) return a.map(c => ({ t:+c[0], o:+c[1], h:+c[2], l:+c[3], c:+c[4], v:+c[5] })); }
+  } catch (e) { console.warn('[gold candles] binance PAXG failed:', e.message); }
+  // 2) Kraken PAXGUSD (interval in minutes; time in seconds; ~720-bar window)
+  try {
+    const m = { '1m':1,'5m':5,'15m':15,'30m':30,'1h':60,'4h':240,'1d':1440 };
+    const r = await fetch(`https://api.kraken.com/0/public/OHLC?pair=PAXGUSD&interval=${m[interval]||15}`);
+    if (r.ok) { const d = await r.json(); const k = d.result && Object.keys(d.result).find(x => x !== 'last'); const rows = k && d.result[k];
+      if (Array.isArray(rows) && rows.length) { console.log('[gold candles] Binance down → Kraken PAXG'); return rows.slice(-lim).map(c => ({ t:+c[0]*1000, o:+c[1], h:+c[2], l:+c[3], c:+c[4], v:+c[6] })); } }
+  } catch (e) { console.warn('[gold candles] kraken PAXG failed:', e.message); }
+  // 3) OKX XAUT-USDT (ms timestamps, newest-first → reverse; slight basis)
+  try {
+    const m = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1H','4h':'4H','1d':'1D' };
+    const r = await fetch(`https://www.okx.com/api/v5/market/candles?instId=XAUT-USDT&bar=${m[interval]||'15m'}&limit=${Math.min(lim,300)}`);
+    if (r.ok) { const d = await r.json(); if (d.data && d.data.length) { console.log('[gold candles] Binance+Kraken down → OKX XAUT'); return d.data.map(c => ({ t:+c[0], o:+c[1], h:+c[2], l:+c[3], c:+c[4], v:+c[5] })).reverse(); } }
+  } catch (e) { console.warn('[gold candles] okx XAUT failed:', e.message); }
+  console.warn('[gold candles] ALL gold sources failed for', interval);
+  return [];
 }
 
 app.get('/api/gold/price', requireAuth, async (_req, res) => {
@@ -4970,20 +4989,8 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
 async function fetchCandlesServer(coin, tf, limit, broker) {
   try {
     if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
-      // Use Binance spot PAXG/USDT — Polygon's gold aggregates were both
-      // sparse (only 24 bars vs the requested 80) and stale (last bar 14h
-      // behind real-time). PAXG is tokenised gold trading on Binance with
-      // full intraday depth and real-time bars. Tracks XAUUSD within ~$5.
-      const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d' };
-      const interval = tfMap[tf] || '15m';
-      const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=${limit}`);
-      if (!r.ok) {
-        console.warn('[fetchCandlesServer] PAXG fetch failed:', coin, tf, r.status);
-        return [];
-      }
-      const arr = await r.json();
-      if (!Array.isArray(arr)) return [];
-      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+      // Multi-exchange tokenised gold (Binance PAXG → Kraken PAXG → OKX XAUT).
+      return await fetchGoldCandles(tf, limit);
     }
     if (broker === 'binance') {
       // Binance intermittently 451-geo-blocks Railway egress IPs. If the direct
@@ -7573,14 +7580,8 @@ async function fetchHistoricalCandles(coin, tf, broker, totalCount) {
   const lim = Math.min(totalCount, 1500);
   try {
     if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
-      // Use Binance spot PAXG/USDT instead of Polygon (sparse + stale data)
-      const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '4h': '4h', '1d': '1d' };
-      const interval = tfMap[tf] || '15m';
-      const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${interval}&limit=${lim}`);
-      if (!r.ok) return [];
-      const arr = await r.json();
-      if (!Array.isArray(arr)) return [];
-      return arr.map(c => ({ t: +c[0], o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] }));
+      // Multi-exchange tokenised gold (Binance PAXG → Kraken PAXG → OKX XAUT).
+      return await fetchGoldCandles(tf, lim);
     }
     if (broker === 'binance') {
       const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}&interval=${tf}&limit=${lim}`);
