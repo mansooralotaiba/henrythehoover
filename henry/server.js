@@ -2513,6 +2513,16 @@ function requireMt5Token(req, res, next) {
   return res.status(401).json({ error: 'unauthorized' });
 }
 
+// In-memory ring buffer of recent MT5 ↔ Henry interactions (AI confirm verdicts
+// + EA fill reports) powering the /mt5 admin monitor. Resets on redeploy — the
+// durable trade record lives in the mt5_trades table.
+const mt5Activity = [];
+function pushMt5Activity(e) {
+  e.ts = new Date().toISOString();
+  mt5Activity.push(e);
+  if (mt5Activity.length > 300) mt5Activity.shift();
+}
+
 // Pull confirmed GOLD autoscan signals newer than ?since (ISO timestamp).
 // Defaults to the last 6h so a fresh EA doesn't replay ancient signals.
 app.get('/api/mt5/signals', requireMt5Token, async (req, res) => {
@@ -2575,6 +2585,7 @@ app.post('/api/mt5/report', requireMt5Token, express.json(), async (req, res) =>
     const { error } = await supaAdmin.from('mt5_trades').upsert(row, { onConflict: 'signal_id,account_id,event' });
     if (error) throw error;
     console.log('[mt5/report]', row.signal_id, evt, row.symbol, 'px', row.price, 'lots', row.lots, 'pnl', row.pnl);
+    pushMt5Activity({ kind: 'report', event: evt, symbol: row.symbol, side: row.side, price: row.price, lots: row.lots, pnl: row.pnl, signalId: row.signal_id, account: row.account_id });
     res.json({ ok: true });
   } catch (err) {
     console.error('[mt5/report]', err.message || err);
@@ -2628,11 +2639,17 @@ app.post('/api/mt5/confirm', requireMt5Token, express.json(), async (req, res) =
     else if (ci < 0) verdict = 'veto';
     else verdict = (vi < ci) ? 'veto' : 'confirm';
     console.log('[mt5/confirm]', dir, b.symbol || 'XAUUSD', '→', verdict.toUpperCase(), '|', String(text).slice(0, 110).replace(/\n/g, ' '));
+    pushMt5Activity({ kind: 'confirm', direction: dir, symbol: b.symbol || 'XAUUSD', entry, sl, tp, verdict, reason: String(text).replace(/\n/g, ' ').slice(0, 220) });
     res.type('text/plain').send(verdict);   // send ONLY the verdict word so the EA parses it cleanly
   } catch (err) {
     console.error('[mt5/confirm]', err.message || err);
     res.status(502).send('veto server-error');
   }
+});
+
+// Admin monitor — recent MT5 ↔ Henry interactions (confirm verdicts + fill reports).
+app.get('/api/mt5/activity', requireAdmin, (_req, res) => {
+  res.json({ activity: mt5Activity.slice().reverse(), count: mt5Activity.length, serverTime: new Date().toISOString() });
 });
 
 // ── Public legal & pricing pages (no auth — Paddle/Stripe must crawl these) ──
@@ -2661,6 +2678,9 @@ app.get('/terminal-legacy', requireAuth, (_req, res) =>
   res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 app.get('/v2', requireAuth, (_req, res) =>
   res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
+// MT5 ↔ Henry admin monitor (data endpoint /api/mt5/activity is admin-gated).
+app.get('/mt5', requireAuth, (_req, res) =>
+  res.sendFile(path.join(PUBLIC_DIR, 'mt5.html')));
 
 // Catch-all static — serves terminal assets (js, css, sw.js, etc.) to authenticated users only.
 app.use(requireAuth, express.static(PUBLIC_DIR, { index: false, extensions: ['html'] }));

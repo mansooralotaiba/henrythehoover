@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MT5 ↔ Henry — Monitor</title>
+<style>
+  :root{ --bg:#0b0e13; --card:#131922; --line:#222b38; --tx:#e6edf3; --mut:#8b97a6; --grn:#3fb950; --red:#f85149; --blu:#58a6ff; --gold:#e0b341; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ background:var(--bg); color:var(--tx); font-family:'Segoe UI',-apple-system,Roboto,Arial,sans-serif; padding:18px; max-width:900px; margin:0 auto; }
+  h1{ font-size:20px; font-weight:600; display:flex; align-items:center; gap:10px; }
+  .dot{ width:9px; height:9px; border-radius:50%; background:var(--mut); display:inline-block; }
+  .dot.live{ background:var(--grn); box-shadow:0 0 8px var(--grn); }
+  .sub{ color:var(--mut); font-size:13px; margin-top:3px; }
+  .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0; }
+  .c{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .c .l{ font-size:12px; color:var(--mut); } .c .v{ font-size:22px; font-weight:600; margin-top:4px; }
+  .feed{ display:flex; flex-direction:column; gap:8px; }
+  .row{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 13px; display:flex; gap:12px; align-items:flex-start; }
+  .row .t{ color:var(--mut); font-size:12px; min-width:74px; padding-top:2px; }
+  .badge{ font-size:11px; font-weight:600; padding:3px 8px; border-radius:6px; white-space:nowrap; }
+  .b-confirm{ background:rgba(63,185,80,.15); color:var(--grn); }
+  .b-veto{ background:rgba(248,81,73,.15); color:var(--red); }
+  .b-filled{ background:rgba(88,166,255,.15); color:var(--blu); }
+  .b-tp{ background:rgba(63,185,80,.15); color:var(--grn); }
+  .b-sl{ background:rgba(248,81,73,.15); color:var(--red); }
+  .b-be,.b-closed{ background:rgba(139,151,166,.15); color:var(--mut); }
+  .main{ flex:1; min-width:0; } .ttl{ font-size:14px; font-weight:500; }
+  .det{ font-size:12px; color:var(--mut); margin-top:3px; word-break:break-word; }
+  .pos{ color:var(--grn); } .neg{ color:var(--red); }
+  .empty{ color:var(--mut); text-align:center; padding:40px 0; font-size:14px; }
+  .err{ background:rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.3); color:var(--red); padding:14px; border-radius:10px; }
+</style>
+</head>
+<body>
+  <h1><span class="dot" id="dot"></span>MT5 ↔ Henry — live monitor</h1>
+  <div class="sub" id="status">connecting…</div>
+  <div class="cards" id="cards"></div>
+  <div class="feed" id="feed"><div class="empty">Loading…</div></div>
+
+<script>
+function ago(iso){ var s=Math.floor((Date.now()-new Date(iso).getTime())/1000); if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; if(s<86400)return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago'; }
+function hm(iso){ var d=new Date(iso); return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+
+async function load(){
+  try{
+    var r = await fetch('/api/mt5/activity', {credentials:'same-origin'});
+    if(r.status===403){ document.getElementById('feed').innerHTML='<div class="err">Admin only. Log in with the admin account.</div>'; document.getElementById('status').textContent=''; return; }
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    var d = await r.json();
+    var a = d.activity || [];
+    render(a, d.serverTime);
+  }catch(e){ document.getElementById('status').textContent='connection error — retrying…'; document.getElementById('dot').className='dot'; }
+}
+
+function render(a, serverTime){
+  var confirms=0, vetoes=0, fills=0, pnl=0;
+  a.forEach(function(e){
+    if(e.kind==='confirm'){ if(e.verdict==='confirm')confirms++; else vetoes++; }
+    else if(e.kind==='report'){ if(e.event==='filled')fills++; if(['tp','sl','closed'].indexOf(e.event)>=0 && typeof e.pnl==='number') pnl+=e.pnl; }
+  });
+  var last = a.length ? a[0].ts : null;
+  var liveRecent = last && (Date.now()-new Date(last).getTime() < 15*60000);
+  document.getElementById('dot').className = 'dot' + (liveRecent?' live':'');
+  document.getElementById('status').textContent = last ? ('last interaction '+ago(last)+' · '+a.length+' events buffered') : 'no MT5 activity yet';
+
+  document.getElementById('cards').innerHTML =
+    card('AI confirms', confirms, 'pos') + card('AI vetoes', vetoes, 'neg') +
+    card('Fills', fills, '') + card('Net PnL', (pnl>=0?'+':'')+pnl.toFixed(2), pnl>=0?'pos':'neg');
+
+  if(!a.length){ document.getElementById('feed').innerHTML='<div class="empty">No MT5 activity yet — waiting for the EA\'s first call. Make sure the EA is attached with InpUseHenryConfirm=true and the URL is whitelisted.</div>'; return; }
+  document.getElementById('feed').innerHTML = a.map(function(e){ return e.kind==='confirm'?rowConfirm(e):rowReport(e); }).join('');
+}
+function card(l,v,cls){ return '<div class="c"><div class="l">'+l+'</div><div class="v '+cls+'">'+v+'</div></div>'; }
+function rowConfirm(e){
+  var b = e.verdict==='confirm' ? 'b-confirm' : 'b-veto';
+  return '<div class="row"><div class="t">'+hm(e.ts)+'</div><span class="badge '+b+'">'+e.verdict.toUpperCase()+'</span>'
+    +'<div class="main"><div class="ttl">🤖 '+esc(e.direction)+' '+esc(e.symbol)+'  ·  entry '+esc(e.entry)+' / SL '+esc(e.sl)+' / TP '+esc(e.tp)+'</div>'
+    +'<div class="det">'+esc(e.reason)+'</div></div></div>';
+}
+function rowReport(e){
+  var map={filled:'b-filled',tp:'b-tp',sl:'b-sl',be:'b-be',closed:'b-closed'};
+  var pnlTxt = (typeof e.pnl==='number' && e.event!=='filled') ? ' · <span class="'+(e.pnl>=0?'pos':'neg')+'">'+(e.pnl>=0?'+':'')+e.pnl.toFixed(2)+'</span>' : '';
+  return '<div class="row"><div class="t">'+hm(e.ts)+'</div><span class="badge '+(map[e.event]||'b-closed')+'">'+esc((e.event||'').toUpperCase())+'</span>'
+    +'<div class="main"><div class="ttl">'+esc(e.side||'')+' '+esc(e.symbol)+' @ '+esc(e.price)+'  ·  '+esc(e.lots)+' lots'+pnlTxt+'</div>'
+    +'<div class="det">acct '+esc(e.account||'—')+' · signal '+esc(e.signalId||'—')+'</div></div></div>';
+}
+load(); setInterval(load, 5000);
+</script>
+</body>
+</html>
