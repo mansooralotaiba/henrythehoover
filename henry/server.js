@@ -2617,11 +2617,18 @@ app.post('/api/mt5/confirm', requireMt5Token, express.json(), async (req, res) =
     try { text = await callAnthropicServer(sys, ctx + '\n\nCONFIRM or VETO?', 150, AI_MODEL); }
     catch (e) { console.error('[mt5/confirm] AI error', e.message); return res.status(502).send('veto ai-error'); }
 
+    // Honor whichever verdict the AI states FIRST — its prose often contains
+    // BOTH words ("VETO … I would not confirm …"), so a substring-contains check
+    // inverts vetoes. Earliest-occurrence wins; neither → veto (fail-safe).
     const t = String(text || '').toLowerCase();
-    const verdict = (t.indexOf('veto') >= 0 && t.indexOf('confirm') < 0) ? 'veto'
-                  : (t.indexOf('confirm') >= 0 ? 'confirm' : 'veto'); // ambiguous → veto (safe)
-    console.log('[mt5/confirm]', dir, b.symbol || 'XAUUSD', '→', verdict, '|', String(text).slice(0, 80).replace(/\n/g, ' '));
-    res.type('text/plain').send(verdict + ' ' + String(text).slice(0, 160).replace(/\n/g, ' '));
+    const vi = t.indexOf('veto'), ci = t.indexOf('confirm');
+    let verdict;
+    if (vi < 0 && ci < 0) verdict = 'veto';
+    else if (vi < 0) verdict = 'confirm';
+    else if (ci < 0) verdict = 'veto';
+    else verdict = (vi < ci) ? 'veto' : 'confirm';
+    console.log('[mt5/confirm]', dir, b.symbol || 'XAUUSD', '→', verdict.toUpperCase(), '|', String(text).slice(0, 110).replace(/\n/g, ' '));
+    res.type('text/plain').send(verdict);   // send ONLY the verdict word so the EA parses it cleanly
   } catch (err) {
     console.error('[mt5/confirm]', err.message || err);
     res.status(502).send('veto server-error');
