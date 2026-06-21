@@ -1747,103 +1747,100 @@ function _wpStartLive(entry, p){
 // ── Detector zone overlays (FVG / OB / S&D / MSS / sweep) ──────────────────
 // Draws what Henry's autoscan detectors see directly on the Kingdom mini-charts:
 // time-bounded boxes (zones) and dashed levels, each labelled. Powered by the
-// `annotations` array /api/v2/watchlist now returns per pair (one entry per live
-// detector, via detectAllZones server-side). Uses Lightweight Charts v4.1 series
-// primitives so the boxes are bounded in BOTH price and time, not just a line
-// spanning the whole pane. Toggle persisted in localStorage.
+// `annotations` array /api/v2/watchlist returns per pair (one entry per live
+// detector, via detectAllZones server-side).
+//
+// Implementation note: we paint onto our OWN <canvas> layered over each chart
+// and convert price/time → pixels with the chart's public coordinate API
+// (series.priceToCoordinate + timeScale.timeToCoordinate). The LWC v4.1 build
+// loaded here does NOT render series-primitive pane views (attachPrimitive runs
+// `attached()` but never `paneViews()`/`draw()`), so a self-managed overlay is
+// the reliable path. Redrawn every poll AND on every visible-range change so the
+// boxes stay glued to the candles as bars shift/scroll. Toggle persisted in LS.
 var _wpZonesOn = (function(){ try { return localStorage.getItem('henryZonesOff') !== '1'; } catch(e){ return true; } })();
 
 // Colour by direction. Boxes use a translucent fill so candles read through.
 function _zoneColors(g){
   var bull = g.dir === 'bull';
-  return { line: bull ? '#00e5a0' : '#ff5577', fill: bull ? 'rgba(0,229,160,0.10)' : 'rgba(255,85,119,0.11)' };
+  return { line: bull ? '#00e5a0' : '#ff5577', fill: bull ? 'rgba(0,229,160,0.12)' : 'rgba(255,85,119,0.13)' };
 }
 
-// Small filled-pill text label drawn in bitmap (device-pixel) space.
-function _zoneLabel(ctx, text, x, y, color, hpr, vpr){
-  var fs = 9 * vpr;
-  ctx.font = '700 ' + fs + 'px ui-monospace,Menlo,Consolas,monospace';
+// Small filled-pill text label (CSS-pixel space — the overlay ctx is dpr-scaled).
+function _wpZoneLabel(ctx, text, x, y, color){
+  ctx.font = '700 9px ui-monospace,Menlo,Consolas,monospace';
   ctx.textBaseline = 'top';
-  var padX = 3 * hpr, padY = 1.5 * vpr;
   var w = ctx.measureText(text).width;
-  ctx.fillStyle = 'rgba(8,10,18,0.80)';
-  ctx.fillRect(x, y, w + padX * 2, fs + padY * 2);
+  ctx.fillStyle = 'rgba(8,10,18,0.82)';
+  ctx.fillRect(x, y, w + 6, 13);
   ctx.fillStyle = color;
-  ctx.fillText(text, x + padX, y + padY);
+  ctx.fillText(text, x + 3, y + 2);
 }
 
-// Factory: a Lightweight Charts ISeriesPrimitive painting one box or level +
-// label. `spec` carries seconds-based from/to and prices already resolved.
-function _makeZonePrimitive(spec){
-  var _chart = null, _series = null;
-  var renderer = {
-    draw: function(target){
-      if(!_chart || !_series) return;
-      target.useBitmapCoordinateSpace(function(scope){
-        var ctx = scope.context;
-        var ts = _chart.timeScale();
-        var x1 = ts.timeToCoordinate(spec.from);
-        var x2 = ts.timeToCoordinate(spec.to);
-        if(x1 == null || x2 == null) return;
-        var hpr = scope.horizontalPixelRatio, vpr = scope.verticalPixelRatio;
-        var X1 = Math.min(x1, x2) * hpr, X2 = Math.max(x1, x2) * hpr;
-        if(X2 - X1 < 2 * hpr) X2 = X1 + 2 * hpr; // keep a sliver visible if collapsed
-        ctx.save();
-        if(spec.kind === 'box'){
-          var yT = _series.priceToCoordinate(spec.top);
-          var yB = _series.priceToCoordinate(spec.bottom);
-          if(yT == null || yB == null){ ctx.restore(); return; }
-          var Y1 = Math.min(yT, yB) * vpr, Y2 = Math.max(yT, yB) * vpr;
-          ctx.fillStyle = spec.fill; ctx.fillRect(X1, Y1, X2 - X1, Y2 - Y1);
-          ctx.strokeStyle = spec.line; ctx.lineWidth = Math.max(1, hpr);
-          ctx.strokeRect(X1, Y1, X2 - X1, Y2 - Y1);
-          _zoneLabel(ctx, spec.label, X1 + 3 * hpr, Y1 + 2 * vpr, spec.line, hpr, vpr);
-        } else {
-          var y = _series.priceToCoordinate(spec.price);
-          if(y == null){ ctx.restore(); return; }
-          var Y = y * vpr;
-          ctx.strokeStyle = spec.line; ctx.lineWidth = Math.max(1, hpr);
-          ctx.setLineDash([4 * hpr, 3 * hpr]);
-          ctx.beginPath(); ctx.moveTo(X1, Y); ctx.lineTo(X2, Y); ctx.stroke();
-          ctx.setLineDash([]);
-          _zoneLabel(ctx, spec.label, X1 + 3 * hpr, Y - 13 * vpr, spec.line, hpr, vpr);
-        }
-        ctx.restore();
-      });
-    }
-  };
-  var paneView = { zOrder: function(){ return 'top'; }, renderer: function(){ return renderer; } };
-  return {
-    attached: function(p){ _chart = p.chart; _series = p.series; },
-    detached: function(){ _chart = null; _series = null; },
-    updateAllViews: function(){},
-    paneViews: function(){ return [paneView]; }
-  };
+// Lazily create the overlay <canvas> for a panel and wire a redraw on every
+// visible-range change (new bar / fitContent / pan) so zones track the candles.
+function _wpZoneLayer(entry){
+  if(entry._zoneCanvas) return entry._zoneCanvas;
+  var body = entry.panel.querySelector('.wp-body');
+  if(!body) return null;
+  var cv = document.createElement('canvas');
+  cv.className = 'wp-zone-overlay';
+  cv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2';
+  body.appendChild(cv);
+  entry._zoneCanvas = cv;
+  try {
+    entry._zoneSub = function(){ _wpRenderZones(entry); };
+    entry.chart.timeScale().subscribeVisibleLogicalRangeChange(entry._zoneSub);
+  } catch(e){}
+  return cv;
 }
 
-// Re-attach this panel's detector zones from p.annotations. Called every poll —
-// geometry shifts as bars close, so we tear down and rebuild each time.
-function _wpDrawZones(entry, p){
-  if(!entry.zones) entry.zones = [];
-  entry.zones.forEach(function(z){ try{ entry.series.detachPrimitive(z); }catch(e){} });
-  entry.zones = [];
+// Repaint a panel's overlay from entry._zoneAnns using the chart coordinate API.
+function _wpRenderZones(entry){
+  var cv = entry._zoneCanvas; if(!cv) return;
+  var body = entry.panel.querySelector('.wp-body'); if(!body) return;
+  var W = body.clientWidth, H = body.clientHeight, dpr = window.devicePixelRatio || 1;
+  if(cv.width !== Math.round(W*dpr) || cv.height !== Math.round(H*dpr)){ cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr); }
+  var ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
   if(!_wpZonesOn) return;
-  if(typeof entry.series.attachPrimitive !== 'function') return; // older LWC build
-  (p.annotations || []).forEach(function(g){
+  var anns = entry._zoneAnns || [];
+  if(!anns.length || !entry.series || !entry.chart) return;
+  var ts = entry.chart.timeScale();
+  anns.forEach(function(g){
     if(!g || g.from == null || g.to == null) return;
+    var x1 = ts.timeToCoordinate(Math.floor(g.from / 1000));
+    var x2 = ts.timeToCoordinate(Math.floor(g.to / 1000));
+    if(x1 == null && x2 == null) return;          // wholly outside the data range
+    if(x1 == null) x1 = 0;                          // older than left edge → clamp
+    if(x2 == null) x2 = W;                          // beyond right edge → clamp
+    var L = Math.max(0, Math.min(x1, x2)), R = Math.min(W, Math.max(x1, x2));
+    if(R - L < 2) R = L + 2;
     var col = _zoneColors(g);
-    var spec = {
-      kind: g.kind, label: g.label, line: col.line, fill: col.fill,
-      from: Math.floor(g.from / 1000), to: Math.floor(g.to / 1000),
-    };
-    if(g.kind === 'box'){ spec.top = g.top; spec.bottom = g.bottom; }
-    else { spec.price = g.price; }
-    try {
-      var prim = _makeZonePrimitive(spec);
-      entry.series.attachPrimitive(prim);
-      entry.zones.push(prim);
-    } catch(e){ /* primitive API unavailable → skip silently */ }
+    if(g.kind === 'box'){
+      var yT = entry.series.priceToCoordinate(g.top);
+      var yB = entry.series.priceToCoordinate(g.bottom);
+      if(yT == null || yB == null) return;
+      var T = Math.min(yT, yB), B = Math.max(yT, yB);
+      ctx.fillStyle = col.fill; ctx.fillRect(L, T, R - L, B - T);
+      ctx.strokeStyle = col.line; ctx.lineWidth = 1; ctx.strokeRect(L + 0.5, T + 0.5, R - L - 1, B - T - 1);
+      _wpZoneLabel(ctx, g.label, L + 3, T + 2, col.line);
+    } else {
+      var y = entry.series.priceToCoordinate(g.price);
+      if(y == null) return;
+      ctx.strokeStyle = col.line; ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(L, y + 0.5); ctx.lineTo(R, y + 0.5); ctx.stroke(); ctx.setLineDash([]);
+      _wpZoneLabel(ctx, g.label, L + 3, Math.max(1, y - 13), col.line);
+    }
   });
+}
+
+// Store this panel's detector annotations and repaint the overlay. Called every
+// poll from _wpUpdatePanel; the visible-range subscription handles in-between.
+function _wpDrawZones(entry, p){
+  _wpZoneLayer(entry);
+  entry._zoneAnns = (p && p.annotations) ? p.annotations : [];
+  _wpRenderZones(entry);
 }
 
 function _wpUpdatePanel(entry, p){
@@ -1927,6 +1924,7 @@ function _wpResizeAll(){
     var e = _wpCharts[coin];
     var body = e.panel.querySelector('.wp-body');
     if(body && e.chart) e.chart.resize(body.clientWidth, body.clientHeight);
+    if(typeof _wpRenderZones === 'function') _wpRenderZones(e); // keep zone overlay aligned after resize
   });
 }
 
