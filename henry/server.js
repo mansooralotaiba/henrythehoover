@@ -2361,6 +2361,11 @@ app.get('/api/v2/watchlist', requireAuth, async (_req, res) => {
         pctChange: pctChange != null ? +pctChange.toFixed(2) : null,
         // Keep `t` so the client can render a real time axis. Volume stripped to keep payload small.
         candles: candles.map(c => ({ t: c.t, o: c.o, h: c.h, l: c.l, c: c.c })),
+        // What the autoscan detectors currently see on this pair (FVG / OB / S&D /
+        // MSS / sweep) — drawn as labelled boxes/levels on the Kingdom mini-chart.
+        // Computed on the SAME display-TF candles so the geometry aligns with the
+        // bars the user is looking at. Each item: {kind,type,dir,label,...prices,from,to(ms)}.
+        annotations: detectAllZones(candles),
         signal: ps?.pendSignal ? {
           direction: ps.pendSignal.direction,
           entry: ps.pendSignal.entry,
@@ -5371,11 +5376,14 @@ function _detectMSSDisplacement(candles) {
   if (!strengthOk || bodyPct < 0.6) return null;
 
   const volTag = avgVol > 0 ? `, vol ${(last.v / avgVol).toFixed(1)}x` : ', range-disp';
+  const _mssFrom = recent[0].t, _mssTo = last.t;
   if (last.c > maxH && last.c > last.o) {
-    return { type: 'mss_disp', desc: `Bullish MSS+displacement — close ${last.c.toFixed(4)} > prev high ${maxH.toFixed(4)} (body ${Math.round(bodyPct * 100)}%${volTag})` };
+    return { type: 'mss_disp', desc: `Bullish MSS+displacement — close ${last.c.toFixed(4)} > prev high ${maxH.toFixed(4)} (body ${Math.round(bodyPct * 100)}%${volTag})`,
+      geom: { kind: 'level', type: 'mss_disp', dir: 'bull', label: 'MSS ▲', price: maxH, from: _mssFrom, to: _mssTo } };
   }
   if (last.c < minL && last.c < last.o) {
-    return { type: 'mss_disp', desc: `Bearish MSS+displacement — close ${last.c.toFixed(4)} < prev low ${minL.toFixed(4)} (body ${Math.round(bodyPct * 100)}%${volTag})` };
+    return { type: 'mss_disp', desc: `Bearish MSS+displacement — close ${last.c.toFixed(4)} < prev low ${minL.toFixed(4)} (body ${Math.round(bodyPct * 100)}%${volTag})`,
+      geom: { kind: 'level', type: 'mss_disp', dir: 'bear', label: 'MSS ▼', price: minL, from: _mssFrom, to: _mssTo } };
   }
   return null;
 }
@@ -5405,18 +5413,21 @@ function _detectSweepDisplacement(candles) {
   }
   if (!volOk) return null;
 
+  const _swFrom = recent[0].t, _swTo = last.t;
   // Bullish: wick below range, close in upper 60% of bar
   if (last.l < minL && last.c > minL) {
     const closePosition = (last.c - last.l) / range;
     if (closePosition >= 0.6) {
-      return { type: 'sweep_disp', desc: `Bullish sweep+displacement — wick ${last.l.toFixed(4)} swept ${minL.toFixed(4)}, close in upper ${Math.round(closePosition * 100)}%` };
+      return { type: 'sweep_disp', desc: `Bullish sweep+displacement — wick ${last.l.toFixed(4)} swept ${minL.toFixed(4)}, close in upper ${Math.round(closePosition * 100)}%`,
+        geom: { kind: 'level', type: 'sweep_disp', dir: 'bull', label: 'SWEEP ▲', price: minL, from: _swFrom, to: _swTo } };
     }
   }
   // Bearish: wick above range, close in lower 60% of bar
   if (last.h > maxH && last.c < maxH) {
     const closePosition = (last.h - last.c) / range;
     if (closePosition >= 0.6) {
-      return { type: 'sweep_disp', desc: `Bearish sweep+displacement — wick ${last.h.toFixed(4)} swept ${maxH.toFixed(4)}, close in lower ${Math.round(closePosition * 100)}%` };
+      return { type: 'sweep_disp', desc: `Bearish sweep+displacement — wick ${last.h.toFixed(4)} swept ${maxH.toFixed(4)}, close in lower ${Math.round(closePosition * 100)}%`,
+        geom: { kind: 'level', type: 'sweep_disp', dir: 'bear', label: 'SWEEP ▼', price: maxH, from: _swFrom, to: _swTo } };
     }
   }
   return null;
@@ -5456,6 +5467,7 @@ function _detectOrderBlock(candles) {
           return {
             type: 'ob_mitigation',
             desc: `Bullish OB mitigation @ ${obBot.toFixed(4)}-${obTop.toFixed(4)} (formed ${candles.length - 1 - i} bars ago)`,
+            geom: { kind: 'box', type: 'ob_mitigation', dir: 'bull', label: 'OB ▲', top: obTop, bottom: obBot, from: ob.t, to: last.t },
           };
         }
       }
@@ -5473,6 +5485,7 @@ function _detectOrderBlock(candles) {
           return {
             type: 'ob_mitigation',
             desc: `Bearish OB mitigation @ ${obBot.toFixed(4)}-${obTop.toFixed(4)} (formed ${candles.length - 1 - i} bars ago)`,
+            geom: { kind: 'box', type: 'ob_mitigation', dir: 'bear', label: 'OB ▼', top: obTop, bottom: obBot, from: ob.t, to: last.t },
           };
         }
       }
@@ -5513,7 +5526,8 @@ function _detectSDZone(candles) {
         const wasRetested = intervening.some(c => c.l <= baseHigh && c.l >= baseLow);
         if (wasRetested) continue;
         if (last.l <= baseHigh && last.l >= baseLow * 0.998) {
-          return { type: 'sd_zone', desc: `Demand zone retest @ ${baseLow.toFixed(4)}-${baseHigh.toFixed(4)} (${baseSize}-candle base)` };
+          return { type: 'sd_zone', desc: `Demand zone retest @ ${baseLow.toFixed(4)}-${baseHigh.toFixed(4)} (${baseSize}-candle base)`,
+            geom: { kind: 'box', type: 'sd_zone', dir: 'bull', label: 'DEMAND', top: baseHigh, bottom: baseLow, from: candles[i].t, to: last.t } };
         }
       }
       // Supply zone (drop out of base)
@@ -5522,7 +5536,8 @@ function _detectSDZone(candles) {
         const wasRetested = intervening.some(c => c.h >= baseLow && c.h <= baseHigh);
         if (wasRetested) continue;
         if (last.h >= baseLow && last.h <= baseHigh * 1.002) {
-          return { type: 'sd_zone', desc: `Supply zone retest @ ${baseLow.toFixed(4)}-${baseHigh.toFixed(4)} (${baseSize}-candle base)` };
+          return { type: 'sd_zone', desc: `Supply zone retest @ ${baseLow.toFixed(4)}-${baseHigh.toFixed(4)} (${baseSize}-candle base)`,
+            geom: { kind: 'box', type: 'sd_zone', dir: 'bear', label: 'SUPPLY', top: baseHigh, bottom: baseLow, from: candles[i].t, to: last.t } };
         }
       }
     }
@@ -5569,7 +5584,8 @@ function _detectFVGInOTE(candles) {
           const intervening = candles.slice(i + 2, candles.length - 1);
           const filled = intervening.some(c => c.l < fvgBot);
           if (filled) continue;
-          return { type: 'fvg_ote', desc: `Bullish FVG-in-OTE @ ${fvgBot.toFixed(4)}-${fvgTop.toFixed(4)} (62-79% retrace zone)` };
+          return { type: 'fvg_ote', desc: `Bullish FVG-in-OTE @ ${fvgBot.toFixed(4)}-${fvgTop.toFixed(4)} (62-79% retrace zone)`,
+            geom: { kind: 'box', type: 'fvg_ote', dir: 'bull', label: 'FVG ▲', top: fvgTop, bottom: fvgBot, from: c0.t, to: last.t } };
         }
       }
     }
@@ -5582,7 +5598,8 @@ function _detectFVGInOTE(candles) {
           const intervening = candles.slice(i + 2, candles.length - 1);
           const filled = intervening.some(c => c.h > fvgTop);
           if (filled) continue;
-          return { type: 'fvg_ote', desc: `Bearish FVG-in-OTE @ ${fvgBot.toFixed(4)}-${fvgTop.toFixed(4)} (62-79% retrace zone)` };
+          return { type: 'fvg_ote', desc: `Bearish FVG-in-OTE @ ${fvgBot.toFixed(4)}-${fvgTop.toFixed(4)} (62-79% retrace zone)`,
+            geom: { kind: 'box', type: 'fvg_ote', dir: 'bear', label: 'FVG ▼', top: fvgTop, bottom: fvgBot, from: c0.t, to: last.t } };
         }
       }
     }
@@ -5625,6 +5642,24 @@ function detectTrigger(candles, mode) {
         || _detectFVG(candles);
   }
   return ictTrigger; // 'ict' mode or hybrid-with-match
+}
+
+// ── Chart annotations ──────────────────────────────────────────────────────
+// Runs ALL ICT detectors (not just the first-priority trigger that detectTrigger
+// returns) and collects the geometry of every structure currently in play, so
+// the Kingdom mini-charts can draw exactly what the autoscan sees — FVG, order
+// blocks, supply/demand zones, MSS pivots, liquidity sweeps — as labelled boxes
+// and levels. Each detector exposes a `geom` object alongside its type/desc;
+// non-firing detectors return null and are skipped. Purely presentational —
+// this does NOT influence scan/trigger decisions (those still use detectTrigger).
+function detectAllZones(candles) {
+  if (!candles || candles.length < 12) return [];
+  const out = [];
+  const fns = [_detectMSSDisplacement, _detectSweepDisplacement, _detectOrderBlock, _detectSDZone, _detectFVGInOTE];
+  for (const fn of fns) {
+    try { const r = fn(candles); if (r && r.geom) out.push(r.geom); } catch (e) { /* a detector throwing must not break the panel */ }
+  }
+  return out;
 }
 
 // ════════════════════════════════════════════════════════════════════════════

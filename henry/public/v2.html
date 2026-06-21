@@ -201,6 +201,10 @@
   .k-resume{display:none;align-items:center;gap:6px;padding:4px 11px;border:1px solid var(--border-strong);border-radius:4px;background:var(--bg3);cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;color:var(--am);transition:all 0.2s}
   .k-resume.visible{display:inline-flex}
   .k-resume:hover{border-color:var(--am);background:rgba(255,170,48,0.08)}
+  /* ZONES toggle — show/hide the detector overlays on the watchlist mini-charts */
+  .k-zones-btn{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border-strong);border-radius:4px;background:var(--bg3);color:var(--di);cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;transition:all 0.18s}
+  .k-zones-btn:hover{border-color:var(--am)}
+  .k-zones-btn.on{color:var(--am);border-color:rgba(255,170,48,0.5);box-shadow:inset 0 0 12px rgba(255,170,48,0.07)}
   .k-resume.flash{color:var(--gr);border-color:var(--gr);background:rgba(0,229,160,0.1)}
   .wp-grid{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:8px;min-height:0}
   .wp-panel{background:var(--bg3);border:1.5px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:0;transition:border-color 0.3s,box-shadow 0.3s}
@@ -967,6 +971,7 @@
         <button id="k-resume" class="k-resume admin-only-content" type="button" title="Clear per-pair pauses + reset circuit-breaker outcome counter">
           <span id="k-resume-label">↻ RESUME SCAN</span>
         </button>
+        <button class="k-zones-btn on" id="k-zones-toggle" title="Show what Henry sees — FVG, order blocks, supply/demand zones, MSS pivots and liquidity sweeps drawn on each chart">◫ ZONES</button>
         <span class="r" id="k-pair-count">— / 6 max</span>
       </div>
       <div class="wp-grid" id="k-wp-grid">
@@ -1739,6 +1744,108 @@ function _wpStartLive(entry, p){
   }catch(e){}
 }
 
+// ── Detector zone overlays (FVG / OB / S&D / MSS / sweep) ──────────────────
+// Draws what Henry's autoscan detectors see directly on the Kingdom mini-charts:
+// time-bounded boxes (zones) and dashed levels, each labelled. Powered by the
+// `annotations` array /api/v2/watchlist now returns per pair (one entry per live
+// detector, via detectAllZones server-side). Uses Lightweight Charts v4.1 series
+// primitives so the boxes are bounded in BOTH price and time, not just a line
+// spanning the whole pane. Toggle persisted in localStorage.
+var _wpZonesOn = (function(){ try { return localStorage.getItem('henryZonesOff') !== '1'; } catch(e){ return true; } })();
+
+// Colour by direction. Boxes use a translucent fill so candles read through.
+function _zoneColors(g){
+  var bull = g.dir === 'bull';
+  return { line: bull ? '#00e5a0' : '#ff5577', fill: bull ? 'rgba(0,229,160,0.10)' : 'rgba(255,85,119,0.11)' };
+}
+
+// Small filled-pill text label drawn in bitmap (device-pixel) space.
+function _zoneLabel(ctx, text, x, y, color, hpr, vpr){
+  var fs = 9 * vpr;
+  ctx.font = '700 ' + fs + 'px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textBaseline = 'top';
+  var padX = 3 * hpr, padY = 1.5 * vpr;
+  var w = ctx.measureText(text).width;
+  ctx.fillStyle = 'rgba(8,10,18,0.80)';
+  ctx.fillRect(x, y, w + padX * 2, fs + padY * 2);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x + padX, y + padY);
+}
+
+// Factory: a Lightweight Charts ISeriesPrimitive painting one box or level +
+// label. `spec` carries seconds-based from/to and prices already resolved.
+function _makeZonePrimitive(spec){
+  var _chart = null, _series = null;
+  var renderer = {
+    draw: function(target){
+      if(!_chart || !_series) return;
+      target.useBitmapCoordinateSpace(function(scope){
+        var ctx = scope.context;
+        var ts = _chart.timeScale();
+        var x1 = ts.timeToCoordinate(spec.from);
+        var x2 = ts.timeToCoordinate(spec.to);
+        if(x1 == null || x2 == null) return;
+        var hpr = scope.horizontalPixelRatio, vpr = scope.verticalPixelRatio;
+        var X1 = Math.min(x1, x2) * hpr, X2 = Math.max(x1, x2) * hpr;
+        if(X2 - X1 < 2 * hpr) X2 = X1 + 2 * hpr; // keep a sliver visible if collapsed
+        ctx.save();
+        if(spec.kind === 'box'){
+          var yT = _series.priceToCoordinate(spec.top);
+          var yB = _series.priceToCoordinate(spec.bottom);
+          if(yT == null || yB == null){ ctx.restore(); return; }
+          var Y1 = Math.min(yT, yB) * vpr, Y2 = Math.max(yT, yB) * vpr;
+          ctx.fillStyle = spec.fill; ctx.fillRect(X1, Y1, X2 - X1, Y2 - Y1);
+          ctx.strokeStyle = spec.line; ctx.lineWidth = Math.max(1, hpr);
+          ctx.strokeRect(X1, Y1, X2 - X1, Y2 - Y1);
+          _zoneLabel(ctx, spec.label, X1 + 3 * hpr, Y1 + 2 * vpr, spec.line, hpr, vpr);
+        } else {
+          var y = _series.priceToCoordinate(spec.price);
+          if(y == null){ ctx.restore(); return; }
+          var Y = y * vpr;
+          ctx.strokeStyle = spec.line; ctx.lineWidth = Math.max(1, hpr);
+          ctx.setLineDash([4 * hpr, 3 * hpr]);
+          ctx.beginPath(); ctx.moveTo(X1, Y); ctx.lineTo(X2, Y); ctx.stroke();
+          ctx.setLineDash([]);
+          _zoneLabel(ctx, spec.label, X1 + 3 * hpr, Y - 13 * vpr, spec.line, hpr, vpr);
+        }
+        ctx.restore();
+      });
+    }
+  };
+  var paneView = { zOrder: function(){ return 'top'; }, renderer: function(){ return renderer; } };
+  return {
+    attached: function(p){ _chart = p.chart; _series = p.series; },
+    detached: function(){ _chart = null; _series = null; },
+    updateAllViews: function(){},
+    paneViews: function(){ return [paneView]; }
+  };
+}
+
+// Re-attach this panel's detector zones from p.annotations. Called every poll —
+// geometry shifts as bars close, so we tear down and rebuild each time.
+function _wpDrawZones(entry, p){
+  if(!entry.zones) entry.zones = [];
+  entry.zones.forEach(function(z){ try{ entry.series.detachPrimitive(z); }catch(e){} });
+  entry.zones = [];
+  if(!_wpZonesOn) return;
+  if(typeof entry.series.attachPrimitive !== 'function') return; // older LWC build
+  (p.annotations || []).forEach(function(g){
+    if(!g || g.from == null || g.to == null) return;
+    var col = _zoneColors(g);
+    var spec = {
+      kind: g.kind, label: g.label, line: col.line, fill: col.fill,
+      from: Math.floor(g.from / 1000), to: Math.floor(g.to / 1000),
+    };
+    if(g.kind === 'box'){ spec.top = g.top; spec.bottom = g.bottom; }
+    else { spec.price = g.price; }
+    try {
+      var prim = _makeZonePrimitive(spec);
+      entry.series.attachPrimitive(prim);
+      entry.zones.push(prim);
+    } catch(e){ /* primitive API unavailable → skip silently */ }
+  });
+}
+
 function _wpUpdatePanel(entry, p){
   // Header bits — always refreshed every poll
   entry.panel.className = 'wp-panel ' + p.state;
@@ -1804,6 +1911,10 @@ function _wpUpdatePanel(entry, p){
     if(isFinite(sl)) entry.lines.push(entry.series.createPriceLine({ price: sl, color: '#ff5577', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'SL'    }));
     if(isFinite(tp)) entry.lines.push(entry.series.createPriceLine({ price: tp, color: '#00e5a0', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,  axisLabelVisible: true, title: 'TP'    }));
   }
+  // Detector zones — FVG / order blocks / supply-demand / MSS / sweeps, exactly
+  // what the autoscan engine sees on this pair right now. Drawn as labelled
+  // boxes + levels. Refreshed every poll alongside the candle/trade overlays.
+  _wpDrawZones(entry, p);
   // Live tick stream — Terminal pattern. Idempotent: if the stream is
   // already open for this pair/tf/broker (matching key), _wpStartLive
   // returns immediately. The stream is what keeps the in-progress candle
@@ -3941,6 +4052,18 @@ loadKingdom();
 loadWatchlist();
 setInterval(loadKingdom, 15_000);
 setInterval(loadWatchlist, 10_000);
+// ZONES toggle — flips the detector overlays on the watchlist mini-charts.
+(function(){
+  var zb = el('k-zones-toggle');
+  if(!zb) return;
+  zb.classList.toggle('on', _wpZonesOn);
+  zb.addEventListener('click', function(){
+    _wpZonesOn = !_wpZonesOn;
+    try{ localStorage.setItem('henryZonesOff', _wpZonesOn ? '0' : '1'); }catch(e){}
+    zb.classList.toggle('on', _wpZonesOn);
+    loadWatchlist(); // immediate redraw (draws or tears down zones this cycle)
+  });
+})();
 // Refresh DXY widget every 60s if Terminal is loaded
 setInterval(function(){ if(_terminalLoaded) loadDxy(); }, 60_000);
 
