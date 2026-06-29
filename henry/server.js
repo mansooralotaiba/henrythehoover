@@ -80,6 +80,15 @@ function isGoldWeekendBlocked(now) {
   if (day === 5 && (now.getUTCHours() * 60 + now.getUTCMinutes()) >= GOLD_WEEKEND_FRI_START_MIN) return true; // Fri from 21:00 UTC
   return false;
 }
+// Chop / ranging-regime gate. Henry's setups (sweep, displacement, OB, S&D) are
+// momentum/continuation plays; in a ranging market they fail BOTH ways — the
+// mid/late-June 0-for-18 / -14R drawdown was exactly this (every pair, both
+// directions, all SL). Use the 4H regime's trend strength (ADX) as a HARD gate:
+// skip NEW autoscan entries when 4H ADX is below the floor (no trend). Existing
+// trades stay monitored. Fails OPEN (allows) when ADX can't be computed so a
+// data blip never halts Henry. Tune/disable via HENRY_BLOCK_CHOP / HENRY_CHOP_ADX_MIN.
+const HENRY_BLOCK_CHOP = (process.env.HENRY_BLOCK_CHOP ?? 'true').toLowerCase() === 'true';
+const HENRY_CHOP_ADX_MIN = parseFloat(process.env.HENRY_CHOP_ADX_MIN || '20');
 // Pre-NY-open SL→BE protection window (UTC minutes). Auto-move SL to BE for
 // any in-profit trade when we enter the 5min window before NY open. Trades
 // not in profit yet stay at original SL.
@@ -4318,6 +4327,58 @@ function clearPairState(ps) {
   ps.lastStatus = 'idle';
 }
 
+// ── Autoscan state persistence ─────────────────────────────────────────────
+// scanSubscriptions lives only in RAM, so EVERY restart (deploy, redeploy, env
+// change, crash, Railway recycle) silently stopped autoscan until the admin re-
+// toggled it — a big chunk of "Henry isn't getting trades" (whole days with 0
+// signals). Persist the light config to Supabase on every start/stop/watchlist
+// change and rehydrate on boot so scanning resumes automatically. Live WEEX
+// execution is NOT auto-armed (autoTradeEnabled defaults false on boot) — so
+// scanning resumes but real orders wait for an explicit re-arm. Per-pair runtime
+// state (pendSignal/flags) is intentionally NOT persisted; open positions are
+// recovered separately by weexExecutor.reconcile() on boot.
+async function persistScanState(userId) {
+  try {
+    const sub = scanSubscriptions.get(userId);
+    if (!sub) return;
+    await supaAdmin.from('scan_state').upsert({
+      user_id: userId,
+      active: !!sub.active,
+      state: {
+        coin: sub.coin, tf: sub.tf, broker: sub.broker || 'weex',
+        cooldownMs: sub.cooldownMs || 180000,
+        watchlist: Array.isArray(sub.watchlist) ? sub.watchlist : [],
+        isAdmin: !!sub.isAdmin, email: sub.email || null,
+      },
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' });
+  } catch (e) { console.warn('[scan_state persist]', e.message || e); }
+}
+
+async function rehydrateScanState() {
+  try {
+    const { data, error } = await supaAdmin.from('scan_state').select('*').eq('active', true);
+    if (error) { console.warn('[scan_state rehydrate]', error.message); return; }
+    let resumed = 0;
+    for (const row of (data || [])) {
+      const s = row.state || {};
+      if (!s.coin || !s.tf) continue;
+      if (scanSubscriptions.has(row.user_id)) continue; // already live
+      const recentOutcomes = await loadRecentOutcomes(row.user_id).catch(() => []);
+      scanSubscriptions.set(row.user_id, {
+        active: true,
+        coin: s.coin, tf: s.tf, broker: s.broker || 'weex',
+        cooldownMs: s.cooldownMs || 180000,
+        watchlist: Array.isArray(s.watchlist) ? s.watchlist : [],
+        isAdmin: !!s.isAdmin, email: s.email || null,
+        pairs: {}, recentOutcomes,
+      });
+      resumed++;
+    }
+    if (resumed) console.log(`[scan_state] rehydrated ${resumed} autoscan session(s) on boot`);
+  } catch (e) { console.warn('[scan_state rehydrate]', e.message || e); }
+}
+
 app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
   const { coin, tf, broker, cooldownMs, watchlist } = req.body || {};
   if (!coin || !tf) return res.status(400).json({ error: 'missing_coin_or_tf' });
@@ -4343,6 +4404,7 @@ app.post('/api/scan/start', requireAuth, express.json(), async (req, res) => {
     pairs: prev?.pairs || {},
     recentOutcomes,
   });
+  persistScanState(req.user.id); // durable across restarts — rehydrate-on-boot
   res.json({ ok: true });
 });
 
@@ -4373,6 +4435,7 @@ app.post('/api/scan/update-watchlist', requireAuth, express.json(), (req, res) =
     }
   }
   if (pruned) console.log('[update-watchlist]', req.user.email || req.user.id, 'pruned', pruned, 'stale pair(s)');
+  persistScanState(req.user.id); // persist new watchlist so it survives restarts
   res.json({ ok: true, count: sub.watchlist.length, pruned });
 });
 
@@ -4567,6 +4630,7 @@ app.post('/api/scan/stop', requireAuth, (req, res) => {
   if (sub) sub.active = false;
   // Also stop periodic status updates when the user stops auto-scanning
   stopUserStatusUpdates(req.user.id);
+  persistScanState(req.user.id); // mark inactive in DB so boot won't resume it
   res.json({ ok: true });
 });
 
@@ -7553,6 +7617,23 @@ async function processPair(userId, sub, coin) {
     // A trigger fired — reset the counter
     ps.ticksSinceTrigger = 0;
 
+    // ── Chop / ranging-regime gate (HARD) ───────────────────────────────────
+    // A setup fired, but if the higher-TF market is ranging (4H ADX below the
+    // floor) the momentum thesis has no follow-through and these entries chop
+    // out both ways. Skip instead of feeding the chop. detectMarketRegime is
+    // cached 1h/coin so this is cheap. Fail-open on a null ADX (never halt on a
+    // data blip). Logged like the NY/gold gates → shows in /api/scan/debug.
+    if (HENRY_BLOCK_CHOP) {
+      const _reg = await detectMarketRegime(coin, broker).catch(() => null);
+      const _regAdx = _reg && typeof _reg.adx === 'number' ? _reg.adx : null;
+      if (_regAdx != null && _regAdx < HENRY_CHOP_ADX_MIN) {
+        ps.lastStatus = 'chop-block';
+        ps.lastVetoReason = `Ranging regime — 4H ADX ${_regAdx.toFixed(1)} < ${HENRY_CHOP_ADX_MIN} (no trend) — skipped ${trigger.type}`;
+        ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+        return;
+      }
+    }
+
     // 4) HARD VETOES — pre-compute indicators, run defensive filters before AI
     const adx = computeADX(candles, 14);
     const atr14 = computeATR(candles, 14);
@@ -9148,6 +9229,7 @@ app.get('/api/whales/treasury', requireAuth, async (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Henry The Hoover listening on :${PORT}`);
+  rehydrateScanState(); // resume autoscan sessions that were active before the restart
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY not set');
   if (!process.env.DISCORD_WEBHOOK) console.warn('[warn] DISCORD_WEBHOOK not set');
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');
