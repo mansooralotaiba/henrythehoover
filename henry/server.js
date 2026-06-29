@@ -5673,10 +5673,14 @@ function _detectFVGInOTE(candles) {
 
 // ── Strategy mode dispatcher ──────────────────────────────────────────────
 // Three modes:
-//   'ict'         — only ICT/S&D detectors (default, higher conviction, fewer signals)
+//   'ict'         — only ICT/S&D detectors (higher conviction, fewer signals)
 //   'price-action'— only original BOS/sweep/rejection/atr/fvg (legacy, more signals)
 //   'hybrid'      — ICT first, fall back to price-action when ICT misses
-const STRATEGY_MODE = (process.env.HENRY_STRATEGY_MODE || 'ict').toLowerCase();
+// DEFAULT = 'hybrid' (2026, Mansoor): lift setup volume by letting the legacy
+// price-action detectors fill the gaps when no ICT structure fires. Pairs with
+// the chop/ADX gate above — more candidates while trending, all filtered out
+// when ranging. Override on Railway via HENRY_STRATEGY_MODE.
+const STRATEGY_MODE = (process.env.HENRY_STRATEGY_MODE || 'hybrid').toLowerCase();
 
 function detectTrigger(candles, mode) {
   if (!candles || candles.length < 10) return null;
