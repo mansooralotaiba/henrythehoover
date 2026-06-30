@@ -24,11 +24,17 @@ const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'mansoor.alotaiba@gmail.com').to
 // Override via HENRY_AI_MODEL env var on Railway when bumping to a new release.
 // Models from generation 4.6+ use the dateless format `claude-{name}-{major}-{minor}`.
 const AI_MODEL = process.env.HENRY_AI_MODEL || 'claude-sonnet-4-6';
-// Auto-scan can use a different model since the server-side path makes
-// autonomous decisions that fire real WEEX orders.
-// Override via HENRY_AUTOSCAN_AI_MODEL env var. Falls back to AI_MODEL if not
-// set so single-env-var setups still work unchanged.
-const AUTOSCAN_AI_MODEL = process.env.HENRY_AUTOSCAN_AI_MODEL || AI_MODEL;
+// Auto-scan model. Pinned to Sonnet 2026-06-30 (Mansoor reverted Opus → Sonnet:
+// Opus autoscan ran the late-June 0-for-18 / -14R streak and cut signal volume).
+// NORMALLY this reads HENRY_AUTOSCAN_AI_MODEL, but that Railway var is currently
+// stuck on claude-opus-4-8 and Railway's API was unreachable to change it, so we
+// pin in code to guarantee the revert. The env var is still honoured for any
+// value OTHER than the stuck opus one, so fixing the Railway var later (or
+// clearing it) restores normal override behaviour without another code change.
+const AUTOSCAN_AI_MODEL =
+  (process.env.HENRY_AUTOSCAN_AI_MODEL && process.env.HENRY_AUTOSCAN_AI_MODEL !== 'claude-opus-4-8')
+    ? process.env.HENRY_AUTOSCAN_AI_MODEL
+    : 'claude-sonnet-4-6';
 // Manual ANALYSE: subscribers stay on AI_MODEL (Sonnet — interactive latency);
 // the ADMIN account gets the premium model. 2026-06-13: switched Fable 5 →
 // Opus 4.8 at Mansoor's request (autoscan stays Sonnet for signal volume).
