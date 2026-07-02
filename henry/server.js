@@ -1689,6 +1689,95 @@ app.post('/api/broker/disconnect', requireAuth, express.json(), async (req, res)
   }
 });
 
+// ── Manual "send to broker" ─────────────────────────────────────────────────
+// Places a MARKET entry + attached TP/SL bracket on the CALLER'S own connected
+// account. This is an EXPLICIT per-trade user click from the manual-ANALYSE
+// modal — it is NOT auto-trade (that stays autoscan+admin-only) and it does NOT
+// register with the executor: pure fire-and-forget, the venue's own TP/SL
+// closes the position. The manual-never-touches-the-EXECUTOR invariant holds.
+// SL is the critical leg — if it can't be placed after the entry fills, the
+// position is emergency-closed rather than left naked.
+const _manualExecLast = new Map(); // userId → ts (rate limit)
+const HENRY_MANUAL_RISK_MAX = parseFloat(process.env.HENRY_MANUAL_RISK_MAX || '500');
+
+app.post('/api/broker/execute', requireAuth, express.json(), async (req, res) => {
+  try {
+    const { broker, pair, side, entry, sl, tp, riskUsd } = req.body || {};
+    const dir = String(side || '').toUpperCase();
+    if (dir !== 'LONG' && dir !== 'SHORT') return res.status(400).json({ error: 'bad_side' });
+    const risk = parseFloat(riskUsd);
+    if (!isFinite(risk) || risk < 1) return res.status(400).json({ error: 'bad_risk' });
+    if (risk > HENRY_MANUAL_RISK_MAX) return res.status(400).json({ error: 'risk_above_cap', detail: `max $${HENRY_MANUAL_RISK_MAX} per manual trade (HENRY_MANUAL_RISK_MAX)` });
+    const e = parseFloat(entry), slp = parseFloat(sl), tpp = parseFloat(tp);
+    if (!isFinite(e) || !isFinite(slp) || !isFinite(tpp)) return res.status(400).json({ error: 'bad_levels' });
+    if (dir === 'LONG' && !(slp < e && tpp > e)) return res.status(400).json({ error: 'levels_inconsistent', detail: 'LONG needs SL below entry and TP above' });
+    if (dir === 'SHORT' && !(slp > e && tpp < e)) return res.status(400).json({ error: 'levels_inconsistent', detail: 'SHORT needs SL above entry and TP below' });
+    const last = _manualExecLast.get(req.user.id) || 0;
+    if (Date.now() - last < 5000) return res.status(429).json({ error: 'too_fast' });
+    _manualExecLast.set(req.user.id, Date.now());
+
+    // Resolve the caller's connection (explicit broker, or the only one).
+    const { data: rows, error } = await supaAdmin.from('broker_connections')
+      .select('broker, enc_creds').eq('user_id', req.user.id);
+    if (error) throw error;
+    const conns = rows || [];
+    if (!conns.length) return res.status(400).json({ error: 'no_connection', detail: 'Connect a broker first (🔗 BROKER on the Terminal)' });
+    const conn = broker ? conns.find(c => c.broker === broker) : (conns.length === 1 ? conns[0] : null);
+    if (!conn) return res.status(400).json({ error: 'ambiguous_broker', options: conns.map(c => c.broker) });
+
+    // Venue symbol mapping. Index pairs have no perp venue — signal-only.
+    let symbol = String(pair || '').toUpperCase();
+    if (!symbol) return res.status(400).json({ error: 'bad_pair' });
+    if (isIndexCoin(symbol)) return res.status(400).json({ error: 'not_tradable', detail: 'US index pairs are signal-only — no perp venue lists them' });
+    if (symbol === 'GOLD' || symbol === 'XAUUSD') symbol = conn.broker === 'bybit' ? 'PAXGUSDT' : 'XAUTUSDT';
+
+    const client = makeBrokerClient(conn.broker, decryptCreds(conn.enc_creds));
+    const info = await client.getSymbolInfo(symbol)
+      .catch(err => { throw new Error(`symbol lookup failed for ${symbol} on ${conn.broker}: ${err.message}`); });
+
+    // Size from planned risk: qty = risk$/stop-distance, rounded DOWN to step.
+    const dist = Math.abs(e - slp);
+    const prec = Math.max(0, info.quantityPrecision ?? 3);
+    const qStep = Math.pow(10, -prec);
+    let qty = parseFloat((Math.floor((risk / dist) / qStep) * qStep).toFixed(prec));
+    if (!(qty > 0) || (info.minOrderSize && qty < info.minOrderSize)) {
+      return res.status(400).json({ error: 'qty_too_small', detail: `$${risk} risk → qty ${qty} is below ${symbol} minimum ${info.minOrderSize}` });
+    }
+    // Dynamic leverage, same maths as the executor: liquidation stays well past the SL.
+    const slFrac = dist / e;
+    let lev = Math.floor(HENRY_LEV_SAFETY / Math.max(slFrac, 1e-6));
+    lev = Math.max(HENRY_LEV_MIN, Math.min(lev, HENRY_LEV_MAX, info.maxLeverage || HENRY_LEV_MAX));
+    try { await client.setLeverage(symbol, lev); } catch (err) { /* tolerated — open orders/positions can block it */ }
+
+    const warnings = [];
+    const ord = await client.placeOrder({
+      symbol, side: dir === 'LONG' ? 'BUY' : 'SELL', positionSide: dir,
+      orderType: 'MARKET', quantity: qty, clientOrderId: `man${Date.now()}`,
+    });
+    let slOk = false, tpOk = false;
+    try {
+      await client.placeTpSl({ symbol, positionSide: dir, planType: 'STOP_LOSS', triggerPrice: slp, quantity: qty, clientAlgoId: `mansl${Date.now()}` });
+      slOk = true;
+    } catch (err) {
+      // Naked position — close it now rather than leave the user unprotected.
+      try { await client.closePositionMarket({ symbol, positionSide: dir, quantity: qty }); }
+      catch (e2) { warnings.push('EMERGENCY CLOSE ALSO FAILED (' + e2.message + ') — CLOSE THE POSITION ON THE EXCHANGE NOW'); }
+      return res.status(502).json({ error: 'sl_failed_rolled_back', detail: String(err.message || err).slice(0, 180), warnings });
+    }
+    try {
+      await client.placeTpSl({ symbol, positionSide: dir, planType: 'TAKE_PROFIT', triggerPrice: tpp, quantity: qty, executePrice: tpp, clientAlgoId: `mantp${Date.now()}` });
+      tpOk = true;
+    } catch (err) {
+      warnings.push('TP placement failed — position is protected by SL only: ' + String(err.message || err).slice(0, 120));
+    }
+
+    console.log(`[manual-exec] ${req.user.email || req.user.id} ${conn.broker} ${symbol} ${dir} qty=${qty} lev=${lev} risk=$${risk} sl=${slp} tp=${tpp} slOk=${slOk} tpOk=${tpOk}${HENRY_DRY_RUN ? ' DRY-RUN' : ''}`);
+    res.json({ ok: true, broker: conn.broker, symbol, side: dir, qty, leverage: lev, entryOrderId: (ord && ord.orderId) || null, slOk, tpOk, dryRun: HENRY_DRY_RUN, warnings });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
 // One-shot reset: clear per-pair pauses + reset the global circuit-breaker
 // outcome counter on the admin's scan subscription. Used when the bot has
 // auto-paused a pair after consecutive SL and the admin wants to resume

@@ -3589,14 +3589,70 @@ function renderOutcomeButtons(){
       rr = Math.abs(tp - e) / Math.abs(e - sl);
     } else { rr = 2; }
   }
+  // SEND TO BROKER — only when the user has a connected account and the
+  // signal is tradable (index pairs are signal-only, no perp venue).
+  var sPair = String(sig.signal.pair || '').toUpperCase();
+  var tradable = !(sPair === 'US500' || sPair === 'US30' || sPair === 'NAS100');
+  var execBtn = (window._bkConns && window._bkConns.length && tradable)
+    ? '<button class="btn-modal bk-connect" onclick="openManualExec()">⚡ SEND TO BROKER</button>' : '';
   box.innerHTML =
-    '<button class="btn-modal btn-track" onclick="placeSignalOnChart()">📍 Track on Chart</button>'
+    execBtn
+  + '<button class="btn-modal btn-track" onclick="placeSignalOnChart()">📍 Track on Chart</button>'
   + '<button class="btn-modal btn-tp"  onclick="logOutcome(\'TP\',  '  + rr.toFixed(3) + ')">TP HIT</button>'
   + '<button class="btn-modal btn-sl"  onclick="logOutcome(\'SL\',  -1)">SL HIT</button>'
   + '<button class="btn-modal btn-be"  onclick="logOutcome(\'BE\',  0)">BREAKEVEN</button>'
   + '<button class="btn-modal btn-exp" onclick="logOutcome(\'EXPIRED\', 0)">EXPIRED</button>'
   + '<button class="btn-modal btn-ghost" onclick="discardManual()">DISCARD</button>'
   + '<button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>';
+}
+
+// ── SEND TO BROKER (manual execution on the user's own account) ───────────
+// Explicit per-trade click: market entry + TP/SL bracket, fire-and-forget
+// (no BE management, no expiry handling — the venue's own TP/SL closes it).
+function openManualExec(){
+  var sig = window._lastManualSignal; if(!sig) return;
+  var box = el('ai-modal-actions');
+  var opts = (window._bkConns || []).map(function(b){ return '<option value="' + b + '">' + b.toUpperCase() + '</option>'; }).join('');
+  var lastRisk = '50';
+  try{ lastRisk = localStorage.getItem('henryManualRisk') || '50'; }catch(e){}
+  box.innerHTML =
+    '<span style="font-size:11px;color:var(--mu);align-self:center;font-family:var(--mono)">RISK $</span>'
+  + '<input id="me-risk" type="number" min="1" step="1" value="' + lastRisk + '" style="width:80px;background:var(--bg3);border:1px solid var(--border-strong);color:var(--fg);border-radius:5px;padding:8px;font-family:var(--mono)">'
+  + '<select id="me-broker" style="background:var(--bg3);border:1px solid var(--border-strong);color:var(--fg);border-radius:5px;padding:8px;font-family:var(--mono)">' + opts + '</select>'
+  + '<button class="btn-modal bk-connect" id="me-go" onclick="confirmManualExec()">⚡ EXECUTE</button>'
+  + '<button class="btn-modal btn-ghost" onclick="renderOutcomeButtons()">Back</button>';
+}
+function confirmManualExec(){
+  var sig = window._lastManualSignal; if(!sig) return;
+  var s = sig.signal;
+  var risk = parseFloat(el('me-risk').value);
+  var broker = el('me-broker').value;
+  if(!isFinite(risk) || risk < 1){ _toast('⚠ RISK', 'Enter a valid $ risk per trade', 'be'); return; }
+  try{ localStorage.setItem('henryManualRisk', String(risk)); }catch(e){}
+  var btn = el('me-go'); btn.disabled = true; btn.textContent = 'Placing…';
+  fetch('/api/broker/execute',{
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      broker: broker,
+      pair: s.pair || t_pair,
+      side: s.direction,
+      entry: parseFloat(s.entry), sl: parseFloat(s.sl), tp: parseFloat(s.tp),
+      riskUsd: risk
+    })
+  }).then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); }).then(function(res){
+    if(!res.ok || !res.j.ok){
+      _toast('❌ EXECUTION FAILED', res.j.detail || res.j.error || 'unknown error', 'be');
+      renderOutcomeButtons(); return;
+    }
+    var extra = (res.j.warnings || []).length ? (' · ⚠ ' + res.j.warnings[0]) : '';
+    _toast('⚡ TRADE PLACED' + (res.j.dryRun ? ' (DRY-RUN)' : ''),
+      res.j.broker.toUpperCase() + ' ' + res.j.symbol + ' ' + res.j.side + ' · qty ' + res.j.qty + ' · ' + res.j.leverage + 'x' + extra, 'entry');
+    renderOutcomeButtons();
+  }).catch(function(e){
+    _toast('❌ EXECUTION FAILED', String(e && e.message || e), 'be');
+    renderOutcomeButtons();
+  });
 }
 
 function logOutcome(outcome, rValue){
@@ -4001,10 +4057,20 @@ function bkBrokerChanged(){
   var b = el('bk-broker').value;
   el('bk-pass-row').style.display = (b === 'weex') ? '' : 'none'; // only WEEX uses a passphrase
 }
+// Which brokers this user has connected — powers the SEND TO BROKER button on
+// manual ANALYSE results. Loaded quietly at boot + refreshed by bkLoadStatus.
+window._bkConns = [];
+fetch('/api/broker/status',{credentials:'same-origin'})
+  .then(function(r){ return r.ok ? r.json() : null; })
+  .then(function(d){ if(d){ window._bkConns = (d.connections||[]).map(function(c){ return c.broker; });
+    var btn = el('t-connect-broker'); if(btn) btn.classList.toggle('on', window._bkConns.length > 0); } })
+  .catch(function(){});
+
 function bkLoadStatus(){
   fetch('/api/broker/status',{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
     var box = el('bk-status');
     var conns = d.connections || [];
+    window._bkConns = conns.map(function(c){ return c.broker; });
     if(!conns.length){
       box.innerHTML = '<div class="bk-empty">No broker connected yet — add your WEEX or Bybit API keys below.</div>';
     } else {
