@@ -816,7 +816,7 @@
         <button class="tf-btn" data-tf="4h">4h</button>
       </div>
       <div class="price-display" id="t-price">—</div>
-      <button class="multi-btn off" id="t-multi" onclick="toggleMulti()" title="Multi-broker: compare WEEX + Binance + Hyperliquid in the AI prompt">⛓ SINGLE</button>
+      <button class="multi-btn off" id="t-multi" onclick="toggleMulti()" title="Multi-broker: compare WEEX + Binance + Bybit + Hyperliquid in the AI prompt">⛓ SINGLE</button>
       <button class="analyse-btn" id="t-analyse" onclick="runAnalyse()">⚡ Analyse</button>
     </div>
 
@@ -3110,11 +3110,11 @@ function _applyMultiUI(){
   if(_t_multi){
     b.className = 'multi-btn on';
     b.textContent = '⛓ MULTI';
-    b.title = 'Multi-broker ON: comparing WEEX + Binance + Hyperliquid';
+    b.title = 'Multi-broker ON: comparing WEEX + Binance + Bybit + Hyperliquid';
   } else {
     b.className = 'multi-btn off';
     b.textContent = '⛓ SINGLE';
-    b.title = 'Single broker · click to compare across WEEX + Binance + Hyperliquid';
+    b.title = 'Single broker · click to compare across WEEX + Binance + Bybit + Hyperliquid';
   }
 }
 function toggleMulti(){

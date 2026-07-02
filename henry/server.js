@@ -6180,7 +6180,11 @@ function buildCVDContextServer(trades) {
 
 // ── 5. CROSS-BROKER CONTEXT — fetch candles from all 3 brokers, compare ──
 async function buildCrossBrokerContextServer(coin, tf, primaryBroker) {
-  const brokers = ['weex', 'binance', 'hyperliquid'];
+  // Bybit added 2026-07-02 (verified reachable from Railway). Caveat: on a
+  // transient Bybit failure fetchCandlesServer falls back to WEEX, so that leg
+  // would echo WEEX data — harmless for the direction-agreement check (prices
+  // track within ~1bps) but worth knowing when reading the AI's venue lines.
+  const brokers = ['weex', 'binance', 'bybit', 'hyperliquid'];
   const sets = await Promise.all(brokers.map(b => fetchCandlesServer(coin, tf, 30, b).catch(() => [])));
   const data = brokers.map((b, i) => {
     const c = sets[i];
