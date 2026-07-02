@@ -2667,6 +2667,18 @@ function setupTermControls(){
       t_pair = 'BTCUSDT';
       el('t-pair').value = 'BTCUSDT';
     }
+    // Indices broker only serves US500/US30/NAS100 — auto-switch the pair
+    // (mirrors the massive→GOLD behaviour; a crypto pair against the Yahoo
+    // index feed returns nothing → blank chart).
+    if(t_broker === 'indices' && !T_INDEX_PAIRS[t_pair]){
+      t_pair = 'US500';
+      el('t-pair').value = 'US500';
+    }
+    // Leaving indices while an index pair is selected → restore BTCUSDT
+    if(t_broker !== 'indices' && T_INDEX_PAIRS[t_pair]){
+      t_pair = 'BTCUSDT';
+      el('t-pair').value = 'BTCUSDT';
+    }
     renderChart(); loadHeatmap();
   });
   el('t-pair').addEventListener('change', function(e){
@@ -2677,8 +2689,18 @@ function setupTermControls(){
       t_broker = 'massive';
       el('t-broker').value = 'massive';
     }
+    // Index pairs force the indices broker — same pair→broker pinning as GOLD.
+    if(T_INDEX_PAIRS[t_pair] && t_broker !== 'indices'){
+      t_broker = 'indices';
+      el('t-broker').value = 'indices';
+    }
     // Leaving GOLD while broker is still massive → bounce broker back to weex
     if(t_pair !== 'GOLD' && t_broker === 'massive'){
+      t_broker = 'weex';
+      el('t-broker').value = 'weex';
+    }
+    // Leaving an index pair while broker is still indices → back to weex
+    if(!T_INDEX_PAIRS[t_pair] && t_broker === 'indices'){
       t_broker = 'weex';
       el('t-broker').value = 'weex';
     }
