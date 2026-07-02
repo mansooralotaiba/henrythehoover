@@ -39,11 +39,6 @@ const AUTOSCAN_AI_MODEL =
 // the ADMIN account gets the premium model. 2026-06-13: switched Fable 5 →
 // Opus 4.8 at Mansoor's request (autoscan stays Sonnet for signal volume).
 const ADMIN_MANUAL_AI_MODEL = process.env.HENRY_ADMIN_MANUAL_AI_MODEL || 'claude-opus-4-8';
-// MT5 EA bridge (Phase 1, admin-only). The Expert Advisor authenticates with
-// this bearer token to pull GOLD signals (/api/mt5/signals) and report fills
-// (/api/mt5/report). Empty = bridge disabled. Multi-user later validates
-// per-subscriber tokens against Whop instead of this single shared one.
-const HENRY_MT5_TOKEN = process.env.HENRY_MT5_TOKEN || '';
 // BE trigger: how far in profit before SL moves to breakeven. Default 50% of
 // the way to TP (was 70%, lowered 2026-05-30 after analyze_ny_sweep.py showed
 // ~45-48% of all SL hits would have recovered to entry within 4h — tighter BE
@@ -2516,162 +2511,6 @@ app.post('/api/claude', requireAuth, express.json({ limit: '10mb' }), async (req
 // ── Health & public assets ──────────────────────────────────────────────────
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-// ════════════════════════════════════════════════════════════════════════════
-// PART 4B2 — MT5 EA BRIDGE (Phase 1 · admin-only · GOLD only)
-// MUST be registered BEFORE the global `app.use(requireAuth, express.static…)`
-// gate below — the EA authenticates with a bearer token, not a session cookie,
-// so a session gate would 302-redirect it to /login. requireMt5Token handles auth.
-// Signals carry absolute entry/SL/TP; the EA anchors the SL/TP *distances* to
-// its own broker fill, so the WEEX↔broker basis (~$12) doesn't matter.
-// ════════════════════════════════════════════════════════════════════════════
-
-function requireMt5Token(req, res, next) {
-  if (!HENRY_MT5_TOKEN) return res.status(503).json({ error: 'mt5_bridge_disabled' });
-  const hdr = req.get('authorization') || '';
-  const tok = hdr.startsWith('Bearer ') ? hdr.slice(7) : (req.query.token || '');
-  if (tok && tok.length === HENRY_MT5_TOKEN.length && tok === HENRY_MT5_TOKEN) return next();
-  return res.status(401).json({ error: 'unauthorized' });
-}
-
-// In-memory ring buffer of recent MT5 ↔ Henry interactions (AI confirm verdicts
-// + EA fill reports) powering the /mt5 admin monitor. Resets on redeploy — the
-// durable trade record lives in the mt5_trades table.
-const mt5Activity = [];
-function pushMt5Activity(e) {
-  e.ts = new Date().toISOString();
-  mt5Activity.push(e);
-  if (mt5Activity.length > 300) mt5Activity.shift();
-}
-
-// Pull confirmed GOLD autoscan signals newer than ?since (ISO timestamp).
-// Defaults to the last 6h so a fresh EA doesn't replay ancient signals.
-app.get('/api/mt5/signals', requireMt5Token, async (req, res) => {
-  try {
-    const parsed = req.query.since ? new Date(req.query.since) : null;
-    const sinceIso = (parsed && !isNaN(parsed.getTime()) ? parsed : new Date(Date.now() - 6 * 3600 * 1000)).toISOString();
-    const adminId = await getAdminUserId();
-    let q = supaAdmin.from('signals')
-      .select('id,pair,direction,entry,sl,tp,rr,confidence,created_at')
-      .in('pair', ['XAUTUSDT', 'GOLD', 'XAUUSD'])
-      .not('trigger_type', 'is', null)         // confirmed autoscan only (manual has null trigger_type)
-      .neq('direction', 'NO TRADE')
-      .gt('created_at', sinceIso)
-      .order('created_at', { ascending: true })
-      .limit(20);
-    if (adminId) q = q.eq('user_id', adminId);  // admin-only in Phase 1
-    const { data, error } = await q;
-    if (error) throw error;
-    const signals = (data || []).map(s => ({
-      id: s.id,
-      symbol: 'XAUUSD',                          // EA maps to its broker's gold symbol via input
-      side: s.direction === 'LONG' ? 'buy' : 'sell',
-      entry: Number(s.entry), sl: Number(s.sl), tp: Number(s.tp),
-      rr: s.rr != null ? Number(s.rr) : null,
-      confidence: s.confidence != null ? Number(s.confidence) : null,
-      ts: s.created_at,
-    }));
-    // CSV form for the EA (MQL5 has no JSON parser): one line per signal,
-    // `id,side,entry,sl,tp,ts`. The EA echoes the last ts back as ?since.
-    if (String(req.query.format || '').toLowerCase() === 'csv') {
-      const csv = signals.map(s => [s.id, s.side, s.entry, s.sl, s.tp, s.ts].join(',')).join('\n');
-      return res.set('Content-Type', 'text/csv').send(csv);
-    }
-    res.json({ signals, serverTime: new Date().toISOString() });
-  } catch (err) {
-    console.error('[mt5/signals]', err.message || err);
-    res.status(502).json({ error: 'mt5_signals_failed', detail: String(err.message || err) });
-  }
-});
-
-// EA reports an execution event. Idempotent on (signal_id, account_id, event).
-app.post('/api/mt5/report', requireMt5Token, express.json(), async (req, res) => {
-  try {
-    const b = req.body || {};
-    const evt = String(b.event || '').toLowerCase();
-    if (!b.signalId || !evt) return res.status(400).json({ error: 'missing signalId/event' });
-    if (!['filled', 'be', 'tp', 'sl', 'closed'].includes(evt)) return res.status(400).json({ error: 'bad event' });
-    const row = {
-      signal_id: String(b.signalId),
-      account_id: b.accountId != null ? String(b.accountId) : null,
-      symbol: b.symbol ? String(b.symbol) : null,
-      side: b.side ? String(b.side).toLowerCase() : null,
-      event: evt,
-      price: b.price != null ? Number(b.price) : null,
-      lots: b.lots != null ? Number(b.lots) : null,
-      ticket: b.ticket != null ? String(b.ticket) : null,
-      pnl: b.pnl != null ? Number(b.pnl) : 0,
-      reported_at: new Date().toISOString(),
-    };
-    const { error } = await supaAdmin.from('mt5_trades').upsert(row, { onConflict: 'signal_id,account_id,event' });
-    if (error) throw error;
-    console.log('[mt5/report]', row.signal_id, evt, row.symbol, 'px', row.price, 'lots', row.lots, 'pnl', row.pnl);
-    pushMt5Activity({ kind: 'report', event: evt, symbol: row.symbol, side: row.side, price: row.price, lots: row.lots, pnl: row.pnl, signalId: row.signal_id, account: row.account_id });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[mt5/report]', err.message || err);
-    res.status(502).json({ error: 'mt5_report_failed', detail: String(err.message || err) });
-  }
-});
-
-// Management events (move SL→BE, close) for live MT5-served trades.
-// Phase 1 stub — EA places a hard SL+TP on the broker as the safety net.
-// Phase 1.5 wires Henry's gold BE/close logic to emit actions here.
-app.get('/api/mt5/manage', requireMt5Token, (_req, res) => {
-  res.json({ actions: [], note: 'manage channel stubbed — Phase 1.5' });
-});
-
-// AI confirm/veto for the HYBRID EA. The EA detects a gold setup locally and
-// asks Henry's AI to bless it before trading live. Returns plain text
-// "confirm" or "veto" (easy MQL5 parse). On any internal error we return 502
-// so the EA falls back to its mechanical decision (per its InpRequireConfirm).
-app.post('/api/mt5/confirm', requireMt5Token, express.json(), async (req, res) => {
-  try {
-    const b = req.body || {};
-    const dir = String(b.direction || '').toUpperCase();
-    if (dir !== 'LONG' && dir !== 'SHORT') return res.status(400).send('veto bad-direction');
-    const entry = +b.entry, sl = +b.sl, tp = +b.tp;
-
-    // Gold context (multi-exchange feed) — 15m for structure/indicators, 4h for regime.
-    const c15 = await fetchGoldCandles('15m', 100);
-    const c4h = await fetchGoldCandles('4h', 60);
-    if (!c15.length) return res.status(502).send('veto no-data');
-    const atr = computeATR(c15, 14);
-    const adx = computeADX(c15, 14);
-    const regime = (c4h.length >= 50) ? detectRegimeFromCandles(c4h) : { regime: 'range', confidence: 'weak' };
-    const lastClose = c15[c15.length - 1].c;
-
-    const ctx = `Gold now ${lastClose}. 4H regime: ${regime.regime} (${regime.confidence}). 15m ADX ${adx != null ? adx.toFixed(1) : '?'}, ATR ${atr != null ? atr.toFixed(2) : '?'}. Proposed ${dir} — entry ${entry}, SL ${sl}, TP ${tp}.`;
-    const sys = 'You are the final risk filter before a mechanical GOLD setup is sent to a LIVE MetaTrader account. ' +
-      'Reply with exactly one word first — CONFIRM or VETO — then a short reason. ' +
-      'VETO if: the setup fights a strong opposing 4H trend, the 4H regime is a clear up-trend for a SHORT (or down-trend for a LONG), conditions look choppy/low-conviction (weak ADX, no clear structure), or anything looks off. Bias to VETO when uncertain — capital preservation first.';
-    let text = '';
-    try { text = await callAnthropicServer(sys, ctx + '\n\nCONFIRM or VETO?', 150, AI_MODEL); }
-    catch (e) { console.error('[mt5/confirm] AI error', e.message); return res.status(502).send('veto ai-error'); }
-
-    // Honor whichever verdict the AI states FIRST — its prose often contains
-    // BOTH words ("VETO … I would not confirm …"), so a substring-contains check
-    // inverts vetoes. Earliest-occurrence wins; neither → veto (fail-safe).
-    const t = String(text || '').toLowerCase();
-    const vi = t.indexOf('veto'), ci = t.indexOf('confirm');
-    let verdict;
-    if (vi < 0 && ci < 0) verdict = 'veto';
-    else if (vi < 0) verdict = 'confirm';
-    else if (ci < 0) verdict = 'veto';
-    else verdict = (vi < ci) ? 'veto' : 'confirm';
-    console.log('[mt5/confirm]', dir, b.symbol || 'XAUUSD', '→', verdict.toUpperCase(), '|', String(text).slice(0, 110).replace(/\n/g, ' '));
-    pushMt5Activity({ kind: 'confirm', direction: dir, symbol: b.symbol || 'XAUUSD', entry, sl, tp, verdict, reason: String(text).replace(/\n/g, ' ').slice(0, 220) });
-    res.type('text/plain').send(verdict);   // send ONLY the verdict word so the EA parses it cleanly
-  } catch (err) {
-    console.error('[mt5/confirm]', err.message || err);
-    res.status(502).send('veto server-error');
-  }
-});
-
-// Admin monitor — recent MT5 ↔ Henry interactions (confirm verdicts + fill reports).
-app.get('/api/mt5/activity', requireAdmin, (_req, res) => {
-  res.json({ activity: mt5Activity.slice().reverse(), count: mt5Activity.length, serverTime: new Date().toISOString() });
-});
-
 // ── Public legal & pricing pages (no auth — Paddle/Stripe must crawl these) ──
 app.get('/pricing', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'pricing.html')));
 app.get('/terms',   (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'terms.html')));
@@ -2698,9 +2537,6 @@ app.get('/terminal-legacy', requireAuth, (_req, res) =>
   res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 app.get('/v2', requireAuth, (_req, res) =>
   res.sendFile(path.join(PUBLIC_DIR, 'v2.html')));
-// MT5 ↔ Henry admin monitor (data endpoint /api/mt5/activity is admin-gated).
-app.get('/mt5', requireAuth, (_req, res) =>
-  res.sendFile(path.join(PUBLIC_DIR, 'mt5.html')));
 
 // Catch-all static — serves terminal assets (js, css, sw.js, etc.) to authenticated users only.
 app.use(requireAuth, express.static(PUBLIC_DIR, { index: false, extensions: ['html'] }));
