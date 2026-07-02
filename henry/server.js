@@ -8,7 +8,9 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
+import crypto from 'crypto';
 import { WeexClient } from './lib/weex.js';
+import { BybitClient } from './lib/bybit.js';
 import { Executor } from './lib/executor.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -180,17 +182,49 @@ if (!('XAUTUSDT' in HENRY_LEVERAGE_OVERRIDES)) {
   HENRY_LEVERAGE_OVERRIDES.XAUTUSDT = parseInt(process.env.HENRY_GOLD_LEVERAGE || '50', 10);
 }
 const HENRY_DRY_RUN = (process.env.HENRY_DRY_RUN || '').toLowerCase() === 'true';
-let weexClient = null, weexExecutor = null;
-if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_API_PASSPHRASE) {
-  weexClient = new WeexClient({
-    apiKey: process.env.WEEX_API_KEY,
-    apiSecret: process.env.WEEX_API_SECRET,
-    apiPassphrase: process.env.WEEX_API_PASSPHRASE,
-    baseUrl: process.env.WEEX_BASE_URL,
-    dryRun: HENRY_DRY_RUN,
+
+// ── Per-user broker credentials (2026-07-02 rework) ─────────────────────────
+// The env-var WEEX account (WEEX_API_KEY/SECRET/PASSPHRASE) is GONE. Users
+// connect their own WEEX/Bybit API keys via POST /api/broker/connect; secrets
+// are AES-256-GCM encrypted in the `broker_connections` table and only ever
+// decrypted server-side. The auto-trade executor binds to the ADMIN's
+// connection flagged auto_trade=true (single-admin model, like getAdminUserId)
+// — venue can be WEEX or Bybit, the Executor is venue-agnostic (it only talks
+// to the client interface; lib/bybit.js mirrors lib/weex.js's surface).
+const _CRED_KEY = crypto.createHash('sha256')
+  .update(process.env.HENRY_CRED_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || 'henry-dev-only')
+  .digest();
+function encryptCreds(obj) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', _CRED_KEY, iv);
+  const enc = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
+  return [iv, c.getAuthTag(), enc].map(b => b.toString('base64')).join('.');
+}
+function decryptCreds(s) {
+  const [iv, tag, data] = String(s).split('.').map(b => Buffer.from(b, 'base64'));
+  const d = crypto.createDecipheriv('aes-256-gcm', _CRED_KEY, iv);
+  d.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([d.update(data), d.final()]).toString('utf8'));
+}
+function makeBrokerClient(broker, creds, dryRun = HENRY_DRY_RUN) {
+  if (broker === 'bybit') {
+    return new BybitClient({ apiKey: creds.apiKey, apiSecret: creds.apiSecret, dryRun });
+  }
+  return new WeexClient({
+    apiKey: creds.apiKey, apiSecret: creds.apiSecret, apiPassphrase: creds.passphrase,
+    baseUrl: process.env.WEEX_BASE_URL, dryRun,
   });
-  weexExecutor = new Executor({
-    client: weexClient,
+}
+
+// NOTE: variable names kept as weexClient/weexExecutor — they are referenced at
+// ~15 sites (snapshot, wallet dashboard, reconcile, fireExecutor, pair panels).
+// Semantically they are now "the admin's bound auto-trade client/executor",
+// which may be WEEX *or* Bybit. autoTradeVenue says which.
+let weexClient = null, weexExecutor = null, autoTradeVenue = null;
+
+function _buildExecutor(client) {
+  return new Executor({
+    client,
     riskUsd: HENRY_RISK_USD,
     leverage: HENRY_LEVERAGE,
     leverageOverrides: HENRY_LEVERAGE_OVERRIDES,
@@ -202,9 +236,8 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
     beFeeBufferBps: HENRY_BE_FEE_BUFFER_BPS,
     beFeeBufferOverrides: HENRY_BE_FEE_BUFFER_OVERRIDES,
     notifier: async (msg) => {
-      // WEEX auto-trade execution alerts go to their OWN dedicated webhook —
-      // NOT the journal channel (that's signal outcomes) and NOT the signal
-      // channels. Keeps the execution log isolated.
+      // Auto-trade execution alerts go to their OWN dedicated webhook —
+      // NOT the journal channel (signal outcomes) and NOT the signal channels.
       if (process.env.DISCORD_WEEX_WEBHOOK) {
         try {
           await fetch(process.env.DISCORD_WEEX_WEBHOOK, {
@@ -215,9 +248,7 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
       }
     },
     // Persist every terminal trade to Supabase so PnL aggregates survive
-    // Railway redeploys. Best-effort: if the table is missing (user hasn't
-    // run db/weex_trades.sql yet) or Supabase is unreachable, log and move
-    // on — the executor's in-memory map still works for this process.
+    // Railway redeploys. Best-effort — in-memory map still works if it fails.
     onTradeClosed: async (t) => {
       try {
         const { error } = await supaAdmin.from('weex_trades').upsert({
@@ -246,31 +277,61 @@ if (process.env.WEEX_API_KEY && process.env.WEEX_API_SECRET && process.env.WEEX_
       }
     },
   });
-  console.log('[weex] executor ready — risk=$' + HENRY_RISK_USD
-    + (HENRY_DYNAMIC_LEVERAGE
-        ? ' lev=DYNAMIC(safety=' + HENRY_LEV_SAFETY + ' min=' + HENRY_LEV_MIN + 'x max=' + HENRY_LEV_MAX + 'x)'
-        : ' lev=' + HENRY_LEVERAGE + 'x')
-    + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
-  console.log('[weex] leverageOverrides:', JSON.stringify(HENRY_LEVERAGE_OVERRIDES));
-  console.log('[weex] riskOverrides:', JSON.stringify(HENRY_RISK_OVERRIDES));
-  console.log('[weex] beFeeBufferOverrides:', JSON.stringify(HENRY_BE_FEE_BUFFER_OVERRIDES));
-  // Reconcile on boot and every 60s so:
-  //   - Redeploy doesn't lose BE management on open positions (forward path)
-  //   - Stale trades close when WEEX's TP/SL plan fires server-side without
-  //     our scan-loop monitor seeing it (reverse path) — chart panels then
-  //     transition back to scanning within ~60s
-  const runReconcile = () => {
-    weexExecutor.reconcile().then(r => {
-      if (r.recovered > 0) console.log(`[weex] reconcile recovered ${r.recovered} open position(s)`);
-      if (r.cleaned > 0) console.log(`[weex] reconcile cleaned ${r.cleaned} stale trade(s)`);
-      if (r.warnings && r.warnings.length) for (const w of r.warnings) console.warn(`[weex] reconcile warning: ${w}`);
-    }).catch(err => console.warn('[weex] reconcile failed:', err.message || err));
-  };
-  runReconcile();
-  setInterval(runReconcile, 60_000);
-} else {
-  console.log('[weex] disabled — WEEX_API_KEY/SECRET/PASSPHRASE not set');
 }
+
+// Bind (or unbind) the auto-trade executor from the admin's stored connection.
+// Called on boot (app.listen) and after every /api/broker/connect|disconnect.
+// A fresh Executor starts with an empty trade map — runReconcile() immediately
+// recovers any open positions from the venue, same as a redeploy always has.
+async function rebindAutoTradeExecutor() {
+  try {
+    const { data, error } = await supaAdmin
+      .from('broker_connections')
+      .select('user_id, broker, enc_creds')
+      .eq('auto_trade', true);
+    if (error) throw error;
+    let bound = null;
+    for (const row of (data || [])) {
+      // The flag is admin-gated at write time, but re-verify the owner is
+      // still an admin in case is_admin was revoked after connecting.
+      const { data: prof } = await supaAdmin
+        .from('profiles').select('is_admin, email').eq('user_id', row.user_id).maybeSingle();
+      const okAdmin = !!prof?.is_admin || (prof?.email || '').toLowerCase() === ADMIN_EMAIL;
+      if (okAdmin) { bound = row; break; }
+    }
+    if (!bound) {
+      if (weexExecutor) console.log('[executor] unbound — no admin auto-trade connection');
+      weexClient = null; weexExecutor = null; autoTradeVenue = null;
+      return;
+    }
+    const creds = decryptCreds(bound.enc_creds);
+    weexClient = makeBrokerClient(bound.broker, creds);
+    weexExecutor = _buildExecutor(weexClient);
+    autoTradeVenue = bound.broker;
+    console.log(`[executor] bound to admin's ${bound.broker} connection — risk=$${HENRY_RISK_USD}`
+      + (HENRY_DYNAMIC_LEVERAGE
+          ? ` lev=DYNAMIC(safety=${HENRY_LEV_SAFETY} min=${HENRY_LEV_MIN}x max=${HENRY_LEV_MAX}x)`
+          : ` lev=${HENRY_LEVERAGE}x`)
+      + (HENRY_DRY_RUN ? ' DRY-RUN' : ''));
+    runReconcile();
+  } catch (e) {
+    console.warn('[executor rebind]', e.message || e);
+  }
+}
+
+// Reconcile on boot-bind and every 60s so:
+//   - Redeploy doesn't lose BE management on open positions (forward path)
+//   - Stale trades close when the venue's TP/SL fires server-side without
+//     our scan-loop monitor seeing it (reverse path)
+const runReconcile = () => {
+  if (!weexExecutor) return;
+  weexExecutor.reconcile().then(r => {
+    if (r.recovered > 0) console.log(`[executor] reconcile recovered ${r.recovered} open position(s)`);
+    if (r.cleaned > 0) console.log(`[executor] reconcile cleaned ${r.cleaned} stale trade(s)`);
+    if (r.warnings && r.warnings.length) for (const w of r.warnings) console.warn(`[executor] reconcile warning: ${w}`);
+  }).catch(err => console.warn('[executor] reconcile failed:', err.message || err));
+};
+setInterval(runReconcile, 60_000);
 // Module-level kill switch — flipped via /api/bot/state. Defaults OFF on boot.
 let autoTradeEnabled = false;
 function autoTradeAllowed(isAdmin) {
@@ -1505,6 +1566,7 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
   pnl.totalLive = pnl.total + openUPnl;
   res.json({
     available: !!weexExecutor,
+    venue: autoTradeVenue,
     enabled: autoTradeEnabled,
     dryRun: HENRY_DRY_RUN,
     riskUsd: HENRY_RISK_USD,
@@ -1516,12 +1578,115 @@ app.get('/api/bot/state', requireAdmin, async (_req, res) => {
   });
 });
 app.post('/api/bot/state', requireAdmin, express.json(), (req, res) => {
-  if (!weexExecutor) return res.status(409).json({ error: 'WEEX executor not configured (missing env vars)' });
+  if (!weexExecutor) return res.status(409).json({ error: 'No auto-trade broker connected — connect your account (🔗 BROKER on the Terminal) and tick "use for auto-trade" first.' });
   if (typeof req.body?.enabled === 'boolean') {
     autoTradeEnabled = req.body.enabled;
-    console.log('[bot] autoTradeEnabled =', autoTradeEnabled);
+    console.log('[bot] autoTradeEnabled =', autoTradeEnabled, 'venue =', autoTradeVenue);
   }
-  res.json({ ok: true, enabled: autoTradeEnabled });
+  res.json({ ok: true, enabled: autoTradeEnabled, venue: autoTradeVenue });
+});
+
+// ── Per-user broker connections (WEEX / Bybit) ──────────────────────────────
+// Any authed user can connect their own exchange API keys (wallet display);
+// only admins may flag a connection auto_trade=true, which binds the
+// execution engine to THEIR account. Secrets are AES-256-GCM encrypted at
+// rest and never returned to the browser (only a 4-char key hint).
+const _brokerBalCache = new Map(); // `${userId}:${broker}` → { ts, v }
+
+app.get('/api/broker/status', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supaAdmin
+      .from('broker_connections')
+      .select('broker, key_hint, auto_trade, connected_at, enc_creds')
+      .eq('user_id', req.user.id);
+    if (error) throw error;
+    const isAdmin = !!req.profile?.is_admin || (req.user.email || '').toLowerCase() === ADMIN_EMAIL;
+    const connections = [];
+    for (const row of (data || [])) {
+      let balance = null;
+      const ck = `${req.user.id}:${row.broker}`;
+      const hit = _brokerBalCache.get(ck);
+      if (hit && Date.now() - hit.ts < 30_000) {
+        balance = hit.v;
+      } else {
+        try {
+          const w = await makeBrokerClient(row.broker, decryptCreds(row.enc_creds), false).getWallet();
+          balance = { equity: +(+w.equity).toFixed(2), available: +(+w.available).toFixed(2) };
+          _brokerBalCache.set(ck, { ts: Date.now(), v: balance });
+        } catch (e) { balance = null; /* keys revoked / venue down — show connection anyway */ }
+      }
+      connections.push({
+        broker: row.broker, keyHint: row.key_hint,
+        autoTrade: !!row.auto_trade, connectedAt: row.connected_at, balance,
+      });
+    }
+    res.json({ connections, isAdmin, autoTradeVenue, autoTradeArmed: autoTradeEnabled });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+app.post('/api/broker/connect', requireAuth, express.json(), async (req, res) => {
+  try {
+    const { broker, apiKey, apiSecret, passphrase, autoTrade } = req.body || {};
+    if (!['weex', 'bybit'].includes(broker)) return res.status(400).json({ error: 'bad_broker' });
+    if (!apiKey || !apiSecret) return res.status(400).json({ error: 'missing_keys' });
+    if (broker === 'weex' && !passphrase) return res.status(400).json({ error: 'weex_needs_passphrase' });
+    const creds = {
+      apiKey: String(apiKey).trim(),
+      apiSecret: String(apiSecret).trim(),
+      ...(broker === 'weex' ? { passphrase: String(passphrase).trim() } : {}),
+    };
+    // LIVE validation — a private balance read proves the key set works.
+    // dryRun=false explicitly: validation must hit the real API.
+    let wallet;
+    try {
+      wallet = await makeBrokerClient(broker, creds, false).getWallet();
+    } catch (e) {
+      return res.status(400).json({ error: 'validation_failed', detail: String(e.message || e).slice(0, 180) });
+    }
+    const isAdmin = !!req.profile?.is_admin || (req.user.email || '').toLowerCase() === ADMIN_EMAIL;
+    const wantAuto = !!autoTrade && isAdmin; // auto-trade flag is ADMIN-ONLY
+    if (wantAuto) {
+      // one auto-trade connection per user — clear the flag elsewhere first
+      await supaAdmin.from('broker_connections')
+        .update({ auto_trade: false, updated_at: new Date().toISOString() })
+        .eq('user_id', req.user.id);
+    }
+    const { error } = await supaAdmin.from('broker_connections').upsert({
+      user_id: req.user.id,
+      broker,
+      enc_creds: encryptCreds(creds),
+      key_hint: creds.apiKey.slice(-4),
+      auto_trade: wantAuto,
+      connected_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,broker' });
+    if (error) throw error;
+    _brokerBalCache.delete(`${req.user.id}:${broker}`);
+    if (isAdmin) await rebindAutoTradeExecutor();
+    res.json({
+      ok: true, broker, autoTrade: wantAuto,
+      balance: { equity: +(+wallet.equity).toFixed(2), available: +(+wallet.available).toFixed(2) },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+app.post('/api/broker/disconnect', requireAuth, express.json(), async (req, res) => {
+  try {
+    const { broker } = req.body || {};
+    if (!['weex', 'bybit'].includes(broker)) return res.status(400).json({ error: 'bad_broker' });
+    await supaAdmin.from('broker_connections').delete()
+      .eq('user_id', req.user.id).eq('broker', broker);
+    _brokerBalCache.delete(`${req.user.id}:${broker}`);
+    const isAdmin = !!req.profile?.is_admin || (req.user.email || '').toLowerCase() === ADMIN_EMAIL;
+    if (isAdmin) await rebindAutoTradeExecutor(); // unbinds if that was the auto-trade connection
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
 });
 
 // One-shot reset: clear per-pair pauses + reset the global circuit-breaker
@@ -9255,6 +9420,7 @@ app.get('/api/whales/treasury', requireAuth, async (_req, res) => {
 app.listen(PORT, () => {
   console.log(`Henry The Hoover listening on :${PORT}`);
   rehydrateScanState(); // resume autoscan sessions that were active before the restart
+  rebindAutoTradeExecutor(); // bind the executor to the admin's stored broker connection (also reconciles)
   if (!process.env.ANTHROPIC_API_KEY) console.warn('[warn] ANTHROPIC_API_KEY not set');
   if (!process.env.DISCORD_WEBHOOK) console.warn('[warn] DISCORD_WEBHOOK not set');
   if (!process.env.DISCORD_AUTO_WEBHOOK) console.warn('[warn] DISCORD_AUTO_WEBHOOK not set');

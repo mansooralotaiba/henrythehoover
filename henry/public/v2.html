@@ -414,6 +414,26 @@
   .btn-modal{padding:9px 18px;border:none;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;font-family:var(--sans)}
   .btn-ghost{background:transparent;border:1px solid var(--border-strong);color:var(--mu)}
   .btn-ghost:hover{color:var(--fg);border-color:var(--fg)}
+  /* Connect Broker modal */
+  .bk-form{display:flex;flex-direction:column;gap:9px;margin-top:14px;border-top:1px solid var(--border);padding-top:14px}
+  .bk-row2{display:grid;grid-template-columns:110px 1fr;align-items:center;gap:10px}
+  .bk-row2 label{font-size:10px;color:var(--mu);letter-spacing:0.12em;text-transform:uppercase}
+  .bk-row2 input,.bk-row2 select{background:var(--bg3);border:1px solid var(--border-strong);color:var(--fg);border-radius:5px;padding:8px 10px;font-size:12px;font-family:var(--mono);width:100%}
+  .bk-row2 input:focus,.bk-row2 select:focus{outline:none;border-color:var(--cy)}
+  .bk-auto{display:flex;align-items:flex-start;gap:8px;font-size:11px;color:var(--am);cursor:pointer;line-height:1.5}
+  .bk-auto input{margin-top:2px}
+  .bk-note{font-size:10px;color:var(--mu);line-height:1.6}
+  .bk-err{font-size:11px;color:var(--re);min-height:14px}
+  .bk-connect{background:linear-gradient(135deg,var(--cy),#00a8ff);color:#000}
+  .bk-connect:disabled{opacity:0.5;cursor:wait}
+  .bk-conn-row{display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:7px}
+  .bk-conn-row .nm{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.08em}
+  .bk-conn-row .hint{font-family:var(--mono);font-size:10px;color:var(--mu)}
+  .bk-conn-row .bal{font-family:var(--mono);font-size:12px;color:var(--gr);margin-left:auto}
+  .bk-conn-row .at-badge{font-size:9px;font-weight:700;letter-spacing:0.1em;color:var(--am);border:1px solid rgba(255,170,48,0.5);border-radius:4px;padding:2px 6px}
+  .bk-conn-row .bk-disc{background:none;border:1px solid var(--border-strong);color:var(--mu);border-radius:4px;font-size:10px;padding:3px 8px;cursor:pointer}
+  .bk-conn-row .bk-disc:hover{color:var(--re);border-color:var(--re)}
+  .bk-empty{font-size:11px;color:var(--mu);padding:6px 0}
   .btn-tp{background:rgba(0,229,160,0.15);color:var(--gr);border:1px solid rgba(0,229,160,0.5)}
   .btn-tp:hover{background:rgba(0,229,160,0.3)}
   .btn-sl{background:rgba(255,85,119,0.15);color:var(--re);border:1px solid rgba(255,85,119,0.5)}
@@ -816,6 +836,7 @@
         <button class="tf-btn" data-tf="4h">4h</button>
       </div>
       <div class="price-display" id="t-price">—</div>
+      <button class="multi-btn off" id="t-connect-broker" onclick="openBrokerModal()" title="Connect your own WEEX / Bybit account — wallet display; admins: auto-trade binding">🔗 BROKER</button>
       <button class="multi-btn off" id="t-multi" onclick="toggleMulti()" title="Multi-broker: compare WEEX + Binance + Bybit + Hyperliquid in the AI prompt">⛓ SINGLE</button>
       <button class="analyse-btn" id="t-analyse" onclick="runAnalyse()">⚡ Analyse</button>
     </div>
@@ -930,7 +951,7 @@
         <div class="bar-chart" id="k-daily-bars"></div>
       </div>
       <div class="wallet-card admin-only-content">
-        <h3>WEEX Wallet</h3>
+        <h3 id="k-wallet-title">Broker Wallet</h3>
         <div class="wallet-stats">
           <div class="ws"><div class="l">Equity</div><div class="v" id="k-equity">—</div></div>
           <div class="ws"><div class="l">Available</div><div class="v" id="k-available">—</div></div>
@@ -1082,6 +1103,38 @@
     </div>
     <div class="modal-actions" id="ai-modal-actions">
       <button class="btn-modal btn-ghost" onclick="closeAiModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Connect Broker Modal -->
+<div class="modal-overlay" id="broker-modal" onclick="if(event.target===this)closeBrokerModal()">
+  <div class="modal" style="width:min(500px,92vw)">
+    <div class="modal-hdr">
+      <div class="title">🔗 Broker Connections</div>
+      <button class="modal-close" onclick="closeBrokerModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="bk-status"><div class="modal-loading">Loading connections…</div></div>
+      <div class="bk-form">
+        <div class="bk-row2">
+          <label for="bk-broker">Broker</label>
+          <select id="bk-broker" onchange="bkBrokerChanged()">
+            <option value="weex">WEEX</option>
+            <option value="bybit">Bybit</option>
+          </select>
+        </div>
+        <div class="bk-row2"><label for="bk-key">API Key</label><input id="bk-key" type="text" autocomplete="off" spellcheck="false" placeholder="API key"></div>
+        <div class="bk-row2"><label for="bk-secret">API Secret</label><input id="bk-secret" type="password" autocomplete="new-password" placeholder="API secret"></div>
+        <div class="bk-row2" id="bk-pass-row"><label for="bk-pass">Passphrase</label><input id="bk-pass" type="password" autocomplete="new-password" placeholder="WEEX API passphrase"></div>
+        <label class="bk-auto admin-only-content"><input type="checkbox" id="bk-autotrade"> Use this connection for AUTO-TRADE (admin — Henry places real orders on this account)</label>
+        <div class="bk-note">Keys are encrypted at rest and used server-side only — they are never sent back to the browser. Create API keys with <b>trade</b> permission and <b>withdrawals OFF</b>. Bybit accounts must be in one-way position mode.</div>
+        <div class="bk-err" id="bk-err"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal btn-ghost" onclick="closeBrokerModal()">Close</button>
+      <button class="btn-modal bk-connect" id="bk-connect-btn" onclick="bkConnect()">Connect</button>
     </div>
   </div>
 </div>
@@ -3940,6 +3993,83 @@ function renderAnalyseResult(d){
 function section(label, html){ return '<div class="modal-section"><div class="label">' + escapeHtml(label) + '</div><div class="text">' + html + '</div></div>'; }
 function openAiModal(){ el('ai-modal').classList.add('show'); }
 function closeAiModal(){ el('ai-modal').classList.remove('show'); }
+
+// ── Connect Broker modal ───────────────────
+function openBrokerModal(){ el('broker-modal').classList.add('show'); bkBrokerChanged(); bkLoadStatus(); }
+function closeBrokerModal(){ el('broker-modal').classList.remove('show'); }
+function bkBrokerChanged(){
+  var b = el('bk-broker').value;
+  el('bk-pass-row').style.display = (b === 'weex') ? '' : 'none'; // only WEEX uses a passphrase
+}
+function bkLoadStatus(){
+  fetch('/api/broker/status',{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
+    var box = el('bk-status');
+    var conns = d.connections || [];
+    if(!conns.length){
+      box.innerHTML = '<div class="bk-empty">No broker connected yet — add your WEEX or Bybit API keys below.</div>';
+    } else {
+      box.innerHTML = conns.map(function(c){
+        var bal = c.balance ? ('$' + c.balance.equity.toFixed(2)) : '<span style="color:var(--mu)">balance n/a</span>';
+        return '<div class="bk-conn-row">'
+          + '<span class="nm">' + escapeHtml(c.broker) + '</span>'
+          + '<span class="hint">…' + escapeHtml(c.keyHint || '????') + '</span>'
+          + (c.autoTrade ? '<span class="at-badge">AUTO-TRADE</span>' : '')
+          + '<span class="bal">' + bal + '</span>'
+          + '<button class="bk-disc" onclick="bkDisconnect(\'' + escapeHtml(c.broker) + '\')">disconnect</button>'
+          + '</div>';
+      }).join('');
+    }
+    // light up the toolbar button when something is connected
+    var btn = el('t-connect-broker');
+    if(btn) btn.classList.toggle('on', conns.length > 0);
+  }).catch(function(){ el('bk-status').innerHTML = '<div class="bk-empty">Could not load connections.</div>'; });
+}
+function bkConnect(){
+  var broker = el('bk-broker').value;
+  var body = {
+    broker: broker,
+    apiKey: el('bk-key').value.trim(),
+    apiSecret: el('bk-secret').value.trim(),
+    autoTrade: !!(el('bk-autotrade') && el('bk-autotrade').checked),
+  };
+  if(broker === 'weex') body.passphrase = el('bk-pass').value.trim();
+  el('bk-err').textContent = '';
+  if(!body.apiKey || !body.apiSecret){ el('bk-err').textContent = 'API key + secret required.'; return; }
+  if(broker === 'weex' && !body.passphrase){ el('bk-err').textContent = 'WEEX needs the API passphrase.'; return; }
+  var btn = el('bk-connect-btn');
+  btn.disabled = true; btn.textContent = 'Validating…';
+  fetch('/api/broker/connect',{
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r){ return r.json().then(function(j){ return { ok: r.ok, j: j }; }); }).then(function(res){
+    btn.disabled = false; btn.textContent = 'Connect';
+    if(!res.ok || !res.j.ok){
+      el('bk-err').textContent = res.j.detail || res.j.error || 'Connection failed.';
+      return;
+    }
+    // success — wipe the key fields from the DOM immediately
+    el('bk-key').value = ''; el('bk-secret').value = ''; el('bk-pass').value = '';
+    if(el('bk-autotrade')) el('bk-autotrade').checked = false;
+    _toast('🔗 ' + res.j.broker.toUpperCase() + ' CONNECTED',
+      'Balance $' + res.j.balance.equity.toFixed(2) + (res.j.autoTrade ? ' · bound for AUTO-TRADE' : ''), 'entry');
+    bkLoadStatus();
+  }).catch(function(e){
+    btn.disabled = false; btn.textContent = 'Connect';
+    el('bk-err').textContent = String(e && e.message || e);
+  });
+}
+function bkDisconnect(broker){
+  if(!confirm('Disconnect ' + broker.toUpperCase() + '? ' + (broker ? 'If it was your auto-trade connection, auto-trading stops.' : ''))) return;
+  fetch('/api/broker/disconnect',{
+    method:'POST', credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ broker: broker })
+  }).then(function(r){ return r.json(); }).then(function(){
+    _toast('🔗 DISCONNECTED', broker.toUpperCase() + ' connection removed', 'be');
+    bkLoadStatus();
+  }).catch(function(){});
+}
 document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeAiModal(); });
 
 // Lazy-load Terminal data when tab is opened
@@ -4088,7 +4218,8 @@ function loadKingdom(){
         bars.appendChild(b);
       });
 
-      // WEEX wallet card
+      // Broker wallet card — title reflects the bound auto-trade venue
+      if(d.venue && el('k-wallet-title')) el('k-wallet-title').textContent = d.venue.toUpperCase() + ' Wallet';
       el('k-equity').textContent = wallet ? ('$' + (parseFloat(wallet.equity)||0).toFixed(2)) : '—';
       el('k-available').textContent = wallet ? ('$' + (parseFloat(wallet.available)||0).toFixed(2)) : '—';
     }).catch(function(e){ console.warn('[bot/state]', e); });
