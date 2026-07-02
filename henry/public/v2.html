@@ -788,8 +788,10 @@
       <select id="t-broker">
         <option value="weex">WEEX</option>
         <option value="binance">Binance</option>
+        <option value="bybit">Bybit</option>
         <option value="hyperliquid">Hyperliquid</option>
         <option value="massive">Massive · Gold</option>
+        <option value="indices">Indices · US</option>
       </select>
       <label for="t-pair" style="margin-left:8px">Pair</label>
       <select id="t-pair">
@@ -803,6 +805,7 @@
         <option>ARBUSDT</option><option>OPUSDT</option><option>INJUSDT</option>
         <option>UNIUSDT</option><option>HYPEUSDT</option>
         <option>GOLD</option>
+        <option>US500</option><option>US30</option><option>NAS100</option>
       </select>
       <span class="ctrl-label" style="margin-left:8px">TF</span>
       <div class="tf-row" id="t-tf-row">
@@ -1516,7 +1519,7 @@ document.querySelectorAll('.tab').forEach(function(t){
 });
 
 // ── Coin icons ────────────────────────────
-var COIN_COLORS = { BTC:'#f7931a', ETH:'#627eea', SOL:'#9945ff', BNB:'#f3ba2f', LINK:'#2a5ada', AAVE:'#b6509e', GOLD:'#d4af37', XAUT:'#d4af37', DOGE:'#c2a633', ADA:'#0033ad', SUI:'#6fbcf0', XRP:'#23292f' };
+var COIN_COLORS = { BTC:'#f7931a', ETH:'#627eea', SOL:'#9945ff', BNB:'#f3ba2f', LINK:'#2a5ada', AAVE:'#b6509e', GOLD:'#d4af37', XAUT:'#d4af37', DOGE:'#c2a633', ADA:'#0033ad', SUI:'#6fbcf0', XRP:'#23292f', US500:'#1e88e5', US30:'#43a047', NAS100:'#8e24aa' };
 function coinColor(c){ var s = String(c||'').replace('USDT','').replace('1000',''); return COIN_COLORS[s] || '#444'; }
 function coinSymbol(c){ var s = String(c||'').replace('USDT','').replace('1000',''); var m = { BTC:'₿', ETH:'Ξ', GOLD:'AU', XAUT:'AU' }; return m[s] || s.charAt(0); }
 function shortCoinQ(c){ return String(c||'').replace('USDT','').replace('1000',''); }
@@ -2681,7 +2684,8 @@ var AU_PAIRS = [
   'DOTUSDT','LTCUSDT','BCHUSDT','TRXUSDT','TONUSDT','ATOMUSDT',
   'NEARUSDT','APTUSDT','ARBUSDT','OPUSDT','INJUSDT','UNIUSDT',
   'HYPEUSDT',
-  'XAUTUSDT','XAGUSDT','XTIUSDT'
+  'XAUTUSDT','XAGUSDT','XTIUSDT',
+  'US500','US30','NAS100'
 ];
 var _au_active = false;
 var _au_watchlist = [];

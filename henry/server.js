@@ -90,6 +90,25 @@ function isGoldWeekendBlocked(now) {
 // data blip never halts Henry. Tune/disable via HENRY_BLOCK_CHOP / HENRY_CHOP_ADX_MIN.
 const HENRY_BLOCK_CHOP = (process.env.HENRY_BLOCK_CHOP ?? 'true').toLowerCase() === 'true';
 const HENRY_CHOP_ADX_MIN = parseFloat(process.env.HENRY_CHOP_ADX_MIN || '20');
+// US index instruments (added 2026-07-02) — SIGNAL-ONLY, like gold's data-feed
+// pattern. WEEX has no usable index contract (no NAS100; US30USDT listed but
+// dead-feed; SPXUSDT is the SPX6900 memecoin), so candles come from Yahoo's
+// chart API using CME index FUTURES (ES/YM/NQ), which trade nearly 24/5 —
+// unlike the cash indices, which only print during NY hours. The executor
+// NEVER trades these (see the _autoExec staging gate).
+const INDEX_COINS = { US500: 'ES=F', US30: 'YM=F', NAS100: 'NQ=F' };
+function isIndexCoin(coin) { return Object.prototype.hasOwnProperty.call(INDEX_COINS, String(coin || '').toUpperCase()); }
+// CME equity futures hours: Sun 22:00 UTC → Fri 21:00 UTC with a daily
+// 21:00–22:00 UTC maintenance break (US summer time; drifts +1h in winter —
+// acceptable: the feed just goes flat and the chop gate skips anyway).
+function isIndexMarketClosed(now) {
+  const day = now.getUTCDay(), mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  if (day === 6) return true;                          // all of Saturday
+  if (day === 0 && mins < 22 * 60) return true;        // Sunday before the 22:00 reopen
+  if (day === 5 && mins >= 21 * 60) return true;       // Friday after the 21:00 close
+  if (mins >= 21 * 60 && mins < 22 * 60) return true;  // daily maintenance break
+  return false;
+}
 // Pre-NY-open SL→BE protection window (UTC minutes). Auto-move SL to BE for
 // any in-profit trade when we enter the 5min window before NY open. Trades
 // not in profit yet stay at original SL.
@@ -3715,6 +3734,7 @@ function getClusterFor(coin) {
   if (/^(DOGE|PEPE|1000PEPE)/.test(u))                           return 'meme';
   if (/^(AVAX|NEAR|SUI|ARB|OP|INJ|ADA|DOT)/.test(u))             return 'layer1';
   if (/^(GOLD|XAU|XAG|XTI|XBR)/.test(u))                         return 'commodities';
+  if (/^(US500|US30|NAS100)/.test(u))                            return 'usindex';   // equity index futures — decorrelated from crypto clusters
   return 'other';
 }
 
@@ -4089,6 +4109,8 @@ function circuitBreakerStatus(sub, coin) {
 // ('massive'), so it's hard-routed regardless of user's broker choice.
 function brokerForPair(coin, defaultBroker) {
   if (coin === 'GOLD' || coin === 'XAUUSD') return 'massive';
+  // US index instruments — dedicated Yahoo-futures feed, signal-only.
+  if (isIndexCoin(coin)) return 'indices';
   // XAUTUSDT is listed on both WEEX and Binance Futures, but BF trades at
   // a persistent $1-2 discount vs spot/WEEX due to thin volume + basis.
   // User wants XAUT prices to match WEEX UI, so pin it regardless of
@@ -5061,11 +5083,75 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
 
 // Lightweight server-side trigger detection — close-vs-prev-high/low scan.
 // Browser does the heavy multi-source analysis; server only flags candidates worth investigating.
+// ── US index candles (Yahoo chart API, CME futures) ────────────────────────
+// Same idea as the multi-exchange gold feed: an external data source feeding
+// pairs Henry can't get from crypto exchanges. Yahoo serves ES=F/YM=F/NQ=F
+// intraday bars free + keyless (User-Agent required). Yahoo has NO 4h interval,
+// so tf='4h' fetches 1h and aggregates on UTC 4h boundaries (the regime/chop
+// gate needs 4h). 20s cache keeps the 30s-tick autoscan polite across 3 pairs.
+const _indexCandleCache = new Map(); // `${coin}:${tf}:${limit}` → { ts, data }
+async function _yahooChart(ysym, interval, range) {
+  const u = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ysym)}?interval=${interval}&range=${range}`;
+  const r = await fetch(u, { headers: { 'User-Agent': 'Mozilla/5.0 (HenryTheHoover)' } });
+  if (!r.ok) throw new Error(`yahoo ${r.status}`);
+  const j = await r.json();
+  const res = j?.chart?.result?.[0];
+  const ts = res?.timestamp || [];
+  const q = res?.indicators?.quote?.[0] || {};
+  const out = [];
+  for (let i = 0; i < ts.length; i++) {
+    const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
+    if (o == null || h == null || l == null || c == null) continue; // yahoo emits null gap rows
+    out.push({ t: ts[i] * 1000, o: +o, h: +h, l: +l, c: +c, v: +(q.volume?.[i] || 0) });
+  }
+  return out;
+}
+async function fetchIndexCandles(coin, tf, limit = 200) {
+  const ysym = INDEX_COINS[String(coin || '').toUpperCase()];
+  if (!ysym) return [];
+  const ck = `${coin}:${tf}:${limit}`;
+  const hit = _indexCandleCache.get(ck);
+  if (hit && Date.now() - hit.ts < 20_000) return hit.data;
+  let data = [];
+  try {
+    if (tf === '4h') {
+      // aggregate 1h → 4h on UTC boundaries
+      const h1 = await _yahooChart(ysym, '60m', '1mo');
+      const buckets = new Map();
+      for (const c of h1) {
+        const b = Math.floor(c.t / 14_400_000) * 14_400_000;
+        const cur = buckets.get(b);
+        if (!cur) buckets.set(b, { t: b, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v });
+        else { cur.h = Math.max(cur.h, c.h); cur.l = Math.min(cur.l, c.l); cur.c = c.c; cur.v += c.v; }
+      }
+      data = [...buckets.values()].sort((a, b) => a.t - b.t);
+    } else {
+      const ivMap = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '60m', '1d': '1d' };
+      const iv = ivMap[tf] || '15m';
+      const range = iv === '1d' ? '6mo' : (iv === '60m' ? '1mo' : '5d');
+      data = await _yahooChart(ysym, iv, range);
+    }
+  } catch (e) {
+    console.warn('[fetchIndexCandles]', coin, tf, e.message);
+    // fall through — return stale cache if we have one rather than a blank chart
+    if (hit) return hit.data;
+    return [];
+  }
+  if (data.length > limit) data = data.slice(-limit);
+  _indexCandleCache.set(ck, { ts: Date.now(), data });
+  return data;
+}
+
 async function fetchCandlesServer(coin, tf, limit, broker) {
   try {
     if (broker === 'massive' || coin === 'GOLD' || coin === 'XAUUSD') {
       // Multi-exchange tokenised gold (Binance PAXG → Kraken PAXG → OKX XAUT).
       return await fetchGoldCandles(tf, limit);
+    }
+    if (broker === 'indices' || isIndexCoin(coin)) {
+      // US index futures via Yahoo — dedicated feed, never falls through to
+      // crypto exchanges (they don't list these).
+      return await fetchIndexCandles(coin, tf, limit);
     }
     if (broker === 'binance') {
       // Binance intermittently 451-geo-blocks Railway egress IPs. If the direct
@@ -5087,6 +5173,32 @@ async function fetchCandlesServer(coin, tf, limit, broker) {
         console.warn('[fetchCandlesServer] binance threw → weex fallback', coin, e.message);
       }
       // Fall through to WEEX path below (same code as broker === 'weex')
+    }
+    if (broker === 'bybit') {
+      // Bybit v5 kline (linear USDT perps). NOTE: Bybit geo-blocks US IPs and
+      // Railway egress is typically US — so like Binance, any failure falls
+      // through to WEEX with the same symbol (USDT-perp on both, ~1bps apart).
+      // Rows come NEWEST-FIRST and must be re-sorted ascending.
+      try {
+        const ivMap = { '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '12h': '720', '1d': 'D', '1w': 'W' };
+        const iv = ivMap[tf] || '15';
+        const r = await fetch(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${coin}&interval=${iv}&limit=${Math.min(limit, 1000)}`);
+        if (r.ok) {
+          const j = await r.json();
+          const list = j?.result?.list;
+          if (j?.retCode === 0 && Array.isArray(list) && list.length) {
+            return list
+              .map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }))
+              .sort((a, b) => a.t - b.t);
+          }
+          console.warn('[fetchCandlesServer] bybit ret', j?.retCode, j?.retMsg, '→ weex fallback', coin, tf);
+        } else {
+          console.warn('[fetchCandlesServer] bybit', r.status, '→ weex fallback', coin, tf);
+        }
+      } catch (e) {
+        console.warn('[fetchCandlesServer] bybit threw → weex fallback', coin, e.message);
+      }
+      // Fall through to WEEX path below
     }
     // WEEX path — they changed the API: granularity takes string suffixes
     // ("15m" instead of "900") and timestamps come back in MILLISECONDS.
@@ -7160,7 +7272,10 @@ async function runServerAIForPair(userId, sub, coin, ps, trigger, baseCandles, b
   // auto-executable so the WEEX hooks may fire. Manual ANALYSE never sets this,
   // so a hand-taken signal can never open/manage/close a WEEX position — even
   // on the admin account. Auto-trade is exclusively an autoscan feature.
-  ps._autoExec = true;
+  // Index instruments (US500/US30/NAS100) are SIGNAL-ONLY — WEEX has no
+  // contract for them, so they stage/track/journal like any signal but the
+  // executor hooks never fire (mirrors how manual signals behave).
+  ps._autoExec = !isIndexCoin(coin);
 
   return signal;
 }
@@ -7434,6 +7549,17 @@ async function processPair(userId, sub, coin) {
   if (HENRY_BLOCK_GOLD_WEEKEND && isGoldCoin(coin) && isGoldWeekendBlocked(new Date())) {
     ps.lastStatus = 'gold-weekend-block';
     ps.lastVetoReason = 'Gold weekend block (Fri 21:00 UTC -> Mon, market closed)';
+    ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
+    return;
+  }
+
+  // Index futures market-hours gate — same idea as the gold weekend block.
+  // CME equity futures don't trade Fri 21:00 UTC → Sun 22:00 UTC or during the
+  // daily 21:00–22:00 UTC break; the Yahoo feed just repeats stale bars then,
+  // so scanning would only produce phantom setups on frozen data.
+  if (isIndexCoin(coin) && isIndexMarketClosed(new Date())) {
+    ps.lastStatus = 'index-market-closed';
+    ps.lastVetoReason = 'Index futures closed (Fri 21:00 UTC → Sun 22:00 UTC + daily 21:00–22:00 break)';
     ps.cooldownUntil = Date.now() + Math.min(effectiveCooldownMs(sub), 5 * 60 * 1000);
     return;
   }
@@ -8446,6 +8572,53 @@ function subHLLive(symbol) {
   return stream;
 }
 
+function subBybitLive(symbol) {
+  // Poll Bybit's linear ticker (same pattern as subWeexLive). If Bybit is
+  // geo-blocked from Railway the fetches just fail silently and the client's
+  // 10s candle poll keeps the chart moving.
+  const key = `bybit:${symbol}`;
+  if (exchangeStreams.has(key)) return exchangeStreams.get(key);
+  const stream = { clients: new Set(), currentBar: null, tfSeconds: 900 };
+  exchangeStreams.set(key, stream);
+  stream.interval = setInterval(async () => {
+    try {
+      const r = await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`);
+      const d = await r.json();
+      const price = parseFloat(d?.result?.list?.[0]?.lastPrice);
+      if (!price) return;
+      const time = Math.floor(Date.now() / 1000);
+      updateCurrentBar(stream, price, time, 0);
+      broadcast(stream, { price, time, bar: stream.currentBar });
+    } catch (e) {}
+  }, 3000);
+  return stream;
+}
+
+function subIndexLive(symbol) {
+  // US index futures — poll the Yahoo 1m chart for the latest price. 10s
+  // cadence: index ticks are slower than crypto and Yahoo is less tolerant.
+  const key = `indices:${symbol}`;
+  if (exchangeStreams.has(key)) return exchangeStreams.get(key);
+  const stream = { clients: new Set(), currentBar: null, tfSeconds: 900 };
+  exchangeStreams.set(key, stream);
+  const ysym = INDEX_COINS[String(symbol || '').toUpperCase()];
+  if (!ysym) return stream; // unknown index — stream exists but never pushes
+  stream.interval = setInterval(async () => {
+    try {
+      const u = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ysym)}?interval=1m&range=1h`;
+      const r = await fetch(u, { headers: { 'User-Agent': 'Mozilla/5.0 (HenryTheHoover)' } });
+      if (!r.ok) return;
+      const j = await r.json();
+      const price = parseFloat(j?.chart?.result?.[0]?.meta?.regularMarketPrice);
+      if (!price) return;
+      const time = Math.floor(Date.now() / 1000);
+      updateCurrentBar(stream, price, time, 0);
+      broadcast(stream, { price, time, bar: stream.currentBar });
+    } catch (e) {}
+  }, 10_000);
+  return stream;
+}
+
 function subMassiveLive(_symbol) {
   // No realtime trades on the polygon REST tier we use — fall back to /api/gold/price polling on the client.
   // Still create a stream so the SSE endpoint behaves consistently; just don't push updates.
@@ -8479,6 +8652,8 @@ app.get('/api/live/:broker/:symbol', requireAuth, (req, res) => {
   else if (broker === 'weex') stream = subWeexLive(symbol);
   else if (broker === 'hyperliquid') stream = subHLLive(symbol);
   else if (broker === 'massive') stream = subMassiveLive(symbol);
+  else if (broker === 'bybit') stream = subBybitLive(symbol);
+  else if (broker === 'indices') stream = subIndexLive(symbol);
   else { res.end(); return; }
 
   stream.tfSeconds = tfSecondsOf(tf);
