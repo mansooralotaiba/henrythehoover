@@ -2413,12 +2413,36 @@ function fetchMassiveCandles(){
   }).catch(function(){ return []; });
 }
 
+// Server-routed candles for brokers with no browser-direct path (indices =
+// Yahoo futures feed, bybit = v5 kline via Railway — verified NOT geo-blocked).
+// /api/v2/candles already returns Lightweight-Charts shape {time(sec),o,h,l,c}.
+function fetchServerCandles(brokerName){
+  var url = '/api/v2/candles?coin=' + encodeURIComponent(t_pair)
+          + '&tf=' + encodeURIComponent(t_tf)
+          + '&broker=' + encodeURIComponent(brokerName) + '&limit=200';
+  return fetch(url,{credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
+    return Array.isArray(d.candles) ? d.candles : [];
+  }).catch(function(){ return []; });
+}
+
+// Client mirror of the server's brokerForPair(): certain PAIRS force their
+// broker regardless of the selector — GOLD → massive, US indices → the Yahoo
+// futures feed. Without this, picking US500 while the selector sits on WEEX
+// resolves to cmt_us500 (nonexistent) and the chart comes up blank.
+var T_INDEX_PAIRS = { US500:1, US30:1, NAS100:1 };
+function tEffBroker(){
+  if(t_pair === 'GOLD') return 'massive';
+  if(T_INDEX_PAIRS[t_pair]) return 'indices';
+  return t_broker;
+}
+
 function fetchTermCandles(){
-  // GOLD pair forces the massive broker regardless of selector, mirroring the
-  // server-side brokerForPair() routing. Same for the explicit "massive" choice.
-  if(t_broker==='massive' || t_pair==='GOLD') return fetchMassiveCandles();
-  if(t_broker==='binance')     return fetchBinanceCandles();
-  if(t_broker==='hyperliquid') return fetchHlCandles();
+  var eff = tEffBroker();
+  if(eff==='massive')     return fetchMassiveCandles();
+  if(eff==='indices')     return fetchServerCandles('indices');
+  if(eff==='bybit')       return fetchServerCandles('bybit');
+  if(eff==='binance')     return fetchBinanceCandles();
+  if(eff==='hyperliquid') return fetchHlCandles();
   return fetchWeexCandles();
 }
 
@@ -2518,7 +2542,11 @@ function _startBinanceBrowserPoll(key){
 }
 
 function startChartLiveStream(){
-  var key = t_broker + ':' + t_pair + ':' + t_tf;
+  // Effective broker (pair-forced routing) — an index pair must stream from
+  // the indices SSE even if the selector sits on WEEX/Binance, else the live
+  // source can't resolve the symbol and the chart freezes after initial load.
+  var effB = tEffBroker();
+  var key = effB + ':' + t_pair + ':' + t_tf;
   if(_chartLiveKey === key && (_chartLiveSrc || _chartLiveWs)) return;
   stopChartLiveStream();
   if(!t_chart || !t_series) return;
@@ -2527,7 +2555,7 @@ function startChartLiveStream(){
   // Binance: try direct browser WebSocket first. If it can't open or no
   // message arrives within 5s, fall back to direct browser REST polling
   // against fapi.binance.com (same path the initial chart fetch uses).
-  if(t_broker === 'binance'){
+  if(effB === 'binance'){
     if(!('WebSocket' in window)){ _startBinanceBrowserPoll(key); return; }
     try{
       var sym = tBinanceSymMap(t_pair).toLowerCase();
@@ -2566,10 +2594,10 @@ function startChartLiveStream(){
     return;
   }
 
-  // WEEX / Hyperliquid / Massive — server SSE.
+  // WEEX / Hyperliquid / Massive / Bybit / Indices — server SSE.
   if(!('EventSource' in window)) return;
-  var ssym = (t_broker === 'massive') ? 'GOLD' : t_pair;
-  var url = '/api/live/' + encodeURIComponent(t_broker) + '/' + encodeURIComponent(ssym) + '?tf=' + encodeURIComponent(t_tf);
+  var ssym = (effB === 'massive') ? 'GOLD' : t_pair;
+  var url = '/api/live/' + encodeURIComponent(effB) + '/' + encodeURIComponent(ssym) + '?tf=' + encodeURIComponent(t_tf);
   try{
     _chartLiveSrc = new EventSource(url, { withCredentials: true });
     _chartLiveSrc.onmessage = function(ev){
