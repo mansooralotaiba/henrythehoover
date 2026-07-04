@@ -473,6 +473,85 @@ export class Executor {
   }
 
   // --------------------------------------------------------------------
+  // AI TRADE MANAGER verbs (2026-07-04). Same locking/safety discipline as
+  // the BE mover. These place EXACT prices (no fee buffer) — the manager's
+  // rails (SL only toward profit, TP on the profit side of price) are
+  // enforced by the caller in server.js before these ever fire.
+  // --------------------------------------------------------------------
+
+  // event: { signalId, newSl } — exact-price SL move (trailing).
+  async handleMoveSl(event) {
+    return this._runLocked(event.signalId, async () => {
+      const trade = this.trades.get(event.signalId);
+      if (!trade) { this.log.warn('[executor] moveSl for unknown signalId', event.signalId); return; }
+      if (trade.external) { this.log.warn(`[executor] moveSl: ${trade.symbol} is external/manual — untouched`); return; }
+      if (trade.state !== TradeState.PENDING && trade.state !== TradeState.ACTIVE) return;
+      let px = event.newSl;
+      try {
+        const info = await this.client.getSymbolInfo(trade.symbol);
+        px = roundPrice(px, parseInt(info.pricePrecision ?? 0, 10) || 0);
+      } catch (err) { /* place unrounded — venue rejects if invalid */ }
+      if (trade.slOrderId) {
+        try { await this.client.cancelPlan({ symbol: trade.symbol, planOrderId: trade.slOrderId }); }
+        catch (err) { this.log.warn(`[executor] moveSl cancel old ${trade.slOrderId}: ${err.message || err}`); }
+      }
+      const positionSide = trade.side === 'long' ? 'LONG' : 'SHORT';
+      try {
+        const resp = await this.client.placeTpSl({
+          symbol: trade.symbol, positionSide, planType: 'STOP_LOSS',
+          triggerPrice: px, quantity: trade.quantity,
+          clientAlgoId: `h-aisl-${String(event.signalId).slice(0, 24)}`.slice(0, 36),
+        });
+        trade.slPrice = px;
+        trade.slOrderId = extractOrderId(resp);
+        trade.updatedAt = Date.now();
+        await this._notify(`🤖 AI manager: SL moved → ${px} on ${trade.symbol}`);
+      } catch (err) {
+        await this._notify(`⚠️ AI manager SL move FAILED for ${trade.symbol}: ${err.message || err} (old SL may be cancelled — check!)`);
+      }
+    });
+  }
+
+  // event: { signalId, newTp } — exact-price TP move (extend or bank earlier).
+  async handleMoveTp(event) {
+    return this._runLocked(event.signalId, async () => {
+      const trade = this.trades.get(event.signalId);
+      if (!trade) { this.log.warn('[executor] moveTp for unknown signalId', event.signalId); return; }
+      if (trade.external) { this.log.warn(`[executor] moveTp: ${trade.symbol} is external/manual — untouched`); return; }
+      if (trade.state !== TradeState.PENDING && trade.state !== TradeState.ACTIVE) return;
+      let px = event.newTp;
+      try {
+        const info = await this.client.getSymbolInfo(trade.symbol);
+        px = roundPrice(px, parseInt(info.pricePrecision ?? 0, 10) || 0);
+      } catch (err) { /* unrounded */ }
+      if (trade.tpOrderId) {
+        try { await this.client.cancelPlan({ symbol: trade.symbol, planOrderId: trade.tpOrderId }); }
+        catch (err) { this.log.warn(`[executor] moveTp cancel old ${trade.tpOrderId}: ${err.message || err}`); }
+      }
+      const positionSide = trade.side === 'long' ? 'LONG' : 'SHORT';
+      try {
+        const resp = await this.client.placeTpSl({
+          symbol: trade.symbol, positionSide, planType: 'TAKE_PROFIT',
+          triggerPrice: px, quantity: trade.quantity, executePrice: px,
+          clientAlgoId: `h-aitp-${String(event.signalId).slice(0, 24)}`.slice(0, 36),
+        });
+        trade.tpPrice = px;
+        trade.tpOrderId = extractOrderId(resp);
+        trade.updatedAt = Date.now();
+        await this._notify(`🤖 AI manager: TP moved → ${px} on ${trade.symbol}`);
+      } catch (err) {
+        await this._notify(`⚠️ AI manager TP move FAILED for ${trade.symbol}: ${err.message || err} (old TP may be cancelled — check!)`);
+      }
+    });
+  }
+
+  // event: { signalId, reason } — close the position at market right now.
+  async handleCloseNow(event) {
+    return this._runLocked(event.signalId, () =>
+      this._terminate(event.signalId, TradeState.CLOSED, `AI manager close: ${event.reason || 'no reason given'}`));
+  }
+
+  // --------------------------------------------------------------------
   // TP / SL / INVALIDATED / EXPIRED — outcome handlers
   // --------------------------------------------------------------------
   async handleTpHit(event) {

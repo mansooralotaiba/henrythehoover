@@ -3259,7 +3259,7 @@ async function postJournalToDiscord(signal, outcome, outcomeRr, stats) {
   const isExpired = outcome === 'EXPIRED';
   const outcomeEmoji = isWin ? '🟢' : isBE ? '🟡' : isExpired ? '⚪' : '🔴';
   const outcomeLabel = isWin ? 'TAKE PROFIT' : isBE ? 'BREAKEVEN' : isExpired ? 'EXPIRED (no entry)' : 'STOP LOSS';
-  const rrDisplay = isWin ? `+${outcomeRr ?? signal.rr ?? '—'}R` : isBE ? '0R' : isExpired ? '0R (unfilled)' : '-1R';
+  const rrDisplay = isWin ? `+${outcomeRr ?? signal.rr ?? '—'}R` : isBE ? '0R' : isExpired ? '0R (unfilled)' : `${outcomeRr ?? -1}R`;
   const fields = [
     { name: 'Pair',       value: `\`${signal.pair || '—'}\``,                  inline: true },
     { name: 'Direction',  value: `\`${signal.direction || '—'}\``,             inline: true },
@@ -5240,8 +5240,16 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
       });
       if (!ps._outcomeLogged) {
         ps._outcomeLogged = true;
+        // R for the record. Un-managed trades keep the original signal rr.
+        // AI-managed trades (TP may have been moved) compute R off the
+        // ORIGINAL risk unit so the number is honest: (managedTP − entry)/origRisk.
+        let tpRr = parseFloat(pendSignal.rr) || 2;
+        if (ps._aiManaged) {
+          const _oRisk = Math.abs(e - (ps._origSl != null ? ps._origSl : slP));
+          if (_oRisk > 0) tpRr = +(((isLong ? tpP - e : e - tpP)) / _oRisk).toFixed(2);
+        }
         // Pass in-memory signal as fallback so journal still posts if DB row is missing
-        await logSignalOutcomeAndJournal(userId, ps.signalId, 'TP', parseFloat(pendSignal.rr) || 2, pendSignal, broker, tf)
+        await logSignalOutcomeAndJournal(userId, ps.signalId, 'TP', tpRr, pendSignal, broker, tf)
           .catch(e => console.error('[server TP outcome]', e.message));
       }
       // WEEX auto-trade hook 4/6: record TP closure (WEEX TP plan already closed the position).
@@ -5283,7 +5291,20 @@ async function runServerTradeMonitorForPair(userId, sub, coin, ps, brokerOverrid
       console.log('[monitor]', coin, reason, 'hit at', slPrice, '(price=' + price + ', wickExt=' + (isLong ? recentLow : recentHigh) + ')', 'signalId=' + ps.signalId);
       if (!ps._outcomeLogged) {
         ps._outcomeLogged = true;
-        await logSignalOutcomeAndJournal(userId, ps.signalId, wasBE ? 'BE' : 'SL', wasBE ? 0 : -1, pendSignal, broker, tf)
+        // Un-managed trades: unchanged semantics (BE→0, SL→−1). AI-managed
+        // trades: the stop may have been TRAILED into profit, so compute the
+        // real R off the ORIGINAL risk unit and label by sign — a trailed
+        // stop that exits at +0.6R is a win, not a −1R loss.
+        let slOutcome = wasBE ? 'BE' : 'SL';
+        let slRr = wasBE ? 0 : -1;
+        if (ps._aiManaged) {
+          const _oRisk = Math.abs(e - (ps._origSl != null ? ps._origSl : slP));
+          if (_oRisk > 0) {
+            slRr = beStopHit ? 0 : +(((isLong ? slP - e : e - slP)) / _oRisk).toFixed(2);
+            slOutcome = slRr > 0.1 ? 'TP' : (slRr < -0.1 ? 'SL' : 'BE');
+          }
+        }
+        await logSignalOutcomeAndJournal(userId, ps.signalId, slOutcome, slRr, pendSignal, broker, tf)
           .catch(e => console.error('[server SL outcome]', e.message));
       }
       await notifyUser(userId, isAdmin, {
@@ -8053,6 +8074,170 @@ const _scanLoopHandle = setInterval(() => {
     runServerScan(userId, sub).catch(e => console.error('[scan loop]', userId, e.message));
   }
 }, SCAN_INTERVAL_MS);
+
+// ════════════════════════════════════════════════════════════════════════════
+// AI TRADE MANAGER (2026-07-04) — once a trade is IN, Claude takes over the
+// exit. Every cycle it sees the live state of each open autoscan trade and
+// freely chooses HOLD / MOVE_SL / MOVE_TP / CLOSE_NOW. Two hard rails are
+// enforced in code (not negotiable by the model): the SL may only move TOWARD
+// profit (tighten/trail/lock — never widen risk), and MOVE_* prices must sit
+// on the correct side of the market. The mechanical BE-at-70% rule still runs
+// as a backstop underneath; the manager can front-run it, trail beyond it, or
+// bank early. Managed exits log HONEST R against the ORIGINAL risk unit (see
+// the monitor's TP/SL blocks). Actions post to Discord + push. Signals-only
+// pairs (indices) get record management; real positions also move on the
+// venue when auto-trade is armed. Toggle: HENRY_AI_MANAGER.
+// ════════════════════════════════════════════════════════════════════════════
+const HENRY_AI_MANAGER = (process.env.HENRY_AI_MANAGER ?? 'true').toLowerCase() === 'true';
+const HENRY_AI_MANAGER_INTERVAL_MS = parseInt(process.env.HENRY_AI_MANAGER_INTERVAL_MS || '300000', 10); // 5 min
+
+async function aiManagerDiscord(title, description, color) {
+  const url = process.env.HENRY_AI_MANAGER_WEBHOOK || process.env.DISCORD_WEEX_WEBHOOK || process.env.DISCORD_AUTO_WEBHOOK;
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ embeds: [{ title, description, color, footer: { text: 'AI Trade Manager' }, timestamp: new Date().toISOString() }] }),
+    });
+  } catch (e) { console.warn('[ai-manager discord]', e.message || e); }
+}
+
+async function aiManageTrade(userId, sub, coin, ps) {
+  const s = ps.pendSignal;
+  const isLong = s.direction === 'LONG';
+  const e = parseFloat(s.entry), slP = parseFloat(s.sl), tpP = parseFloat(s.tp);
+  if (![e, slP, tpP].every(Number.isFinite)) return;
+  const broker = ps._broker || sub.broker || 'weex';
+  const tf = tfForCoin(coin, sub.tf || '15m');
+  const candles = await fetchCandlesServer(coin, tf, 40, brokerForPair(coin, broker)).catch(() => []);
+  if (!candles || candles.length < 10) return;
+  const price = candles[candles.length - 1].c;
+  const origSl = ps._origSl != null ? ps._origSl : slP;
+  const origRisk = Math.abs(e - origSl);
+  if (!(origRisk > 0)) return;
+  const uR = (isLong ? price - e : e - price) / origRisk;
+  const regime = await detectMarketRegime(coin, brokerForPair(coin, broker)).catch(() => null);
+  const atr = computeATR(candles, 14), adx = computeADX(candles, 14);
+  const ageMin = ps.signalTimestamp ? Math.round((Date.now() - ps.signalTimestamp) / 60000) : null;
+  const lastCandles = candles.slice(-10).map(c => `${c.o}/${c.h}/${c.l}/${c.c}`).join('  ');
+
+  const sys = 'You are the trade MANAGER for a live position. You have full discretion over the exit — this is your trade to manage. '
+    + 'Reply with ONLY a JSON object, no prose before or after: {"action":"HOLD"|"MOVE_SL"|"MOVE_TP"|"CLOSE_NOW","price":<number — required for MOVE_SL/MOVE_TP>,"reason":"<max 140 chars>"}. '
+    + 'Hard rules (violations are rejected): MOVE_SL only in the direction of profit — tighten, trail, or lock in gains; NEVER widen risk. '
+    + 'MOVE_TP may extend a running winner or pull the target closer to bank sooner. CLOSE_NOW exits at market immediately. '
+    + 'Manage like a professional: protect capital first, let genuine winners run, kill trades whose thesis has died instead of waiting for the stop. HOLD is often the right call — do not fiddle for the sake of it.';
+  const ctx = `POSITION: ${s.direction} ${coin} | entry ${e} | current SL ${slP}${ps._origSl != null ? ` (original ${origSl})` : ''} | current TP ${tpP}\n`
+    + `NOW: price ${price} → unrealized ${uR >= 0 ? '+' : ''}${uR.toFixed(2)}R (1R = ${origRisk})${ageMin != null ? ` | in trade ${ageMin} min` : ''}${ps._beAlerted ? ' | BE level already locked' : ''}\n`
+    + `TF ${tf} | ADX ${adx != null ? adx.toFixed(1) : '?'} | ATR ${atr != null ? atr.toFixed(6) : '?'} | 4H regime: ${regime ? `${regime.regime} (${regime.confidence}${regime.adx != null ? `, ADX ${regime.adx}` : ''})` : 'n/a'}\n`
+    + `LAST 10 ${tf} CANDLES o/h/l/c: ${lastCandles}\n\nDecision?`;
+
+  let verdict = null;
+  try {
+    const text = await callAnthropicServer(sys, ctx, 300);
+    verdict = parseSignalJSONServer(text);
+  } catch (err) { console.warn('[ai-manager]', coin, 'AI call failed:', err.message || err); return; }
+  if (!verdict || !verdict.action) return; // unparseable → HOLD (fail-safe)
+  const action = String(verdict.action).toUpperCase();
+  const reason = String(verdict.reason || '').slice(0, 200);
+  const coinN = coin.replace('USDT', '');
+  const isAdmin = !!sub.isAdmin;
+
+  if (action === 'HOLD') { ps._aiMgrLast = `HOLD @ ${price}`; return; }
+
+  if (action === 'MOVE_SL') {
+    const px = parseFloat(verdict.price);
+    if (!Number.isFinite(px)) return;
+    // RAILS: toward profit only, and on the correct side of the market.
+    const towardProfit = isLong ? px > slP : px < slP;
+    const validSide = isLong ? px < price : px > price;
+    if (!towardProfit || !validSide) {
+      console.warn('[ai-manager]', coin, `MOVE_SL ${px} REJECTED by rails (sl=${slP} price=${price} ${s.direction})`);
+      return;
+    }
+    if (ps._origSl == null) ps._origSl = slP;
+    ps._aiManaged = true;
+    s.sl = px;
+    const lockedR = +(((isLong ? px - e : e - px)) / origRisk).toFixed(2);
+    if (lockedR >= 0) {
+      // SL is at/beyond entry — mark the mechanical BE + pre-NY movers as done
+      // so neither can later drag the stop BACKWARD to plain entry.
+      ps._beAlerted = true;
+      ps._weexBeFired = true;
+    }
+    if (autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
+      fireExecutor('handleMoveSl', { signalId: ps.signalId, newSl: px }, 'ai-moveSl');
+    }
+    console.log('[ai-manager]', coin, `MOVE_SL ${slP} → ${px} (locks ${lockedR >= 0 ? '+' : ''}${lockedR}R) — ${reason}`);
+    await notifyUser(userId, isAdmin, { title: `🤖 AI MANAGER: SL → ${px}`, body: `${coinN} ${s.direction} — ${reason}`, color: 'am' });
+    await aiManagerDiscord(`🤖 ${coinN} ${s.direction} — SL moved`,
+      `**${slP} → ${px}**  (locks ${lockedR >= 0 ? '+' : ''}${lockedR}R · price ${price}, ${uR >= 0 ? '+' : ''}${uR.toFixed(2)}R unrealized)\n${reason}`, 16755248);
+    return;
+  }
+
+  if (action === 'MOVE_TP') {
+    const px = parseFloat(verdict.price);
+    if (!Number.isFinite(px)) return;
+    // RAILS: TP stays on the profit side of the market, within ±15% of price.
+    const validSide = isLong ? px > price : px < price;
+    const sane = Math.abs(px - price) / price <= 0.15;
+    if (!validSide || !sane) {
+      console.warn('[ai-manager]', coin, `MOVE_TP ${px} REJECTED by rails (price=${price} ${s.direction})`);
+      return;
+    }
+    if (ps._origSl == null) ps._origSl = slP;
+    ps._aiManaged = true;
+    s.tp = px;
+    const newR = +(((isLong ? px - e : e - px)) / origRisk).toFixed(2);
+    if (autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId) {
+      fireExecutor('handleMoveTp', { signalId: ps.signalId, newTp: px }, 'ai-moveTp');
+    }
+    console.log('[ai-manager]', coin, `MOVE_TP ${tpP} → ${px} (target ${newR >= 0 ? '+' : ''}${newR}R) — ${reason}`);
+    await notifyUser(userId, isAdmin, { title: `🤖 AI MANAGER: TP → ${px}`, body: `${coinN} ${s.direction} — ${reason}`, color: 'gr' });
+    await aiManagerDiscord(`🤖 ${coinN} ${s.direction} — TP moved`,
+      `**${tpP} → ${px}**  (new target ${newR >= 0 ? '+' : ''}${newR}R · price ${price}, ${uR >= 0 ? '+' : ''}${uR.toFixed(2)}R unrealized)\n${reason}`, 54527);
+    return;
+  }
+
+  if (action === 'CLOSE_NOW') {
+    const exitRr = +uR.toFixed(2);
+    const outcome = exitRr > 0.1 ? 'TP' : (exitRr < -0.1 ? 'SL' : 'BE');
+    if (ps._origSl == null) ps._origSl = slP;
+    ps._aiManaged = true;
+    if (!ps._outcomeLogged) {
+      ps._outcomeLogged = true;
+      await logSignalOutcomeAndJournal(userId, ps.signalId, outcome, exitRr, s, broker, tf)
+        .catch(err => console.error('[ai-manager close outcome]', err.message));
+    }
+    if (autoTradeAllowed(isAdmin) && ps._autoExec && ps.signalId && !ps._weexClosed) {
+      ps._weexClosed = true;
+      fireExecutor('handleCloseNow', { signalId: ps.signalId, reason }, 'ai-closeNow');
+    }
+    console.log('[ai-manager]', coin, `CLOSE_NOW @ ${price} (${exitRr >= 0 ? '+' : ''}${exitRr}R, logged ${outcome}) — ${reason}`);
+    await notifyUser(userId, isAdmin, { title: `🤖 AI MANAGER: CLOSED ${exitRr >= 0 ? '+' : ''}${exitRr}R`, body: `${coinN} ${s.direction} closed @ ${price} — ${reason}`, color: exitRr >= 0 ? 'gr' : 're' });
+    await aiManagerDiscord(`🤖 ${coinN} ${s.direction} — CLOSED at market`,
+      `**Exit ${price} → ${exitRr >= 0 ? '+' : ''}${exitRr}R** (logged ${outcome})\n${reason}`, exitRr >= 0 ? 3866529 : 16274807);
+    clearPairState(ps);
+    return;
+  }
+}
+
+let _aiMgrBusy = false;
+setInterval(async () => {
+  if (!HENRY_AI_MANAGER || _aiMgrBusy) return;
+  _aiMgrBusy = true;
+  try {
+    for (const [userId, sub] of scanSubscriptions.entries()) {
+      if (!sub.active || !sub.pairs) continue;
+      for (const [coin, ps] of Object.entries(sub.pairs)) {
+        if (!ps.pendSignal || !ps._entryAlerted || ps._outcomeLogged) continue;
+        if (ps.pendSignal.direction !== 'LONG' && ps.pendSignal.direction !== 'SHORT') continue;
+        await aiManageTrade(userId, sub, coin, ps)
+          .catch(err => console.warn('[ai-manager]', coin, err.message || err));
+      }
+    }
+  } finally { _aiMgrBusy = false; }
+}, HENRY_AI_MANAGER_INTERVAL_MS);
+console.log(`[ai-manager] ${HENRY_AI_MANAGER ? 'ON' : 'off'} — cycle every ${Math.round(HENRY_AI_MANAGER_INTERVAL_MS / 1000)}s, model=${AUTOSCAN_AI_MODEL}`);
 
 // Clean shutdown — release scan loop, status loops, and exchange WS connections
 function _gracefulShutdown(signal) {
