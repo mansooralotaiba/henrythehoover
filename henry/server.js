@@ -8450,6 +8450,9 @@ async function labScanTick() {
 if (HENRY_LAB_ENABLED) {
   setInterval(labScanTick, LAB_SCAN_MS);
   setInterval(labManageTick, LAB_MANAGE_MS);
+  // First scan 2 min after boot (not a full hour) — gives immediate feedback
+  // after a deploy; harmless on restarts since pairs already in a trade skip.
+  setTimeout(labScanTick, 2 * 60 * 1000);
   console.log(`[lab] ON — free-scan ${LAB_PAIRS.join('+')} every ${Math.round(LAB_SCAN_MS / 60000)}min on ${LAB_MODEL}, manage every ${Math.round(LAB_MANAGE_MS / 60000)}min, PAPER ONLY`);
 } else {
   console.log('[lab] off (HENRY_LAB_ENABLED=false)');
