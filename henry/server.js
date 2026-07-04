@@ -8239,6 +8239,260 @@ setInterval(async () => {
 }, HENRY_AI_MANAGER_INTERVAL_MS);
 console.log(`[ai-manager] ${HENRY_AI_MANAGER ? 'ON' : 'off'} — cycle every ${Math.round(HENRY_AI_MANAGER_INTERVAL_MS / 1000)}s, model=${AUTOSCAN_AI_MODEL}`);
 
+// ════════════════════════════════════════════════════════════════════════════
+// PART — AI LAB (Phase 2, 2026-07-04). Admin-only experiment: FREE-SCAN
+// entries — Fable 5 looks at BTC + GOLD 15m charts every hour with NO detector
+// gate, full discretion (LONG/SHORT/NO TRADE at market). PAPER ONLY: fills are
+// simulated, outcomes tracked wick-aware from candles, nothing ever reaches an
+// exchange. Its record lives in the SEPARATE `lab_signals` table so it can
+// never pollute Henry's live record (stats/journal/weekly card all query
+// `signals`). The AI Trade Manager runs on its open trades with the same hard
+// rails. Everything posts to the dedicated lab Discord webhook.
+// ════════════════════════════════════════════════════════════════════════════
+const HENRY_LAB_ENABLED = (process.env.HENRY_LAB_ENABLED ?? 'true').toLowerCase() === 'true';
+const LAB_MODEL = process.env.HENRY_LAB_AI_MODEL || 'claude-fable-5';
+const LAB_PAIRS = ['BTCUSDT', 'XAUTUSDT'];
+const LAB_SCAN_MS = parseInt(process.env.HENRY_LAB_SCAN_MS || String(60 * 60 * 1000), 10);   // hourly free-scan
+const LAB_MANAGE_MS = parseInt(process.env.HENRY_LAB_MANAGE_MS || String(10 * 60 * 1000), 10); // 10-min manage cycle
+const LAB_MAX_AGE_H = parseFloat(process.env.HENRY_LAB_MAX_AGE_H || '72');                    // hard close after 3 days
+const LAB_WEBHOOK = process.env.HENRY_LAB_WEBHOOK
+  || 'https://discord.com/api/webhooks/1523002170654461992/8kucPwxiNLkYZqxWzPXSsdO9d7iN1cgOO5dLQ90VZGYgwCdpOpeMyvAoG61jpA_49xqg';
+
+const labOpen = new Map();      // pair → row (in-memory mirror of state='open')
+let labLastScan = { at: null, notes: {} }; // page status: last scan time + per-pair note
+
+async function labDiscord(title, description, color) {
+  if (!LAB_WEBHOOK) return;
+  try {
+    await fetch(LAB_WEBHOOK, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ embeds: [{ title, description, color, footer: { text: `AI LAB · free-scan · paper · ${LAB_MODEL}` }, timestamp: new Date().toISOString() }] }),
+    });
+  } catch (e) { console.warn('[lab discord]', e.message || e); }
+}
+
+async function labRehydrate() {
+  try {
+    const { data, error } = await supaAdmin.from('lab_signals').select('*').eq('state', 'open');
+    if (error) throw error;
+    for (const row of (data || [])) {
+      row._lastCheck = new Date(row.opened_at).getTime(); // re-evaluate downtime candles vs current levels (paper — acceptable)
+      labOpen.set(row.pair, row);
+    }
+    if (labOpen.size) console.log(`[lab] rehydrated ${labOpen.size} open paper trade(s)`);
+  } catch (e) { console.warn('[lab rehydrate]', e.message || e); }
+}
+
+// ── Hourly free-scan: no detectors, no triggers — pure model discretion ─────
+async function labScanPair(coin) {
+  if (labOpen.has(coin)) { labLastScan.notes[coin] = 'in trade — scan skipped'; return; }
+  if (isGoldCoin(coin) && isGoldWeekendBlocked(new Date())) { labLastScan.notes[coin] = 'gold weekend — closed'; return; }
+  const broker = brokerForPair(coin, 'weex');
+  const c15 = await fetchCandlesServer(coin, '15m', 60, broker).catch(() => []);
+  if (!c15 || c15.length < 30) { labLastScan.notes[coin] = 'no candle data'; return; }
+  const price = c15[c15.length - 1].c;
+  const regime = await detectMarketRegime(coin, broker).catch(() => null);
+  const atr = computeATR(c15, 14), adx = computeADX(c15, 14);
+  const candleTxt = c15.slice(-40).map(c => `${c.o}/${c.h}/${c.l}/${c.c}`).join('  ');
+
+  const sys = 'You are a professional discretionary futures trader with COMPLETE freedom — no prescribed strategy, no required setups. '
+    + 'You look at the raw chart and decide. If you trade, entry is the CURRENT market price. '
+    + 'Reply with ONLY a JSON object: {"direction":"LONG"|"SHORT"|"NO TRADE","sl":<number>,"tp":<number>,"confidence":<0-100>,"reasoning":"<max 200 chars>"}. '
+    + 'Only trade when you see genuine edge — NO TRADE is the correct answer most hours. Place the stop where the idea is invalidated, the target where it is achieved.';
+  const ctx = `PAIR: ${coin} | CURRENT PRICE (your entry if you trade): ${price}\n`
+    + `15m ADX ${adx != null ? adx.toFixed(1) : '?'} | 15m ATR ${atr != null ? atr.toFixed(6) : '?'} | 4H regime: ${regime ? `${regime.regime} (${regime.confidence}${regime.adx != null ? `, ADX ${regime.adx}` : ''})` : 'n/a'}\n`
+    + `LAST 40 15m CANDLES o/h/l/c (oldest→newest): ${candleTxt}\n\nYour call?`;
+
+  let v = null;
+  try {
+    const text = await callAnthropicServer(sys, ctx, 1200, LAB_MODEL);
+    v = parseSignalJSONServer(text);
+  } catch (err) { console.warn('[lab scan]', coin, 'AI failed:', err.message || err); labLastScan.notes[coin] = 'AI error'; return; }
+  const dir = String(v?.direction || '').toUpperCase();
+  if (dir !== 'LONG' && dir !== 'SHORT') { labLastScan.notes[coin] = `NO TRADE @ ${price}`; return; }
+  const sl = parseFloat(v.sl), tp = parseFloat(v.tp);
+  const geomOk = dir === 'LONG' ? (sl < price && tp > price) : (sl > price && tp < price);
+  if (!Number.isFinite(sl) || !Number.isFinite(tp) || !geomOk) {
+    labLastScan.notes[coin] = 'signal rejected (bad levels)';
+    console.warn('[lab scan]', coin, 'bad levels from model:', JSON.stringify(v).slice(0, 150));
+    return;
+  }
+  const risk = Math.abs(price - sl);
+  const rr = +(Math.abs(tp - price) / risk).toFixed(2);
+  const row = {
+    pair: coin, direction: dir, entry: price, sl, tp, orig_sl: sl, rr,
+    confidence: Number.isFinite(parseInt(v.confidence)) ? parseInt(v.confidence) : null,
+    reasoning: String(v.reasoning || '').slice(0, 400),
+    state: 'open', ai_managed: false, actions: [], model: LAB_MODEL,
+    opened_at: new Date().toISOString(),
+  };
+  try {
+    const { data, error } = await supaAdmin.from('lab_signals').insert(row).select().single();
+    if (error) throw error;
+    data._lastCheck = Date.now();
+    labOpen.set(coin, data);
+    labLastScan.notes[coin] = `${dir} opened @ ${price}`;
+    console.log('[lab]', coin, `FREE-SCAN ${dir} @ ${price} sl=${sl} tp=${tp} (${rr}R) — ${row.reasoning.slice(0, 80)}`);
+    await labDiscord(`🧪 ${coin.replace('USDT', '')} ${dir} — paper entry`,
+      `**Entry ${price}** · SL ${sl} · TP ${tp} (${rr}R)${row.confidence != null ? ` · conf ${row.confidence}` : ''}\n${row.reasoning}`,
+      dir === 'LONG' ? 3866529 : 16274807);
+  } catch (err) { console.warn('[lab insert]', err.message || err); }
+}
+
+// ── Close a paper trade + log honest R off the ORIGINAL risk ────────────────
+async function labClose(row, exitPrice, how) {
+  const isLong = row.direction === 'LONG';
+  const origRisk = Math.abs(row.entry - row.orig_sl);
+  const rr = origRisk > 0 ? +(((isLong ? exitPrice - row.entry : row.entry - exitPrice)) / origRisk).toFixed(2) : 0;
+  const outcome = how === 'TP' || how === 'SL' ? (rr > 0.1 ? 'TP' : rr < -0.1 ? 'SL' : 'BE')
+    : (rr > 0.1 ? 'TP' : rr < -0.1 ? 'SL' : 'BE');
+  try {
+    await supaAdmin.from('lab_signals').update({
+      state: 'closed', outcome, outcome_rr: rr, exit_price: exitPrice,
+      sl: row.sl, tp: row.tp, ai_managed: !!row.ai_managed, actions: row.actions || [],
+      closed_at: new Date().toISOString(),
+    }).eq('id', row.id);
+  } catch (e) { console.warn('[lab close]', e.message || e); }
+  labOpen.delete(row.pair);
+  console.log('[lab]', row.pair, `${how} @ ${exitPrice} → ${rr >= 0 ? '+' : ''}${rr}R (${outcome})`);
+  await labDiscord(`🧪 ${row.pair.replace('USDT', '')} ${row.direction} — ${how === 'MANAGER' ? 'closed by manager' : how + ' hit'}`,
+    `**Exit ${exitPrice} → ${rr >= 0 ? '+' : ''}${rr}R** (${outcome})${row.ai_managed ? ' · AI-managed' : ''}`,
+    rr >= 0 ? 3866529 : 16274807);
+}
+
+// ── 10-min cycle: outcome detection (wick-aware) + AI manager on open trades ─
+async function labManageTick() {
+  for (const [coin, row] of [...labOpen.entries()]) {
+    try {
+      const broker = brokerForPair(coin, 'weex');
+      const candles = await fetchCandlesServer(coin, '15m', 40, broker).catch(() => []);
+      if (!candles || candles.length < 5) continue;
+      const isLong = row.direction === 'LONG';
+      const price = candles[candles.length - 1].c;
+      // 1) outcome check on candles since last look (SL first when both wick in one bar)
+      const fresh = candles.filter(c => c.t >= (row._lastCheck || 0) - 15 * 60 * 1000);
+      let closed = false;
+      for (const c of fresh) {
+        const slHit = isLong ? c.l <= row.sl : c.h >= row.sl;
+        const tpHit = isLong ? c.h >= row.tp : c.l <= row.tp;
+        if (slHit) { await labClose(row, row.sl, 'SL'); closed = true; break; }
+        if (tpHit) { await labClose(row, row.tp, 'TP'); closed = true; break; }
+      }
+      if (closed) continue;
+      row._lastCheck = Date.now();
+      // 2) hard age cap
+      const ageH = (Date.now() - new Date(row.opened_at).getTime()) / 3600000;
+      if (ageH >= LAB_MAX_AGE_H) { await labClose(row, price, 'MANAGER'); continue; }
+      if (ageH * 60 < 15) continue; // give brand-new trades 15 min before managing
+      // 3) AI manager — same action set + hard rails as the live manager
+      const origRisk = Math.abs(row.entry - row.orig_sl);
+      if (!(origRisk > 0)) continue;
+      const uR = (isLong ? price - row.entry : row.entry - price) / origRisk;
+      const atr = computeATR(candles, 14), adx = computeADX(candles, 14);
+      const regime = await detectMarketRegime(coin, broker).catch(() => null);
+      const lastCandles = candles.slice(-10).map(c => `${c.o}/${c.h}/${c.l}/${c.c}`).join('  ');
+      const sys = 'You are the trade MANAGER for a live position with full discretion over the exit. '
+        + 'Reply with ONLY JSON: {"action":"HOLD"|"MOVE_SL"|"MOVE_TP"|"CLOSE_NOW","price":<number for MOVE_*>,"reason":"<max 140 chars>"}. '
+        + 'Hard rules: MOVE_SL only toward profit (never widen risk). MOVE_TP may extend or bank earlier. CLOSE_NOW exits at market. '
+        + 'Protect capital, let real winners run, kill dead theses. HOLD is often correct.';
+      const ctx = `POSITION: ${row.direction} ${coin} | entry ${row.entry} | SL ${row.sl}${row.sl !== row.orig_sl ? ` (orig ${row.orig_sl})` : ''} | TP ${row.tp}\n`
+        + `NOW: price ${price} → ${uR >= 0 ? '+' : ''}${uR.toFixed(2)}R unrealized (1R=${origRisk}) | in trade ${Math.round(ageH * 60)} min\n`
+        + `15m ADX ${adx != null ? adx.toFixed(1) : '?'} | ATR ${atr != null ? atr.toFixed(6) : '?'} | 4H regime: ${regime ? `${regime.regime} (${regime.confidence})` : 'n/a'}\n`
+        + `LAST 10 15m CANDLES o/h/l/c: ${lastCandles}\n\nDecision?`;
+      let v = null;
+      try {
+        const text = await callAnthropicServer(sys, ctx, 300, LAB_MODEL);
+        v = parseSignalJSONServer(text);
+      } catch (err) { continue; }
+      const action = String(v?.action || 'HOLD').toUpperCase();
+      const reason = String(v?.reason || '').slice(0, 200);
+      if (action === 'HOLD') continue;
+      const stamp = new Date().toISOString();
+      if (action === 'MOVE_SL') {
+        const px = parseFloat(v.price);
+        const towardProfit = isLong ? px > row.sl : px < row.sl;
+        const validSide = isLong ? px < price : px > price;
+        if (!Number.isFinite(px) || !towardProfit || !validSide) continue;
+        const lockedR = +(((isLong ? px - row.entry : row.entry - px)) / origRisk).toFixed(2);
+        const old = row.sl;
+        row.sl = px; row.ai_managed = true;
+        row.actions = [...(row.actions || []), { at: stamp, action: 'MOVE_SL', from: old, to: px, reason }];
+        await supaAdmin.from('lab_signals').update({ sl: px, ai_managed: true, actions: row.actions }).eq('id', row.id).then(({ error }) => error && console.warn('[lab upd]', error.message));
+        await labDiscord(`🧪🤖 ${coin.replace('USDT', '')} ${row.direction} — SL moved`,
+          `**${old} → ${px}** (locks ${lockedR >= 0 ? '+' : ''}${lockedR}R · price ${price}, ${uR >= 0 ? '+' : ''}${uR.toFixed(2)}R unrealized)\n${reason}`, 16755248);
+      } else if (action === 'MOVE_TP') {
+        const px = parseFloat(v.price);
+        const validSide = isLong ? px > price : px < price;
+        if (!Number.isFinite(px) || !validSide || Math.abs(px - price) / price > 0.15) continue;
+        const newR = +(((isLong ? px - row.entry : row.entry - px)) / origRisk).toFixed(2);
+        const old = row.tp;
+        row.tp = px; row.ai_managed = true;
+        row.actions = [...(row.actions || []), { at: stamp, action: 'MOVE_TP', from: old, to: px, reason }];
+        await supaAdmin.from('lab_signals').update({ tp: px, ai_managed: true, actions: row.actions }).eq('id', row.id).then(({ error }) => error && console.warn('[lab upd]', error.message));
+        await labDiscord(`🧪🤖 ${coin.replace('USDT', '')} ${row.direction} — TP moved`,
+          `**${old} → ${px}** (new target ${newR >= 0 ? '+' : ''}${newR}R · price ${price})\n${reason}`, 54527);
+      } else if (action === 'CLOSE_NOW') {
+        row.ai_managed = true;
+        row.actions = [...(row.actions || []), { at: stamp, action: 'CLOSE_NOW', at_price: price, reason }];
+        await labClose(row, price, 'MANAGER');
+      }
+    } catch (err) { console.warn('[lab manage]', coin, err.message || err); }
+  }
+}
+
+async function labScanTick() {
+  labLastScan.at = new Date().toISOString();
+  for (const coin of LAB_PAIRS) {
+    await labScanPair(coin).catch(err => console.warn('[lab scan]', coin, err.message || err));
+  }
+}
+
+if (HENRY_LAB_ENABLED) {
+  setInterval(labScanTick, LAB_SCAN_MS);
+  setInterval(labManageTick, LAB_MANAGE_MS);
+  console.log(`[lab] ON — free-scan ${LAB_PAIRS.join('+')} every ${Math.round(LAB_SCAN_MS / 60000)}min on ${LAB_MODEL}, manage every ${Math.round(LAB_MANAGE_MS / 60000)}min, PAPER ONLY`);
+} else {
+  console.log('[lab] off (HENRY_LAB_ENABLED=false)');
+}
+
+// ── Lab page + data endpoint ────────────────────────────────────────────────
+app.get('/lab', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'lab.html')));
+
+app.get('/api/lab/state', requireAdmin, async (_req, res) => {
+  try {
+    const { data: closed } = await supaAdmin.from('lab_signals')
+      .select('pair,direction,entry,sl,tp,orig_sl,rr,confidence,reasoning,outcome,outcome_rr,exit_price,ai_managed,actions,opened_at,closed_at')
+      .eq('state', 'closed').order('closed_at', { ascending: false }).limit(50);
+    const rows = closed || [];
+    const tp = rows.filter(r => r.outcome === 'TP').length;
+    const sl = rows.filter(r => r.outcome === 'SL').length;
+    const be = rows.filter(r => r.outcome === 'BE').length;
+    const netR = +(rows.reduce((s, r) => s + (parseFloat(r.outcome_rr) || 0), 0)).toFixed(2);
+    const pairs = await Promise.all(LAB_PAIRS.map(async coin => {
+      const candles = await fetchCandlesServer(coin, '15m', 80, brokerForPair(coin, 'weex')).catch(() => []);
+      const open = labOpen.get(coin) || null;
+      return {
+        coin,
+        candles: (candles || []).map(c => ({ t: c.t, o: c.o, h: c.h, l: c.l, c: c.c })),
+        open: open ? { direction: open.direction, entry: open.entry, sl: open.sl, tp: open.tp, origSl: open.orig_sl, aiManaged: !!open.ai_managed, openedAt: open.opened_at, actions: open.actions || [] } : null,
+        scanNote: labLastScan.notes[coin] || null,
+      };
+    }));
+    res.json({
+      enabled: HENRY_LAB_ENABLED, model: LAB_MODEL,
+      scanEveryMin: Math.round(LAB_SCAN_MS / 60000), manageEveryMin: Math.round(LAB_MANAGE_MS / 60000),
+      lastScanAt: labLastScan.at,
+      stats: { trades: rows.length, tp, sl, be, netR, winRate: (tp + sl) ? Math.round(tp / (tp + sl) * 100) : null },
+      pairs, recent: rows.slice(0, 25),
+      serverTime: new Date().toISOString(),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+labRehydrate();
+
 // Clean shutdown — release scan loop, status loops, and exchange WS connections
 function _gracefulShutdown(signal) {
   console.log(`[shutdown] ${signal} received — cleaning up`);
